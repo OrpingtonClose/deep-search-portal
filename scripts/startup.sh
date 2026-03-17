@@ -56,3 +56,8 @@ echo "Thinking Proxy started on port 9100"
 screen -dmS deep-research bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export UPSTREAM_MODEL='mistral-large-latest' && export SEARXNG_URL='http://localhost:8888' && export DEEP_RESEARCH_PORT='9200' && python3 /opt/deep_research_proxy.py 2>&1 | tee /var/log/deep_research_proxy.log"
 sleep 2
 echo "Deep Research Proxy (MiroFlow) started on port 9200"
+
+# --- Persistent Deep Research Proxy (Subagent Map-Reduce + AoT) ---
+screen -dmS persistent-research bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export UPSTREAM_MODEL='mistral-large-latest' && export SUBAGENT_MODEL='mistral-small-latest' && export SEARXNG_URL='http://localhost:8888' && export PERSISTENT_RESEARCH_PORT='9300' && python3 /opt/persistent_deep_research_proxy.py 2>&1 | tee /var/log/persistent_research_proxy.log"
+sleep 2
+echo "Persistent Deep Research Proxy started on port 9300"

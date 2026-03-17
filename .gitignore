@@ -1,0 +1,5 @@
+.env
+*.pyc
+__pycache__/
+*.log
+.b2_account_info

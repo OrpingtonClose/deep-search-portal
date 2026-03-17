@@ -1,0 +1,23 @@
+# =============================================================================
+# SearXNG Settings Patch
+# Apply these overrides to the default SearXNG settings.yml
+# The full default settings are in searxng_settings_full.yml for reference.
+# =============================================================================
+
+# REQUIRED: Change from default "ultrasecretkey" or SearXNG refuses to start
+server:
+  secret_key: "generate-a-random-key-here"
+
+# REQUIRED: Enable JSON format for API access (proxy uses ?format=json)
+search:
+  formats: [html, csv, json, rss]
+  safe_search: 0
+  autocomplete: ""
+
+# NOTE: From a datacenter IP, expect these engine issues:
+#   - Google: "access denied" (suspended)
+#   - Startpage: CAPTCHA (suspended)
+#   - DuckDuckGo: frequent timeouts
+#   - Brave: works reliably
+#   - Bing: works reliably
+#   - Wikipedia: works reliably

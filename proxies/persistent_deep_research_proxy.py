@@ -52,7 +52,7 @@ import tempfile
 import time
 import traceback
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
 
@@ -145,9 +145,6 @@ class SubagentResult:
 # Persistent Storage (SQLite + FTS5)
 # ============================================================================
 
-_db_lock = asyncio.Lock()
-
-
 def _init_db(db_path: str) -> None:
     """Create the SQLite database and tables if they don't exist."""
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -184,17 +181,22 @@ def _init_db(db_path: str) -> None:
         conn.close()
 
 
-def _store_conditions(
+def _store_conditions_sync(
     db_path: str,
     session_id: str,
     query: str,
     conditions: list[AtomicCondition],
 ) -> int:
-    """Store atomic conditions in the database. Returns count stored."""
+    """Store atomic conditions in the database. Returns count stored.
+
+    This is a synchronous function; call via ``run_in_executor``.
+    Thread safety is handled by SQLite's built-in WAL-mode locking.
+    """
     if not conditions:
         return 0
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=10)
     try:
+        conn.execute("PRAGMA journal_mode=WAL")
         now = datetime.now(timezone.utc).isoformat()
         rows = [
             (
@@ -224,9 +226,12 @@ def _store_conditions(
         conn.close()
 
 
-def _retrieve_related(db_path: str, query: str, limit: int = 20) -> list[dict]:
-    """Retrieve prior conditions related to the query using FTS5."""
-    conn = sqlite3.connect(db_path)
+def _retrieve_related_sync(db_path: str, query: str, limit: int = 20) -> list[dict]:
+    """Retrieve prior conditions related to the query using FTS5.
+
+    Synchronous; call via ``run_in_executor``.
+    """
+    conn = sqlite3.connect(db_path, timeout=10)
     try:
         # Tokenise the query for FTS5 — use OR matching for broad recall
         tokens = [t.strip() for t in query.split() if len(t.strip()) > 2]
@@ -1142,7 +1147,7 @@ async def run_persistent_research(
 
         loop = asyncio.get_running_loop()
         prior_conditions = await loop.run_in_executor(
-            None, _retrieve_related, PERSISTENCE_DB, user_query, MAX_PRIOR_CONDITIONS
+            None, _retrieve_related_sync, PERSISTENCE_DB, user_query, MAX_PRIOR_CONDITIONS
         )
 
         if prior_conditions:
@@ -1184,13 +1189,33 @@ async def run_persistent_research(
             for i, angle in enumerate(angles)
         ]
 
-        # Stream progress updates as subagents work
+        # Stream progress updates as subagents work.
+        # Use a task-monitoring approach so that crashed subagents
+        # (which never post "done") don't hang the orchestrator.
+        pending_tasks = set(subagent_tasks)
         completed_count = 0
-        while completed_count < n_agents:
+
+        while completed_count < n_agents and pending_tasks:
+            # Check if any tasks have finished (crashed or completed)
+            done_tasks, _ = await asyncio.wait(
+                pending_tasks, timeout=0, return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in done_tasks:
+                pending_tasks.discard(t)
+                if t.exception() is not None:
+                    # Subagent crashed without posting "done"
+                    completed_count += 1
+                    idx = subagent_tasks.index(t)
+                    log.error(f"[{req_id}] Subagent {idx} crashed: {t.exception()}")
+                    yield chunk(f"  \u26a0\ufe0f Subagent {idx + 1} failed: {t.exception()}\n")
+
+            # Drain progress messages (non-blocking)
             try:
-                msg = await asyncio.wait_for(progress_queue.get(), timeout=120)
+                msg = await asyncio.wait_for(progress_queue.get(), timeout=2.0)
             except asyncio.TimeoutError:
-                yield chunk("  ... waiting for subagents...\n")
+                # Check if all tasks are done even though queue is empty
+                if all(t.done() for t in subagent_tasks):
+                    break
                 continue
 
             if msg["type"] == "progress":
@@ -1207,11 +1232,17 @@ async def run_persistent_research(
         # Collect all results
         subagent_results: list[SubagentResult] = []
         for task in subagent_tasks:
-            try:
-                result = await task
-                subagent_results.append(result)
-            except Exception as e:
-                log.error(f"[{req_id}] Failed to collect subagent result: {e}")
+            if task.done() and task.exception() is None:
+                try:
+                    subagent_results.append(task.result())
+                except Exception as e:
+                    log.error(f"[{req_id}] Failed to collect subagent result: {e}")
+            elif task.done() and task.exception() is not None:
+                log.error(f"[{req_id}] Subagent task exception: {task.exception()}")
+            else:
+                # Still running — cancel and skip
+                task.cancel()
+                log.warning(f"[{req_id}] Cancelled hanging subagent task")
 
         # Summary
         all_conditions: list[AtomicCondition] = []
@@ -1233,7 +1264,7 @@ async def run_persistent_research(
         if all_conditions:
             yield chunk("\n**[Phase 4: Persisting Knowledge]**\n")
             stored = await loop.run_in_executor(
-                None, _store_conditions, PERSISTENCE_DB, req_id, user_query, all_conditions
+                None, _store_conditions_sync, PERSISTENCE_DB, req_id, user_query, all_conditions
             )
             yield chunk(f"Stored {stored} conditions to persistent knowledge base.\n")
 

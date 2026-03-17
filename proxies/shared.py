@@ -192,24 +192,21 @@ class RequestTracker:
 # ============================================================================
 
 class ConcurrencyLimiter:
-    """Async semaphore wrapper that returns a 503 hint when exhausted."""
+    """Async semaphore wrapper for limiting expensive concurrent operations."""
 
     def __init__(self, max_concurrent: int) -> None:
         self._sem = asyncio.Semaphore(max_concurrent)
         self.max_concurrent = max_concurrent
 
+    def available(self) -> bool:
+        """Return True if at least one slot is free (non-blocking check)."""
+        return self._sem._value > 0  # noqa: SLF001
+
     @asynccontextmanager
-    async def acquire(self):
-        if self._sem._value == 0:  # noqa: SLF001 — fast check before blocking
-            raise ConcurrencyExceeded(self.max_concurrent)
+    async def hold(self):
+        """Acquire a slot for the duration of the ``async with`` block."""
         async with self._sem:
             yield
-
-
-class ConcurrencyExceeded(Exception):
-    def __init__(self, limit: int) -> None:
-        self.limit = limit
-        super().__init__(f"Max concurrent requests ({limit}) exceeded")
 
 
 # ============================================================================

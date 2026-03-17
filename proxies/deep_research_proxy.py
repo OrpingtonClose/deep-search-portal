@@ -36,7 +36,6 @@ from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from shared import (
-    ConcurrencyExceeded,
     ConcurrencyLimiter,
     RequestTracker,
     create_app,
@@ -825,18 +824,17 @@ async def chat_completions(request: Request):
             log=log,
         )
     else:
-        # Enforce concurrency limit on deep research (expensive)
-        try:
-            async with limiter.acquire():
-                pass  # Just checking availability
-        except ConcurrencyExceeded as exc:
+        # Enforce concurrency limit on deep research (expensive).
+        # We check the semaphore eagerly and return 503 if exhausted,
+        # then wrap the generator so the slot is held for its lifetime.
+        if not limiter.available():
             tracker.finish(req_id)
             return JSONResponse(
                 status_code=503,
                 content={
                     "error": {
                         "message": (
-                            f"Too many concurrent research sessions ({exc.limit}). "
+                            f"Too many concurrent research sessions ({limiter.max_concurrent}). "
                             f"Try again shortly."
                         ),
                         "type": "rate_limit",
@@ -845,7 +843,13 @@ async def chat_completions(request: Request):
             )
 
         log.info(f"[{req_id}] Routing to DEEP RESEARCH agent loop")
-        generator = run_deep_research(messages, body, req_id)
+
+        async def _guarded_research():
+            async with limiter.hold():
+                async for event in run_deep_research(messages, body, req_id):
+                    yield event
+
+        generator = _guarded_research()
 
     return StreamingResponse(
         generator,

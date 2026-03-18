@@ -25,11 +25,12 @@ import os
 import time
 import traceback
 import uuid
-from typing import AsyncGenerator, Optional
+from typing import Annotated, Any, AsyncGenerator, Optional, TypedDict
 
 import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
+from langgraph.graph import END, START, StateGraph
 
 from shared import (
     RequestTracker,
@@ -106,13 +107,36 @@ async def stream_thinking_response(
     """
     Stream the upstream response, transforming <THINKING>/<ANSWER> tags
     into <think>/<content> format that Open WebUI renders natively.
+
+    Uses LangGraph for traced request preparation, then streams the
+    upstream response through a token-level state machine.
     """
-    model_id = original_body.get("model", UPSTREAM_MODEL)
     request_id = f"chatcmpl-think-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
     token_count = 0
     start_time = time.monotonic()
     finish_sent = False  # Guard against duplicate finish chunks
+
+    # --- Phase 1: Build request via LangGraph (traced) ---
+    graph_input: dict[str, Any] = {
+        "req_id": req_id,
+        "messages": messages,
+        "original_body": original_body,
+        "upstream_body": {},
+        "model_id": original_body.get("model", UPSTREAM_MODEL),
+        "tools_stripped": False,
+        "token_count": 0,
+        "final_phase": "",
+        "elapsed": 0.0,
+        "error": "",
+        "progress_log": [],
+        "phase": "build_request",
+    }
+    config = {"configurable": {"thread_id": req_id}}
+    graph_state = await _thinking_graph.ainvoke(graph_input, config=config)
+
+    upstream_body = graph_state["upstream_body"]
+    model_id = graph_state["model_id"]
 
     def make_chunk(content: str, finish_reason: Optional[str] = None) -> str:
         return make_sse_chunk(
@@ -122,25 +146,6 @@ async def stream_thinking_response(
             model_id=model_id,
             finish_reason=finish_reason,
         )
-
-    # Build upstream request — strip tools/functions to prevent tool_calls
-    # The thinking proxy is text-only; tool calls would produce empty responses
-    upstream_body = {
-        **original_body,
-        "model": UPSTREAM_MODEL,
-        "messages": inject_thinking_prompt(messages),
-        "stream": True,
-    }
-    # Remove keys that confuse OpenRouter or trigger tool_calls
-    for key in ("user", "chat_id", "tools", "tool_choice", "functions", "function_call"):
-        upstream_body.pop(key, None)
-
-    tools_stripped = any(k in original_body for k in ("tools", "tool_choice", "functions", "function_call"))
-    log.info(
-        f"[{req_id}] THINKING upstream request: model={UPSTREAM_MODEL}, "
-        f"messages={len(messages)}, stream=True, tools_stripped={tools_stripped}"
-    )
-    log.debug(f"[{req_id}] User message (last): {messages[-1].get('content', '')[:200]}")
 
     # State machine for parsing the stream
     buffer = ""
@@ -416,6 +421,92 @@ async def stream_thinking_response(
 
     finally:
         tracker.finish(req_id)
+
+
+# ============================================================================
+# LangGraph State & Graph for Thinking Pipeline
+# ============================================================================
+
+
+def _think_append_log(left: list[str], right: list[str]) -> list[str]:
+    """Reducer: append new progress entries."""
+    return left + right
+
+
+class ThinkingState(TypedDict):
+    """LangGraph state for the thinking proxy pipeline."""
+    req_id: str
+    messages: list[dict]
+    original_body: dict
+    # Prepared by build_request node
+    upstream_body: dict
+    model_id: str
+    tools_stripped: bool
+    # Result from stream_transform node
+    token_count: int
+    final_phase: str
+    elapsed: float
+    error: str
+    # Progress log for traceability
+    progress_log: Annotated[list[str], _think_append_log]
+    phase: str  # "build_request", "stream_transform", "done"
+
+
+async def think_node_build_request(state: ThinkingState) -> dict:
+    """Prepare the upstream request body with thinking injection."""
+    messages = state["messages"]
+    original_body = state["original_body"]
+    req_id = state["req_id"]
+
+    upstream_body = {
+        **original_body,
+        "model": UPSTREAM_MODEL,
+        "messages": inject_thinking_prompt(messages),
+        "stream": True,
+    }
+    for key in ("user", "chat_id", "tools", "tool_choice", "functions", "function_call"):
+        upstream_body.pop(key, None)
+
+    tools_stripped = any(
+        k in original_body for k in ("tools", "tool_choice", "functions", "function_call")
+    )
+
+    log.info(
+        f"[{req_id}] THINKING upstream request: model={UPSTREAM_MODEL}, "
+        f"messages={len(messages)}, stream=True, tools_stripped={tools_stripped}"
+    )
+    log.debug(f"[{req_id}] User message (last): {messages[-1].get('content', '')[:200]}")
+
+    return {
+        "upstream_body": upstream_body,
+        "model_id": original_body.get("model", UPSTREAM_MODEL),
+        "tools_stripped": tools_stripped,
+        "progress_log": [f"Built upstream request (tools_stripped={tools_stripped})"],
+        "phase": "stream_transform",
+    }
+
+
+def build_thinking_graph() -> Any:
+    """Build the thinking proxy LangGraph.
+
+    Graph topology (2-node pipeline)::
+
+        START -> build_request -> END
+
+    Note: The streaming transformation phase (stream_transform) is not included
+    in the graph because it is inherently a token-level streaming operation that
+    must be implemented as an async generator. The graph provides traceability
+    for the request preparation phase. The stream_transform phase is traced
+    separately within stream_thinking_response().
+    """
+    graph = StateGraph(ThinkingState)
+    graph.add_node("build_request", think_node_build_request)
+    graph.add_edge(START, "build_request")
+    graph.add_edge("build_request", END)
+    return graph.compile()
+
+
+_thinking_graph = build_thinking_graph()
 
 
 # ============================================================================

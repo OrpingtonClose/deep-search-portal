@@ -89,14 +89,16 @@ import traceback
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import AsyncGenerator, Optional
+from typing import Annotated, Any, AsyncGenerator, Optional, TypedDict
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
+from langgraph.graph import END, START, StateGraph
 
 import knowledge_client
+import veritas_inquisitor
 
 from shared import (
     ConcurrencyLimiter,
@@ -515,6 +517,7 @@ async def run_document_ingestion(
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
 
+    ingestion_ok = False
     try:
         # Step 1: Submit to knowledge engine
         yield chunk("**[Step 1: Submitting to Knowledge Engine]**\n")
@@ -552,6 +555,7 @@ async def run_document_ingestion(
                 last_status = current_status
 
             if current_status == "completed":
+                ingestion_ok = True
                 stats = status.get("stats", {})
                 yield chunk(f"\n**[Step 3: Ingestion Complete]**\n")
                 if stats:
@@ -574,19 +578,26 @@ async def run_document_ingestion(
 
     yield chunk("\n</think>\n\n")
 
-    # Produce a user-facing summary
-    yield chunk(
-        f"## Document Ingested\n\n"
-        f"Your document ({doc_chars:,} characters) has been processed and loaded into "
-        f"the knowledge graph under namespace **{namespace}**.\n\n"
-        f"The knowledge engine has:\n"
-        f"- Chunked the document into overlapping segments\n"
-        f"- Extracted concepts, claims, evidence, and relationships\n"
-        f"- Resolved duplicate entities\n"
-        f"- Loaded everything into Neo4j\n\n"
-        f"You can now ask research questions about this document and it will be "
-        f"available as prior knowledge for all future research sessions.\n"
-    )
+    # Produce a user-facing summary based on actual outcome
+    if ingestion_ok:
+        yield chunk(
+            f"## Document Ingested\n\n"
+            f"Your document ({doc_chars:,} characters) has been processed and loaded into "
+            f"the knowledge graph under namespace **{namespace}**.\n\n"
+            f"The knowledge engine has:\n"
+            f"- Chunked the document into overlapping segments\n"
+            f"- Extracted concepts, claims, evidence, and relationships\n"
+            f"- Resolved duplicate entities\n"
+            f"- Loaded everything into Neo4j\n\n"
+            f"You can now ask research questions about this document and it will be "
+            f"available as prior knowledge for all future research sessions.\n"
+        )
+    else:
+        yield chunk(
+            f"## Document Ingestion Failed\n\n"
+            f"Your document ({doc_chars:,} characters) could not be fully processed. "
+            f"Please check the errors above and try again, or submit a smaller document.\n"
+        )
 
     yield chunk("", finish_reason="stop")
     yield "data: [DONE]\n\n"
@@ -2298,6 +2309,361 @@ async def synthesize_with_revision(
 
 
 # ============================================================================
+# LangGraph State & Pipeline Graph
+# ============================================================================
+
+
+def _pdr_append_log(left: list[str], right: list[str]) -> list[str]:
+    """Reducer: append new progress messages to the log."""
+    return left + right
+
+
+class PersistentResearchState(TypedDict):
+    """LangGraph state for the persistent deep research pipeline."""
+    req_id: str
+    user_query: str
+    start_time: float
+    # Phase outputs
+    prior_conditions: list[dict]
+    graph_neighbors: list[dict]
+    angles: list[dict]
+    subagent_results: list  # list[SubagentResult] (not TypedDict-serialisable)
+    all_conditions: list  # list[AtomicCondition]
+    total_turns: int
+    total_tools: int
+    total_children: int
+    reflection: dict
+    final_answer: str
+    # Progress
+    progress_log: Annotated[list[str], _pdr_append_log]
+    phase: str  # current phase name or "done"
+
+
+async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
+    """Phase 1: Retrieve prior knowledge from Neo4j."""
+    user_query = state["user_query"]
+    req_id = state["req_id"]
+    progress: list[str] = ["**[Phase 1: Retrieving Prior Knowledge]**\n"]
+
+    query_entities = [w for w in user_query.split() if len(w) > 3][:5]
+
+    prior_conditions, graph_neighbors = await asyncio.gather(
+        _retrieve_related(user_query, MAX_PRIOR_CONDITIONS),
+        _retrieve_graph_neighbors(query_entities, max_hops=2, limit=10),
+    )
+
+    if prior_conditions:
+        progress.append(f"Found {len(prior_conditions)} relevant prior findings:\n")
+        for pc in prior_conditions[:5]:
+            progress.append(f"  - {pc['fact'][:100]}...\n")
+        if len(prior_conditions) > 5:
+            progress.append(f"  ... and {len(prior_conditions) - 5} more\n")
+    else:
+        progress.append("No prior knowledge found via text search.\n")
+
+    if graph_neighbors:
+        progress.append(f"Found {len(graph_neighbors)} related findings via knowledge graph:\n")
+        for gn in graph_neighbors[:3]:
+            progress.append(f"  - {gn['fact'][:80]}... (via entity: {gn.get('via_entity', '?')})\n")
+    else:
+        progress.append("No graph neighbors found.\n")
+
+    return {
+        "prior_conditions": prior_conditions,
+        "graph_neighbors": graph_neighbors,
+        "progress_log": progress,
+        "phase": "plan",
+    }
+
+
+async def pdr_node_plan(state: PersistentResearchState) -> dict:
+    """Phase 2: Plan research angles."""
+    req_id = state["req_id"]
+    progress: list[str] = [
+        f"\n**[Phase 2: Planning Research Angles]**\n",
+        f"Using {SUBAGENT_MODEL} for planning...\n",
+    ]
+
+    plan = await plan_research(
+        state["user_query"], state["prior_conditions"], state["graph_neighbors"], req_id,
+    )
+    angles = plan["angles"]
+
+    progress.append(f"Decomposed into {len(angles)} research angles:\n")
+    for i, angle in enumerate(angles, 1):
+        bridge_tag = " [BRIDGE]" if angle.get("is_bridge") else ""
+        progress.append(f"  {i}. **{angle['title']}**{bridge_tag}: {angle.get('description', '')[:80]}\n")
+
+    return {"angles": angles, "progress_log": progress, "phase": "subagents"}
+
+
+async def pdr_node_subagents(state: PersistentResearchState) -> dict:
+    """Phase 3: Parallel subagent research."""
+    req_id = state["req_id"]
+    angles = state["angles"]
+    n_agents = len(angles)
+    progress: list[str] = [
+        f"\n**[Phase 3: Launching {n_agents} Parallel Subagents]** "
+        f"(model: {SUBAGENT_MODEL}, max_turns: {MAX_SUBAGENT_TURNS}, "
+        f"recursive_depth: {MAX_RECURSIVE_DEPTH})\n"
+    ]
+
+    progress_queue: asyncio.Queue = asyncio.Queue()
+
+    subagent_tasks = [
+        asyncio.create_task(
+            run_subagent(angle, i, progress_queue, req_id, state["user_query"], depth=0)
+        )
+        for i, angle in enumerate(angles)
+    ]
+
+    pending_tasks = set(subagent_tasks)
+    completed_count = 0
+
+    while completed_count < n_agents and pending_tasks:
+        done_tasks, _ = await asyncio.wait(
+            pending_tasks, timeout=0, return_when=asyncio.FIRST_COMPLETED
+        )
+        for t in done_tasks:
+            pending_tasks.discard(t)
+            if t.exception() is not None:
+                completed_count += 1
+                idx = subagent_tasks.index(t)
+                log.error(f"[{req_id}] Subagent {idx} crashed: {t.exception()}")
+                progress.append(f"  Subagent {idx + 1} failed: {t.exception()}\n")
+
+        try:
+            msg = await asyncio.wait_for(progress_queue.get(), timeout=2.0)
+        except asyncio.TimeoutError:
+            if all(t.done() for t in subagent_tasks):
+                break
+            continue
+
+        if msg["type"] == "progress":
+            progress.append(msg["text"])
+        elif msg["type"] == "tool":
+            progress.append(msg["text"])
+        elif msg["type"] == "done":
+            completed_count += 1
+            progress.append(
+                f"  Subagent {msg['subagent'] + 1} ({msg['angle']}) complete: "
+                f"{msg['conditions_count']} atomic conditions\n"
+            )
+
+    subagent_results: list[SubagentResult] = []
+    for task in subagent_tasks:
+        if task.done() and task.exception() is None:
+            try:
+                subagent_results.append(task.result())
+            except Exception as e:
+                log.error(f"[{req_id}] Failed to collect subagent result: {e}")
+        elif task.done() and task.exception() is not None:
+            log.error(f"[{req_id}] Subagent task exception: {task.exception()}")
+        else:
+            task.cancel()
+            log.warning(f"[{req_id}] Cancelled hanging subagent task")
+
+    all_conditions: list[AtomicCondition] = []
+    total_turns = 0
+    total_tools = 0
+    total_children = 0
+    for sr in subagent_results:
+        all_conditions.extend(sr.conditions)
+        total_turns += sr.turns_used
+        total_tools += sr.tool_calls_made
+        total_children += sr.spawned_children
+
+    progress.append(
+        f"\n**Research Summary:** {len(all_conditions)} atomic conditions, "
+        f"{total_turns} total turns, {total_tools} tool calls"
+    )
+    if total_children > 0:
+        progress.append(f", {total_children} recursive sub-subagents spawned")
+    progress.append("\n")
+
+    return {
+        "subagent_results": subagent_results,
+        "all_conditions": all_conditions,
+        "total_turns": total_turns,
+        "total_tools": total_tools,
+        "total_children": total_children,
+        "progress_log": progress,
+        "phase": "entities",
+    }
+
+
+async def pdr_node_entities(state: PersistentResearchState) -> dict:
+    """Phase 4: Entity extraction + knowledge graph update."""
+    req_id = state["req_id"]
+    all_conditions = state["all_conditions"]
+    progress: list[str] = []
+
+    if all_conditions:
+        progress.append("\n**[Phase 4: Knowledge Graph Update]**\n")
+        progress.append("Extracting entities and relationships...\n")
+
+        entities, relationships = await extract_entities_from_conditions(all_conditions, req_id)
+
+        if entities or relationships:
+            _log_entities_jsonl(req_id, entities, relationships)
+            ent_stored, rel_stored = await _store_entities_neo4j(req_id, entities, relationships)
+            progress.append(
+                f"Extracted {len(entities)} entities, {len(relationships)} relationships. "
+                f"Stored {ent_stored} new entities, {rel_stored} new edges.\n"
+            )
+        else:
+            progress.append("No entities extracted.\n")
+
+    return {"progress_log": progress, "phase": "verify"}
+
+
+async def pdr_node_verify(state: PersistentResearchState) -> dict:
+    """Phase 5: Citation verification."""
+    req_id = state["req_id"]
+    all_conditions = list(state["all_conditions"])
+    progress: list[str] = []
+
+    if all_conditions and len(all_conditions) >= 2:
+        progress.append("\n**[Phase 5: Citation Verification]**\n")
+        progress.append("Verifying claims and detecting contradictions...\n")
+
+        all_conditions = await verify_conditions(all_conditions, req_id)
+
+        high_conf = sum(1 for c in all_conditions if c.confidence >= 0.7)
+        low_conf = sum(1 for c in all_conditions if c.confidence < 0.4)
+        progress.append(
+            f"Verification complete: {high_conf} high-confidence, "
+            f"{low_conf} low-confidence conditions.\n"
+        )
+
+    return {"all_conditions": all_conditions, "progress_log": progress, "phase": "reflect"}
+
+
+async def pdr_node_reflect(state: PersistentResearchState) -> dict:
+    """Phase 6: AoT Reflection."""
+    req_id = state["req_id"]
+    all_conditions = list(state["all_conditions"])
+    user_query = state["user_query"]
+    progress: list[str] = []
+    reflection: dict = {}
+
+    if all_conditions:
+        progress.append("\n**[Phase 6: AoT Reflection]**\n")
+        reflection = await reflect_on_conditions(all_conditions, user_query, req_id)
+        quality = reflection.get("quality_score", 0.5)
+        issues = reflection.get("issues", [])
+        progress.append(f"Decomposition quality: {quality:.1f}/1.0\n")
+        if issues:
+            progress.append(f"Issues found: {len(issues)}\n")
+            for issue in issues[:3]:
+                progress.append(f"  - [{issue.get('type', '?')}] {issue.get('description', '')[:100]}\n")
+
+        suggested = reflection.get("suggested_queries", [])
+        if quality < 0.5 and suggested:
+            progress.append("Quality below threshold -- running targeted additional research...\n")
+            extra_results = await asyncio.gather(
+                *[tool_searxng_search(q) for q in suggested[:2]],
+                return_exceptions=True,
+            )
+            for q, sr in zip(suggested[:2], extra_results):
+                if isinstance(sr, str) and not sr.startswith("Search error"):
+                    all_conditions.append(AtomicCondition(
+                        fact=f"[Reflection gap fill] {sr[:300]}",
+                        angle="reflection",
+                        confidence=0.4,
+                    ))
+
+    return {
+        "all_conditions": all_conditions,
+        "reflection": reflection,
+        "progress_log": progress,
+        "phase": "persist",
+    }
+
+
+async def pdr_node_persist(state: PersistentResearchState) -> dict:
+    """Phase 7: Persist findings to Neo4j + JSONL."""
+    req_id = state["req_id"]
+    user_query = state["user_query"]
+    all_conditions = state["all_conditions"]
+    progress: list[str] = []
+
+    if all_conditions:
+        progress.append("\n**[Phase 7: Persisting Knowledge]**\n")
+        _log_conditions_jsonl(req_id, user_query, all_conditions)
+        stored = await _store_conditions_neo4j(req_id, user_query, all_conditions)
+        progress.append(f"Stored {stored} conditions to persistent knowledge base.\n")
+
+    return {"progress_log": progress, "phase": "synthesize"}
+
+
+async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
+    """Phase 8: Draft-Synthesis-Revision loop."""
+    req_id = state["req_id"]
+    progress: list[str] = [
+        f"\n**[Phase 8: Draft-Synthesis-Revision]** (model: {UPSTREAM_MODEL})\n",
+        "Phase 8a: Generating draft synthesis...\n",
+    ]
+
+    final_answer = await synthesize_with_revision(
+        state["user_query"], state["subagent_results"], state["prior_conditions"], req_id,
+    )
+
+    progress.append("Phase 8b: Critic review complete.\n")
+    progress.append("Phase 8c: Final revision complete.\n")
+
+    elapsed = time.monotonic() - state["start_time"]
+    n_agents = len(state["angles"])
+    all_conditions = state["all_conditions"]
+    total_children = state["total_children"]
+
+    progress.append(
+        f"\nResearch complete in {elapsed:.1f}s "
+        f"({len(all_conditions)} conditions from {n_agents} subagents"
+    )
+    if total_children > 0:
+        progress.append(f" + {total_children} recursive sub-subagents")
+    progress.append(")\n")
+
+    return {"final_answer": final_answer, "progress_log": progress, "phase": "done"}
+
+
+def build_persistent_research_graph() -> Any:
+    """Build the persistent research LangGraph.
+
+    Graph topology (linear 8-phase pipeline)::
+
+        START -> retrieve -> plan -> subagents -> entities -> verify
+              -> reflect -> persist -> synthesize -> END
+    """
+    graph = StateGraph(PersistentResearchState)
+
+    graph.add_node("retrieve", pdr_node_retrieve)
+    graph.add_node("plan", pdr_node_plan)
+    graph.add_node("subagents", pdr_node_subagents)
+    graph.add_node("entities", pdr_node_entities)
+    graph.add_node("verify", pdr_node_verify)
+    graph.add_node("reflect", pdr_node_reflect)
+    graph.add_node("persist", pdr_node_persist)
+    graph.add_node("synthesize", pdr_node_synthesize)
+
+    graph.add_edge(START, "retrieve")
+    graph.add_edge("retrieve", "plan")
+    graph.add_edge("plan", "subagents")
+    graph.add_edge("subagents", "entities")
+    graph.add_edge("entities", "verify")
+    graph.add_edge("verify", "reflect")
+    graph.add_edge("reflect", "persist")
+    graph.add_edge("persist", "synthesize")
+    graph.add_edge("synthesize", END)
+
+    return graph.compile()
+
+
+_persistent_research_graph = build_persistent_research_graph()
+
+
+# ============================================================================
 # Main Orchestrator
 # ============================================================================
 
@@ -2306,7 +2672,7 @@ async def run_persistent_research(
     original_body: dict,
     req_id: str,
 ) -> AsyncGenerator[str, None]:
-    """Orchestrate the full persistent deep research pipeline."""
+    """Orchestrate the full persistent deep research pipeline via LangGraph."""
     model_id = original_body.get("model", "persistent-miroflow")
     request_id = f"chatcmpl-pdr-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
@@ -2341,236 +2707,61 @@ async def run_persistent_research(
 
     log.info(f"[{req_id}] Starting persistent deep research: {user_query[:100]}")
 
+    initial_state: dict[str, Any] = {
+        "req_id": req_id,
+        "user_query": user_query,
+        "start_time": start_time,
+        "prior_conditions": [],
+        "graph_neighbors": [],
+        "angles": [],
+        "subagent_results": [],
+        "all_conditions": [],
+        "total_turns": 0,
+        "total_tools": 0,
+        "total_children": 0,
+        "reflection": {},
+        "final_answer": "",
+        "progress_log": [],
+        "phase": "retrieve",
+    }
+
     yield chunk("<think>\n")
 
+    config = {"configurable": {"thread_id": req_id}}
+    last_progress_idx = 0
+    final_state = initial_state
+
     try:
-        # ================================================================
-        # Phase 1: Retrieve Prior Knowledge (Neo4j fulltext + graph)
-        # ================================================================
-        yield chunk("**[Phase 1: Retrieving Prior Knowledge]**\n")
-
-        query_entities = [w for w in user_query.split() if len(w) > 3][:5]
-
-        prior_conditions, graph_neighbors = await asyncio.gather(
-            _retrieve_related(user_query, MAX_PRIOR_CONDITIONS),
-            _retrieve_graph_neighbors(query_entities, max_hops=2, limit=10),
-        )
-
-        if prior_conditions:
-            yield chunk(f"Found {len(prior_conditions)} relevant prior findings:\n")
-            for pc in prior_conditions[:5]:
-                yield chunk(f"  - {pc['fact'][:100]}...\n")
-            if len(prior_conditions) > 5:
-                yield chunk(f"  ... and {len(prior_conditions) - 5} more\n")
-        else:
-            yield chunk("No prior knowledge found via text search.\n")
-
-        if graph_neighbors:
-            yield chunk(f"Found {len(graph_neighbors)} related findings via knowledge graph:\n")
-            for gn in graph_neighbors[:3]:
-                yield chunk(f"  - {gn['fact'][:80]}... (via entity: {gn.get('via_entity', '?')})\n")
-        else:
-            yield chunk("No graph neighbors found.\n")
-
-        # ================================================================
-        # Phase 2: Planning
-        # ================================================================
-        yield chunk("\n**[Phase 2: Planning Research Angles]**\n")
-        yield chunk(f"Using {SUBAGENT_MODEL} for planning...\n")
-
-        plan = await plan_research(user_query, prior_conditions, graph_neighbors, req_id)
-        angles = plan["angles"]
-
-        yield chunk(f"Decomposed into {len(angles)} research angles:\n")
-        for i, angle in enumerate(angles, 1):
-            bridge_tag = " [BRIDGE]" if angle.get("is_bridge") else ""
-            yield chunk(f"  {i}. **{angle['title']}**{bridge_tag}: {angle.get('description', '')[:80]}\n")
-
-        # ================================================================
-        # Phase 3: Parallel Subagent Research
-        # ================================================================
-        n_agents = len(angles)
-        yield chunk(
-            f"\n**[Phase 3: Launching {n_agents} Parallel Subagents]** "
-            f"(model: {SUBAGENT_MODEL}, max_turns: {MAX_SUBAGENT_TURNS}, "
-            f"recursive_depth: {MAX_RECURSIVE_DEPTH})\n"
-        )
-
-        progress_queue: asyncio.Queue = asyncio.Queue()
-
-        subagent_tasks = [
-            asyncio.create_task(
-                run_subagent(angle, i, progress_queue, req_id, user_query, depth=0)
-            )
-            for i, angle in enumerate(angles)
-        ]
-
-        pending_tasks = set(subagent_tasks)
-        completed_count = 0
-
-        while completed_count < n_agents and pending_tasks:
-            done_tasks, _ = await asyncio.wait(
-                pending_tasks, timeout=0, return_when=asyncio.FIRST_COMPLETED
-            )
-            for t in done_tasks:
-                pending_tasks.discard(t)
-                if t.exception() is not None:
-                    completed_count += 1
-                    idx = subagent_tasks.index(t)
-                    log.error(f"[{req_id}] Subagent {idx} crashed: {t.exception()}")
-                    yield chunk(f"  Subagent {idx + 1} failed: {t.exception()}\n")
-
+        # Wrap astream iteration with keepalive: emit a dot every 8s when
+        # no state update arrives (e.g. during long subagent runs) to prevent
+        # reverse proxies and HTTP clients from timing out the SSE stream.
+        KEEPALIVE_INTERVAL = 8  # seconds
+        astream_iter = _persistent_research_graph.astream(
+            initial_state, config=config, stream_mode="values",
+        ).__aiter__()
+        done = False
+        while not done:
             try:
-                msg = await asyncio.wait_for(progress_queue.get(), timeout=2.0)
+                state_update = await asyncio.wait_for(
+                    astream_iter.__anext__(), timeout=KEEPALIVE_INTERVAL,
+                )
             except asyncio.TimeoutError:
-                if all(t.done() for t in subagent_tasks):
-                    break
+                yield chunk(".")
                 continue
+            except StopAsyncIteration:
+                done = True
+                break
 
-            if msg["type"] == "progress":
-                yield chunk(msg["text"])
-            elif msg["type"] == "tool":
-                yield chunk(msg["text"])
-            elif msg["type"] == "done":
-                completed_count += 1
-                yield chunk(
-                    f"  Subagent {msg['subagent'] + 1} ({msg['angle']}) complete: "
-                    f"{msg['conditions_count']} atomic conditions\n"
-                )
-
-        subagent_results: list[SubagentResult] = []
-        for task in subagent_tasks:
-            if task.done() and task.exception() is None:
-                try:
-                    subagent_results.append(task.result())
-                except Exception as e:
-                    log.error(f"[{req_id}] Failed to collect subagent result: {e}")
-            elif task.done() and task.exception() is not None:
-                log.error(f"[{req_id}] Subagent task exception: {task.exception()}")
-            else:
-                task.cancel()
-                log.warning(f"[{req_id}] Cancelled hanging subagent task")
-
-        all_conditions: list[AtomicCondition] = []
-        total_turns = 0
-        total_tools = 0
-        total_children = 0
-        for sr in subagent_results:
-            all_conditions.extend(sr.conditions)
-            total_turns += sr.turns_used
-            total_tools += sr.tool_calls_made
-            total_children += sr.spawned_children
-
-        yield chunk(
-            f"\n**Research Summary:** {len(all_conditions)} atomic conditions, "
-            f"{total_turns} total turns, {total_tools} tool calls"
-        )
-        if total_children > 0:
-            yield chunk(f", {total_children} recursive sub-subagents spawned")
-        yield chunk("\n")
-
-        # ================================================================
-        # Phase 4: Entity Extraction + Knowledge Graph Update
-        # ================================================================
-        if all_conditions:
-            yield chunk("\n**[Phase 4: Knowledge Graph Update]**\n")
-            yield chunk("Extracting entities and relationships...\n")
-
-            entities, relationships = await extract_entities_from_conditions(all_conditions, req_id)
-
-            if entities or relationships:
-                _log_entities_jsonl(req_id, entities, relationships)
-                ent_stored, rel_stored = await _store_entities_neo4j(
-                    req_id, entities, relationships
-                )
-                yield chunk(
-                    f"Extracted {len(entities)} entities, {len(relationships)} relationships. "
-                    f"Stored {ent_stored} new entities, {rel_stored} new edges.\n"
-                )
-            else:
-                yield chunk("No entities extracted.\n")
-
-        # ================================================================
-        # Phase 5: Citation Verification
-        # ================================================================
-        if all_conditions and len(all_conditions) >= 2:
-            yield chunk("\n**[Phase 5: Citation Verification]**\n")
-            yield chunk("Verifying claims and detecting contradictions...\n")
-
-            all_conditions = await verify_conditions(all_conditions, req_id)
-
-            high_conf = sum(1 for c in all_conditions if c.confidence >= 0.7)
-            low_conf = sum(1 for c in all_conditions if c.confidence < 0.4)
-            yield chunk(
-                f"Verification complete: {high_conf} high-confidence, "
-                f"{low_conf} low-confidence conditions.\n"
-            )
-
-        # ================================================================
-        # Phase 6: AoT Reflection
-        # ================================================================
-        if all_conditions:
-            yield chunk("\n**[Phase 6: AoT Reflection]**\n")
-            reflection = await reflect_on_conditions(all_conditions, user_query, req_id)
-            quality = reflection.get("quality_score", 0.5)
-            issues = reflection.get("issues", [])
-            yield chunk(f"Decomposition quality: {quality:.1f}/1.0\n")
-            if issues:
-                yield chunk(f"Issues found: {len(issues)}\n")
-                for issue in issues[:3]:
-                    yield chunk(f"  - [{issue.get('type', '?')}] {issue.get('description', '')[:100]}\n")
-
-            suggested = reflection.get("suggested_queries", [])
-            if quality < 0.5 and suggested:
-                yield chunk("Quality below threshold -- running targeted additional research...\n")
-                extra_results = await asyncio.gather(
-                    *[tool_searxng_search(q) for q in suggested[:2]],
-                    return_exceptions=True,
-                )
-                for q, sr in zip(suggested[:2], extra_results):
-                    if isinstance(sr, str) and not sr.startswith("Search error"):
-                        all_conditions.append(AtomicCondition(
-                            fact=f"[Reflection gap fill] {sr[:300]}",
-                            angle="reflection",
-                            confidence=0.4,
-                        ))
-
-        # ================================================================
-        # Phase 7: Persist Findings
-        # ================================================================
-        if all_conditions:
-            yield chunk("\n**[Phase 7: Persisting Knowledge]**\n")
-            _log_conditions_jsonl(req_id, user_query, all_conditions)
-            stored = await _store_conditions_neo4j(req_id, user_query, all_conditions)
-            yield chunk(f"Stored {stored} conditions to persistent knowledge base.\n")
-
-        # ================================================================
-        # Phase 8: Draft-Synthesis-Revision Loop
-        # ================================================================
-        yield chunk(f"\n**[Phase 8: Draft-Synthesis-Revision]** (model: {UPSTREAM_MODEL})\n")
-        yield chunk("Phase 8a: Generating draft synthesis...\n")
-
-        final_answer = await synthesize_with_revision(
-            user_query, subagent_results, prior_conditions, req_id,
-        )
-
-        yield chunk("Phase 8b: Critic review complete.\n")
-        yield chunk("Phase 8c: Final revision complete.\n")
-
-        elapsed = time.monotonic() - start_time
-        yield chunk(
-            f"\nResearch complete in {elapsed:.1f}s "
-            f"({len(all_conditions)} conditions from {n_agents} subagents"
-        )
-        if total_children > 0:
-            yield chunk(f" + {total_children} recursive sub-subagents")
-        yield chunk(")\n")
+            final_state = state_update
+            progress_list = state_update.get("progress_log", [])
+            for msg in progress_list[last_progress_idx:]:
+                yield chunk(msg)
+            last_progress_idx = len(progress_list)
 
         yield chunk("\n</think>\n\n")
-
+        final_answer = final_state.get("final_answer", "(No answer generated)")
         for i in range(0, len(final_answer), 200):
             yield chunk(final_answer[i:i + 200])
-
         yield chunk("", finish_reason="stop")
         yield "data: [DONE]\n\n"
 
@@ -2647,6 +2838,86 @@ async def knowledge_stats():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.post("/v1/verify")
+async def verify_research(request: Request):
+    """Verify an LLM output using the Veritas Inquisitor swarm.
+
+    Request body:
+    {
+        "target_text": "text to verify",
+        "original_query": "original user query",
+        "stream": true/false  (default: true)
+    }
+    """
+    req_id = f"req-{uuid.uuid4().hex[:8]}"
+
+    try:
+        body = await request.json()
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": f"Invalid request body: {e}"}},
+        )
+
+    target_text = body.get("target_text", "")
+    original_query = body.get("original_query", "")
+    stream = body.get("stream", True)
+
+    if not target_text:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": "target_text is required"}},
+        )
+
+    log.info(f"[{req_id}] Verify request: {len(target_text)} chars")
+    tracker.start(req_id, phase="verify", target_chars=len(target_text))
+
+    if not limiter.available():
+        tracker.finish(req_id)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": {
+                    "message": (
+                        f"Too many concurrent persistent research sessions "
+                        f"({limiter.max_concurrent}). Try again shortly."
+                    ),
+                    "type": "rate_limit",
+                }
+            },
+        )
+
+    if stream:
+        async def _stream_verify():
+            async with limiter.hold():
+                try:
+                    async for event in veritas_inquisitor.stream_verification(
+                        target_text, original_query, req_id,
+                    ):
+                        yield event
+                finally:
+                    tracker.finish(req_id)
+
+        return StreamingResponse(
+            _stream_verify(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    else:
+        try:
+            async with limiter.hold():
+                result = await veritas_inquisitor.verify_output(
+                    target_text, original_query, req_id,
+                )
+            return JSONResponse(result)
+        finally:
+            tracker.finish(req_id)
+
+
 @app.post("/v1/chat/completions")
 @app.post("/chat/completions")
 async def chat_completions(request: Request):
@@ -2715,10 +2986,13 @@ async def chat_completions(request: Request):
 
             async def _guarded_ingest():
                 async with limiter.hold():
-                    async for event in run_document_ingestion(
-                        user_text, body, req_id
-                    ):
-                        yield event
+                    try:
+                        async for event in run_document_ingestion(
+                            user_text, body, req_id
+                        ):
+                            yield event
+                    finally:
+                        tracker.finish(req_id)
 
             generator = _guarded_ingest()
         else:

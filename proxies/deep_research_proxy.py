@@ -29,11 +29,12 @@ import time
 import traceback
 import uuid
 from datetime import datetime, timezone
-from typing import AsyncGenerator, Optional
+from typing import Annotated, Any, AsyncGenerator, Optional, TypedDict
 
 import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
+from langgraph.graph import END, START, StateGraph
 
 from shared import (
     ConcurrencyLimiter,
@@ -647,7 +648,7 @@ def _summarize_tool_result(tool_name: str, arguments: dict, result: str, duratio
 
 
 # ============================================================================
-# Agent Loop + Streaming
+# LangGraph State & Research Graph
 # ============================================================================
 
 PUSHBACK_MESSAGES = [
@@ -657,20 +658,354 @@ PUSHBACK_MESSAGES = [
 ]
 
 
+def _append_log(left: list[str], right: list[str]) -> list[str]:
+    """Reducer: append new progress messages to the log."""
+    return left + right
+
+
+class ResearchState(TypedDict):
+    """LangGraph state for the deep research agent loop."""
+    # Immutable inputs
+    req_id: str
+    model_id: str
+    # Agent conversation
+    agent_messages: list[dict]
+    # Tracking counters
+    turn: int
+    consecutive_errors: int
+    total_tool_calls: int
+    turns_with_tools: int
+    consecutive_no_tool_turns: int
+    used_queries: list[str]  # serialised set (list for JSON compat)
+    start_time: float
+    # LLM result from last call
+    last_result: dict
+    # Progress log for streaming
+    progress_log: Annotated[list[str], _append_log]
+    # Control flow
+    phase: str   # "call_llm", "process_result", "execute_tools", "force_answer", "done"
+    final_answer: str
+    finish_reason: str  # "stop", "error", "circuit_breaker"
+
+
+async def node_init_research(state: ResearchState) -> dict:
+    """Build the initial agent messages with system prompt."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(date=today)
+    return {
+        "agent_messages": [{"role": "system", "content": system_prompt}] + state["agent_messages"],
+        "turn": 0,
+        "consecutive_errors": 0,
+        "total_tool_calls": 0,
+        "turns_with_tools": 0,
+        "consecutive_no_tool_turns": 0,
+        "used_queries": [],
+        "start_time": time.monotonic(),
+        "last_result": {},
+        "phase": "call_llm",
+        "final_answer": "",
+        "finish_reason": "",
+    }
+
+
+async def node_call_llm(state: ResearchState) -> dict:
+    """Call the upstream LLM with the current agent messages."""
+    turn = state["turn"] + 1
+    req_id = state["req_id"]
+    elapsed = time.monotonic() - state["start_time"]
+    log.info(f"[{req_id}] Turn {turn}/{MAX_AGENT_TURNS} ({elapsed:.1f}s elapsed)")
+
+    include_tools = turn <= MAX_AGENT_TURNS
+    result = await call_llm(state["agent_messages"], req_id, turn, include_tools)
+
+    progress = [f"\n**[Turn {turn}/{MAX_AGENT_TURNS}]** "]
+
+    return {
+        "turn": turn,
+        "last_result": result,
+        "phase": "process_result",
+        "progress_log": progress,
+    }
+
+
+async def node_process_result(state: ResearchState) -> dict:
+    """Process the LLM result: handle errors, tool calls, or final answer."""
+    result = state["last_result"]
+    req_id = state["req_id"]
+    turn = state["turn"]
+    consecutive_errors = state["consecutive_errors"]
+    consecutive_no_tool_turns = state["consecutive_no_tool_turns"]
+    turns_with_tools = state["turns_with_tools"]
+    total_tool_calls = state["total_tool_calls"]
+    agent_messages = list(state["agent_messages"])
+    progress: list[str] = []
+
+    # --- Error handling ---
+    if "error" in result:
+        consecutive_errors += 1
+        progress.append(f"\u26a0\ufe0f {result['error']}\n")
+
+        if consecutive_errors >= 3:
+            log.error(f"[{req_id}] Circuit breaker: {consecutive_errors} consecutive errors")
+            return {
+                "consecutive_errors": consecutive_errors,
+                "phase": "done",
+                "finish_reason": "circuit_breaker",
+                "final_answer": (
+                    f"**Research failed \u2014 upstream LLM is unavailable.**\n\n"
+                    f"**Error:** `{result['error']}`\n\n"
+                    f"The API returned errors on {consecutive_errors} consecutive turns."
+                ),
+                "progress_log": progress,
+            }
+
+        agent_messages.append({"role": "assistant", "content": result["error"]})
+        agent_messages.append({"role": "user", "content": "There was an error. Please try a different approach."})
+        return {
+            "consecutive_errors": consecutive_errors,
+            "agent_messages": agent_messages,
+            "phase": "call_llm",
+            "progress_log": progress,
+        }
+
+    consecutive_errors = 0
+    content = result["content"]
+    tool_calls = result.get("tool_calls")
+
+    # Stream reasoning
+    if content:
+        if len(content) > 500:
+            trimmed = content[:400] + f"\n[...{len(content) - 500} chars trimmed...]\n" + content[-100:]
+            progress.append(f"{trimmed}\n")
+        else:
+            progress.append(f"{content}\n")
+
+    # --- No tool calls = model wants to stop ---
+    if not tool_calls:
+        consecutive_no_tool_turns += 1
+        can_stop = (
+            turn >= MAX_AGENT_TURNS - 1
+            or consecutive_no_tool_turns >= 3
+            or turns_with_tools >= 10
+        )
+
+        if not can_stop:
+            log.info(f"[{req_id}] Turn {turn}: Pushing model to continue")
+            progress.append(f"\n\u21bb {turns_with_tools} research rounds done \u2014 pushing deeper...\n")
+            agent_messages.append({"role": "assistant", "content": content})
+            push_msg = PUSHBACK_MESSAGES[(consecutive_no_tool_turns - 1) % len(PUSHBACK_MESSAGES)]
+            agent_messages.append({"role": "user", "content": push_msg})
+            return {
+                "consecutive_errors": consecutive_errors,
+                "consecutive_no_tool_turns": consecutive_no_tool_turns,
+                "agent_messages": agent_messages,
+                "phase": "call_llm",
+                "progress_log": progress,
+            }
+
+        # Model is done
+        progress.append(
+            f"\nResearch complete ({turns_with_tools} rounds, "
+            f"{total_tool_calls} tool calls). Generating answer...\n"
+        )
+        return {
+            "consecutive_errors": consecutive_errors,
+            "consecutive_no_tool_turns": consecutive_no_tool_turns,
+            "phase": "done",
+            "finish_reason": "stop",
+            "final_answer": content if content else "(No answer generated)",
+            "progress_log": progress,
+        }
+
+    # --- Has tool calls -> route to execute_tools ---
+    turns_with_tools += 1
+    consecutive_no_tool_turns = 0
+    assistant_msg: dict = {"role": "assistant", "content": content or None, "tool_calls": tool_calls}
+    agent_messages.append(assistant_msg)
+
+    return {
+        "consecutive_errors": consecutive_errors,
+        "turns_with_tools": turns_with_tools,
+        "consecutive_no_tool_turns": consecutive_no_tool_turns,
+        "agent_messages": agent_messages,
+        "phase": "execute_tools",
+        "progress_log": progress,
+    }
+
+
+async def node_execute_tools(state: ResearchState) -> dict:
+    """Execute tool calls from the LLM response in parallel."""
+    result = state["last_result"]
+    req_id = state["req_id"]
+    turn = state["turn"]
+    tool_calls = result.get("tool_calls", [])
+    used_queries_set = set(state["used_queries"])
+    agent_messages = list(state["agent_messages"])
+    total_tool_calls = state["total_tool_calls"]
+    progress: list[str] = []
+
+    calls_to_run: list[tuple[str, str, dict]] = []
+    skipped_ids: dict[str, str] = {}
+
+    for tc in tool_calls:
+        tc_id = tc.get("id", f"call_{uuid.uuid4().hex[:8]}")
+        func = tc.get("function", {})
+        tool_name = func.get("name", "unknown")
+        arguments_str = func.get("arguments", "{}")
+
+        try:
+            arguments = json.loads(arguments_str) if isinstance(arguments_str, str) else arguments_str
+        except json.JSONDecodeError:
+            arguments = {}
+
+        query_key = f"{tool_name}:{json.dumps(arguments, sort_keys=True)}"
+        if query_key in used_queries_set:
+            log.warning(f"[{req_id}] Turn {turn}: Duplicate tool call: {tool_name}")
+            progress.append(f"\u26a0\ufe0f Skipping duplicate {tool_name} call.\n")
+            skipped_ids[tc_id] = (
+                "Duplicate call skipped. Please use previously gathered "
+                "information or try a different query."
+            )
+            continue
+
+        used_queries_set.add(query_key)
+
+        if tool_name == "searxng_search":
+            progress.append(f"\U0001f50d Searching: `{arguments.get('query', '')}`\n")
+        elif tool_name == "fetch_webpage":
+            progress.append(f"\U0001f4c4 Reading: `{arguments.get('url', '')[:80]}`\n")
+        elif tool_name == "python_exec":
+            code_preview = arguments.get('code', '')[:100].replace('\n', ' ')
+            progress.append(f"\U0001f40d Running code: `{code_preview}`\n")
+        else:
+            progress.append(f"\U0001f527 Calling: {tool_name}\n")
+
+        calls_to_run.append((tc_id, tool_name, arguments))
+
+    # Skipped duplicates
+    for tc_id, reason in skipped_ids.items():
+        agent_messages.append({"role": "tool", "tool_call_id": tc_id, "content": reason})
+
+    # Execute
+    if calls_to_run:
+        results = await execute_tools_parallel(calls_to_run)
+        total_tool_calls += len(results)
+
+        for tc_id, tool_name, tool_result, tool_duration in results:
+            log.info(f"[{req_id}] Turn {turn}: Tool {tool_name} in {tool_duration:.1f}s")
+            args_for_summary = next((a for i, n, a in calls_to_run if i == tc_id), {})
+            summary = _summarize_tool_result(tool_name, args_for_summary, tool_result, tool_duration)
+            progress.append(f"  \u2192 {summary}\n")
+            agent_messages.append({"role": "tool", "tool_call_id": tc_id, "content": tool_result})
+
+    # Check if we need to force answer (max turns)
+    next_phase = "call_llm"
+    if state["turn"] >= MAX_AGENT_TURNS:
+        next_phase = "force_answer"
+
+    return {
+        "agent_messages": agent_messages,
+        "used_queries": list(used_queries_set),
+        "total_tool_calls": total_tool_calls,
+        "phase": next_phase,
+        "progress_log": progress,
+    }
+
+
+async def node_force_answer(state: ResearchState) -> dict:
+    """Force a final answer when max turns are reached."""
+    req_id = state["req_id"]
+    log.info(f"[{req_id}] Max turns ({MAX_AGENT_TURNS}) reached, forcing final answer")
+
+    agent_messages = list(state["agent_messages"])
+    agent_messages.append({
+        "role": "user",
+        "content": (
+            "You have reached the maximum number of research turns. Based on ALL "
+            "the information gathered so far, provide your final comprehensive answer. "
+            "Do NOT call any tools."
+        ),
+    })
+
+    final_result = await call_llm(agent_messages, req_id, MAX_AGENT_TURNS + 1, include_tools=False)
+
+    final_answer = (
+        final_result.get("content", "") if "error" not in final_result
+        else final_result["error"]
+    )
+
+    return {
+        "phase": "done",
+        "finish_reason": "stop",
+        "final_answer": final_answer,
+        "progress_log": [f"\n\u23f0 Max research turns reached. Generating answer...\n"],
+    }
+
+
+def route_research(state: ResearchState) -> str:
+    """Conditional edge router for the research graph."""
+    phase = state.get("phase", "done")
+    if phase == "call_llm":
+        return "call_llm"
+    if phase == "execute_tools":
+        return "execute_tools"
+    if phase == "force_answer":
+        return "force_answer"
+    return END  # "done" or unknown
+
+
+def build_research_graph() -> Any:
+    """Build the deep research LangGraph.
+
+    Graph topology::
+
+        START -> init -> call_llm -> process_result -+-> call_llm  (loop: error retry / pushback)
+                                                     +-> execute_tools -> call_llm (loop)
+                                                     |                 -> force_answer -> END
+                                                     +-> END (done)
+    """
+    graph = StateGraph(ResearchState)
+
+    graph.add_node("init", node_init_research)
+    graph.add_node("call_llm", node_call_llm)
+    graph.add_node("process_result", node_process_result)
+    graph.add_node("execute_tools", node_execute_tools)
+    graph.add_node("force_answer", node_force_answer)
+
+    graph.add_edge(START, "init")
+    graph.add_edge("init", "call_llm")
+    graph.add_edge("call_llm", "process_result")
+
+    graph.add_conditional_edges(
+        "process_result",
+        route_research,
+        {"call_llm": "call_llm", "execute_tools": "execute_tools", END: END},
+    )
+    graph.add_conditional_edges(
+        "execute_tools",
+        route_research,
+        {"call_llm": "call_llm", "force_answer": "force_answer", END: END},
+    )
+    graph.add_edge("force_answer", END)
+
+    return graph.compile()
+
+
+_research_graph = build_research_graph()
+
+
 async def run_deep_research(
     user_messages: list[dict],
     original_body: dict,
     req_id: str,
 ) -> AsyncGenerator[str, None]:
     """
-    Run the deep research agent loop and stream results as SSE.
-    Uses native function calling \u2014 no XML parsing needed.
+    Run the deep research agent loop via LangGraph and stream results as SSE.
     All agent reasoning goes inside <think>, final answer comes after </think>.
     """
     model_id = original_body.get("model", "miroflow")
     request_id = f"chatcmpl-dr-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
-    start_time = time.monotonic()
 
     def chunk(content: str, finish_reason: Optional[str] = None) -> str:
         return make_sse_chunk(
@@ -681,244 +1016,72 @@ async def run_deep_research(
             finish_reason=finish_reason,
         )
 
-    # Build system prompt
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(date=today)
+    # Filter system messages from user input (system prompt is built in init node)
+    filtered_messages = [m for m in user_messages if m.get("role") != "system"]
 
-    # Build message history for the agent
-    agent_messages: list[dict] = [{"role": "system", "content": system_prompt}]
-    for msg in user_messages:
-        if msg.get("role") != "system":
-            agent_messages.append(msg)
+    initial_state: dict[str, Any] = {
+        "req_id": req_id,
+        "model_id": model_id,
+        "agent_messages": filtered_messages,
+        "turn": 0,
+        "consecutive_errors": 0,
+        "total_tool_calls": 0,
+        "turns_with_tools": 0,
+        "consecutive_no_tool_turns": 0,
+        "used_queries": [],
+        "start_time": time.monotonic(),
+        "last_result": {},
+        "progress_log": [],
+        "phase": "init",
+        "final_answer": "",
+        "finish_reason": "",
+    }
 
-    log.info(f"[{req_id}] Starting deep research loop, user messages: {len(user_messages)}")
-
-    # Open the thinking block
     yield chunk("<think>\n")
 
-    used_queries: set[str] = set()
-    keepalive_q: asyncio.Queue = asyncio.Queue()
-    consecutive_errors = 0
-    MAX_CONSECUTIVE_ERRORS = 3
-    total_tool_calls = 0
-    turns_with_tools = 0
-    consecutive_no_tool_turns = 0
-
-    async def llm_with_dots(msgs, turn_num, include_tools=True):
-        return await call_llm_with_keepalive(msgs, req_id, turn_num, keepalive_q, include_tools)
-
-    def drain_keepalive() -> str:
-        dots = ""
-        while not keepalive_q.empty():
-            try:
-                dots += keepalive_q.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-        return dots
+    config = {"configurable": {"thread_id": req_id}}
+    last_progress_idx = 0
+    final_state = initial_state
 
     try:
-        for turn in range(1, MAX_AGENT_TURNS + 1):
-            elapsed = time.monotonic() - start_time
-            log.info(f"[{req_id}] Turn {turn}/{MAX_AGENT_TURNS} ({elapsed:.1f}s elapsed)")
-
-            yield chunk(f"\n**[Turn {turn}/{MAX_AGENT_TURNS}]** ")
-
-            tracker.update(req_id, current_turn=turn)
-            result = await llm_with_dots(agent_messages, turn)
-
-            dots = drain_keepalive()
-            if dots:
-                yield chunk(dots)
-
-            # --- Error handling with circuit breaker ---
-            if "error" in result:
-                consecutive_errors += 1
-                yield chunk(f"\u26a0\ufe0f {result['error']}\n")
-
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    log.error(f"[{req_id}] Circuit breaker: {consecutive_errors} consecutive errors, aborting")
-                    yield chunk(
-                        f"\n\U0001f6d1 Aborting after {consecutive_errors} consecutive failures "
-                        f"(each retried {MAX_LLM_RETRIES}x).\n"
-                    )
-                    yield chunk("\n</think>\n\n")
-                    yield chunk(
-                        f"**Research failed \u2014 upstream LLM is unavailable.**\n\n"
-                        f"**Error:** `{result['error']}`\n\n"
-                        f"This means the Mistral API returned errors on {consecutive_errors} "
-                        f"consecutive turns, with {MAX_LLM_RETRIES} retries each "
-                        f"({consecutive_errors * (MAX_LLM_RETRIES + 1)} total attempts). "
-                        f"The API may be overloaded or experiencing an outage. Try again in a few minutes."
-                    )
-                    yield chunk("", finish_reason="stop")
-                    yield "data: [DONE]\n\n"
-                    return
-
-                agent_messages.append({"role": "assistant", "content": result["error"]})
-                agent_messages.append({"role": "user", "content": "There was an error. Please try a different approach."})
+        # Wrap astream iteration with keepalive: emit a dot every 8s when
+        # no state update arrives (e.g. during long LLM calls) to prevent
+        # reverse proxies and HTTP clients from timing out the SSE stream.
+        KEEPALIVE_INTERVAL = 8  # seconds
+        astream_iter = _research_graph.astream(
+            initial_state, config=config, stream_mode="values",
+        ).__aiter__()
+        done = False
+        while not done:
+            try:
+                state_update = await asyncio.wait_for(
+                    astream_iter.__anext__(), timeout=KEEPALIVE_INTERVAL,
+                )
+            except asyncio.TimeoutError:
+                yield chunk(".")
                 continue
+            except StopAsyncIteration:
+                done = True
+                break
 
-            consecutive_errors = 0
-            content = result["content"]
-            tool_calls = result.get("tool_calls")
+            final_state = state_update
+            tracker.update(req_id, current_turn=state_update.get("turn", 0))
+            # Emit new progress messages
+            progress_list = state_update.get("progress_log", [])
+            for msg in progress_list[last_progress_idx:]:
+                yield chunk(msg)
+            last_progress_idx = len(progress_list)
 
-            # --- Stream model reasoning (trimmed for readability) ---
-            if content:
-                if len(content) > 500:
-                    trimmed = content[:400] + f"\n[...{len(content) - 500} chars trimmed...]\n" + content[-100:]
-                    yield chunk(f"{trimmed}\n")
-                else:
-                    yield chunk(f"{content}\n")
-
-            # --- No tool calls = model wants to stop ---
-            if not tool_calls:
-                consecutive_no_tool_turns += 1
-
-                can_stop = (
-                    turn >= MAX_AGENT_TURNS - 1
-                    or consecutive_no_tool_turns >= 3
-                    or turns_with_tools >= 10
-                )
-
-                if not can_stop:
-                    log.info(
-                        f"[{req_id}] Turn {turn}: Pushing model to continue "
-                        f"({turns_with_tools} research rounds, {total_tool_calls} calls, "
-                        f"attempt {consecutive_no_tool_turns})"
-                    )
-                    yield chunk(f"\n\u21bb {turns_with_tools} research rounds done \u2014 pushing deeper...\n")
-                    agent_messages.append({"role": "assistant", "content": content})
-                    push_msg = PUSHBACK_MESSAGES[(consecutive_no_tool_turns - 1) % len(PUSHBACK_MESSAGES)]
-                    agent_messages.append({"role": "user", "content": push_msg})
-                    continue
-
-                log.info(
-                    f"[{req_id}] Turn {turn}: Final answer after {turns_with_tools} "
-                    f"research rounds ({total_tool_calls} tool calls)"
-                )
-                yield chunk(
-                    f"\n\u2705 Research complete ({turns_with_tools} rounds, "
-                    f"{total_tool_calls} tool calls). Generating answer...\n"
-                )
-                yield chunk("\n</think>\n\n")
-
-                answer = content if content else "(No answer generated)"
-                for i in range(0, len(answer), 200):
-                    yield chunk(answer[i:i + 200])
-
-                yield chunk("", finish_reason="stop")
-                yield "data: [DONE]\n\n"
-                return
-
-            # --- Process tool calls (parallel execution) ---
-            turns_with_tools += 1
-            consecutive_no_tool_turns = 0
-
-            assistant_msg: dict = {"role": "assistant", "content": content or None, "tool_calls": tool_calls}
-            agent_messages.append(assistant_msg)
-
-            # Deduplicate and prepare tool calls for parallel execution
-            calls_to_run: list[tuple[str, str, dict]] = []
-            skipped_ids: dict[str, str] = {}
-
-            for tc in tool_calls:
-                tc_id = tc.get("id", f"call_{uuid.uuid4().hex[:8]}")
-                func = tc.get("function", {})
-                tool_name = func.get("name", "unknown")
-                arguments_str = func.get("arguments", "{}")
-
-                try:
-                    arguments = json.loads(arguments_str) if isinstance(arguments_str, str) else arguments_str
-                except json.JSONDecodeError:
-                    arguments = {}
-
-                query_key = f"{tool_name}:{json.dumps(arguments, sort_keys=True)}"
-                if query_key in used_queries:
-                    log.warning(f"[{req_id}] Turn {turn}: Duplicate tool call: {tool_name}")
-                    yield chunk(f"\u26a0\ufe0f Skipping duplicate {tool_name} call.\n")
-                    skipped_ids[tc_id] = (
-                        "Duplicate call skipped. Please use previously gathered "
-                        "information or try a different query."
-                    )
-                    continue
-
-                used_queries.add(query_key)
-
-                # Stream tool call announcement
-                if tool_name == "searxng_search":
-                    yield chunk(f"\U0001f50d Searching: `{arguments.get('query', '')}`\n")
-                elif tool_name == "fetch_webpage":
-                    yield chunk(f"\U0001f4c4 Reading: `{arguments.get('url', '')[:80]}`\n")
-                elif tool_name == "python_exec":
-                    code_preview = arguments.get('code', '')[:100].replace('\n', ' ')
-                    yield chunk(f"\U0001f40d Running code: `{code_preview}`\n")
-                else:
-                    yield chunk(f"\U0001f527 Calling: {tool_name}\n")
-
-                calls_to_run.append((tc_id, tool_name, arguments))
-
-            # Add skipped (duplicate) tool results to message history
-            for tc_id, reason in skipped_ids.items():
-                agent_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": reason,
-                })
-
-            # Execute non-duplicate tools in parallel
-            if calls_to_run:
-                results = await execute_tools_parallel(calls_to_run)
-                total_tool_calls += len(results)
-
-                for tc_id, tool_name, tool_result, tool_duration in results:
-                    log.info(
-                        f"[{req_id}] Turn {turn}: Tool {tool_name} completed in "
-                        f"{tool_duration:.1f}s, result length: {len(tool_result)}"
-                    )
-                    # Recover arguments from calls_to_run for summary
-                    args_for_summary = next(
-                        (a for i, n, a in calls_to_run if i == tc_id), {}
-                    )
-                    summary = _summarize_tool_result(
-                        tool_name, args_for_summary, tool_result, tool_duration
-                    )
-                    yield chunk(f"  \u2192 {summary}\n")
-
-                    agent_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "content": tool_result,
-                    })
-
-        # --- Max turns reached --- force answer without tools ---
-        log.info(f"[{req_id}] Max turns ({MAX_AGENT_TURNS}) reached, forcing final answer")
-        yield chunk(f"\n\u23f0 Max research turns reached. Generating answer...\n")
-
-        agent_messages.append({
-            "role": "user",
-            "content": (
-                "You have reached the maximum number of research turns. Based on ALL "
-                "the information gathered so far, provide your final comprehensive answer. "
-                "Do NOT call any tools."
-            ),
-        })
-        final_result = await llm_with_dots(agent_messages, MAX_AGENT_TURNS + 1, include_tools=False)
-        dots = drain_keepalive()
-        if dots:
-            yield chunk(dots)
-
+        # Emit final answer
         yield chunk("\n</think>\n\n")
-        final_answer = (
-            final_result.get("content", "") if "error" not in final_result
-            else final_result["error"]
-        )
+        final_answer = final_state.get("final_answer", "(No answer generated)")
         for i in range(0, len(final_answer), 200):
             yield chunk(final_answer[i:i + 200])
         yield chunk("", finish_reason="stop")
         yield "data: [DONE]\n\n"
 
     except Exception as e:
-        elapsed = time.monotonic() - start_time
+        elapsed = time.monotonic() - initial_state["start_time"]
         tb = traceback.format_exc()
         log.error(f"[{req_id}] Agent loop error after {elapsed:.2f}s: {e}\n{tb}")
         yield chunk(f"\n\u26a0\ufe0f Error: {str(e)}\n")

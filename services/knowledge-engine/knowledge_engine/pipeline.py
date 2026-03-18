@@ -7,6 +7,9 @@ Supports full rebuild (clear namespace first) or append mode.
 import logging
 import os
 import uuid
+from typing import Annotated, Any, TypedDict
+
+from langgraph.graph import END, START, StateGraph
 
 from .chunker import chunk_text
 from .config import RAW_FILES_DIR, EXTRACTION_MODEL
@@ -43,6 +46,160 @@ def list_jobs(namespace: str | None = None) -> list[IngestJobStatus]:
     return list(_jobs.values())
 
 
+
+# ============================================================================
+# LangGraph State & Pipeline Nodes
+# ============================================================================
+
+
+def _etl_append_log(left: list[str], right: list[str]) -> list[str]:
+    """Reducer: append new progress entries."""
+    return left + right
+
+
+class IngestPipelineState(TypedDict):
+    """LangGraph state for the knowledge engine ingest pipeline."""
+    job_id: str
+    namespace: str
+    doc_id: str
+    title: str
+    text: str
+    source: str
+    rebuild: bool
+    # Pipeline outputs
+    raw_path: str
+    chunks: list[dict]
+    extraction_results: list[dict]
+    load_stats: dict
+    resolve_stats: dict
+    # Progress
+    progress_log: Annotated[list[str], _etl_append_log]
+    phase: str  # current step or "done"
+
+
+async def etl_node_save_raw(state: IngestPipelineState) -> dict:
+    """Step 0: Save raw text to disk for archival."""
+    raw_path = _save_raw_file(state["namespace"], state["doc_id"], state["title"], state["text"])
+    return {
+        "raw_path": raw_path,
+        "progress_log": [f"Saved raw file: {raw_path}"],
+        "phase": "clear_namespace",
+    }
+
+
+async def etl_node_clear_namespace(state: IngestPipelineState) -> dict:
+    """Step 1: Clear namespace if rebuild mode."""
+    progress: list[str] = []
+    if state["rebuild"]:
+        cleared = clear_namespace(state["namespace"])
+        progress.append(f"Cleared namespace \'{state['namespace']}\': {cleared} nodes removed")
+        log.info(f"[{state['job_id']}] Rebuild: cleared namespace \'{state['namespace']}\'")
+    else:
+        progress.append("Append mode: skipping namespace clear")
+    return {"progress_log": progress, "phase": "chunk"}
+
+
+async def etl_node_chunk(state: IngestPipelineState) -> dict:
+    """Step 2: Chunk the text."""
+    chunks = chunk_text(state["text"])
+    log.info(f"[{state['job_id']}] Chunked into {len(chunks)} chunks")
+    return {
+        "chunks": chunks,
+        "progress_log": [f"Chunked into {len(chunks)} chunks ({len(state['text'])} chars)"],
+        "phase": "extract",
+    }
+
+
+async def etl_node_extract(state: IngestPipelineState) -> dict:
+    """Step 3: Multi-pass LLM extraction."""
+    chunks = state["chunks"]
+    log.info(f"[{state['job_id']}] Starting extraction for {len(chunks)} chunks")
+    extraction_results = await extract_all_chunks(chunks)
+    log.info(f"[{state['job_id']}] Extraction complete for {len(extraction_results)} chunks")
+    return {
+        "extraction_results": extraction_results,
+        "progress_log": [f"Extracted knowledge from {len(extraction_results)} chunks (3 passes)"],
+        "phase": "load",
+    }
+
+
+async def etl_node_load(state: IngestPipelineState) -> dict:
+    """Step 4: Load into Neo4j."""
+    load_stats = _load_into_neo4j(
+        namespace=state["namespace"],
+        doc_id=state["doc_id"],
+        title=state["title"],
+        source=state["source"],
+        chunks=state["chunks"],
+        extraction_results=state["extraction_results"],
+    )
+    log.info(f"[{state['job_id']}] Loaded into Neo4j: {load_stats}")
+    return {
+        "load_stats": load_stats,
+        "progress_log": [f"Loaded into Neo4j: {load_stats}"],
+        "phase": "resolve",
+    }
+
+
+async def etl_node_resolve(state: IngestPipelineState) -> dict:
+    """Step 5: Entity resolution."""
+    resolve_stats = resolve_entities(state["namespace"])
+    log.info(f"[{state['job_id']}] Entity resolution: {resolve_stats}")
+    return {
+        "resolve_stats": resolve_stats,
+        "progress_log": [f"Entity resolution: {resolve_stats}"],
+        "phase": "graph_metrics",
+    }
+
+
+async def etl_node_graph_metrics(state: IngestPipelineState) -> dict:
+    """Step 6: Compute graph metrics."""
+    _compute_graph_metrics(state["namespace"])
+    log.info(f"[{state['job_id']}] Graph metrics computed")
+    return {
+        "progress_log": ["Graph metrics computed (community detection, centrality, RNS)"],
+        "phase": "done",
+    }
+
+
+def build_ingest_pipeline_graph() -> Any:
+    """Build the ingest pipeline LangGraph.
+
+    Graph topology (linear 7-step pipeline)::
+
+        START -> save_raw -> clear_namespace -> chunk -> extract
+              -> load -> resolve -> graph_metrics -> END
+    """
+    graph = StateGraph(IngestPipelineState)
+
+    graph.add_node("save_raw", etl_node_save_raw)
+    graph.add_node("clear_namespace", etl_node_clear_namespace)
+    graph.add_node("chunk", etl_node_chunk)
+    graph.add_node("extract", etl_node_extract)
+    graph.add_node("load", etl_node_load)
+    graph.add_node("resolve", etl_node_resolve)
+    graph.add_node("graph_metrics", etl_node_graph_metrics)
+
+    graph.add_edge(START, "save_raw")
+    graph.add_edge("save_raw", "clear_namespace")
+    graph.add_edge("clear_namespace", "chunk")
+    graph.add_edge("chunk", "extract")
+    graph.add_edge("extract", "load")
+    graph.add_edge("load", "resolve")
+    graph.add_edge("resolve", "graph_metrics")
+    graph.add_edge("graph_metrics", END)
+
+    return graph.compile()
+
+
+_ingest_graph = build_ingest_pipeline_graph()
+
+
+# ============================================================================
+# Main Orchestrator
+# ============================================================================
+
+
 async def run_ingest_pipeline(
     job_id: str,
     namespace: str,
@@ -51,7 +208,7 @@ async def run_ingest_pipeline(
     source: str = "",
     rebuild: bool = True,
 ) -> None:
-    """Full ETL pipeline: chunk → extract → resolve → load.
+    """Full ETL pipeline via LangGraph: chunk → extract → resolve → load.
 
     This runs as a background task. Progress is tracked in _jobs.
     """
@@ -64,62 +221,62 @@ async def run_ingest_pipeline(
     )
     _jobs[job_id] = status
 
+    initial_state: dict[str, Any] = {
+        "job_id": job_id,
+        "namespace": namespace,
+        "doc_id": doc_id,
+        "title": title,
+        "text": text,
+        "source": source,
+        "rebuild": rebuild,
+        "raw_path": "",
+        "chunks": [],
+        "extraction_results": [],
+        "load_stats": {},
+        "resolve_stats": {},
+        "progress_log": [],
+        "phase": "save_raw",
+    }
+
+    config = {"configurable": {"thread_id": job_id}}
+
     try:
-        # --- Step 0: Save raw file to disk ---
-        raw_path = _save_raw_file(namespace, doc_id, title, text)
-        status.stats["raw_file"] = raw_path
+        # Map phases to job statuses for progress tracking
+        phase_to_status = {
+            "save_raw": JobStatus.chunking,
+            "clear_namespace": JobStatus.chunking,
+            "chunk": JobStatus.chunking,
+            "extract": JobStatus.extracting,
+            "load": JobStatus.loading,
+            "resolve": JobStatus.resolving,
+            "graph_metrics": JobStatus.computing_graph,
+            "done": JobStatus.completed,
+        }
 
-        # --- Step 1: Clear namespace if rebuild ---
-        if rebuild:
-            status.status = JobStatus.chunking
-            status.progress = "Clearing namespace for rebuild..."
-            cleared = clear_namespace(namespace)
-            status.stats["cleared"] = cleared
-            log.info(f"[{job_id}] Rebuild: cleared namespace '{namespace}'")
+        async for state_update in _ingest_graph.astream(
+            initial_state, config=config, stream_mode="values",
+        ):
+            phase = state_update.get("phase", "")
+            job_status = phase_to_status.get(phase, JobStatus.pending)
+            status.status = job_status
 
-        # --- Step 2: Chunk ---
-        status.status = JobStatus.chunking
-        status.progress = "Chunking text..."
-        chunks = chunk_text(text)
-        status.stats["total_chunks"] = len(chunks)
-        status.stats["total_chars"] = len(text)
-        log.info(f"[{job_id}] Chunked into {len(chunks)} chunks")
+            progress_list = state_update.get("progress_log", [])
+            if progress_list:
+                status.progress = progress_list[-1]
 
-        # --- Step 3: Multi-pass extraction ---
-        status.status = JobStatus.extracting
-        status.progress = f"Extracting knowledge from {len(chunks)} chunks (3 passes)..."
-        extraction_results = await extract_all_chunks(chunks)
-        status.stats["extraction_results"] = len(extraction_results)
-        log.info(f"[{job_id}] Extraction complete for {len(extraction_results)} chunks")
+            # Accumulate stats from state
+            if state_update.get("load_stats"):
+                status.stats.update(state_update["load_stats"])
+            if state_update.get("resolve_stats"):
+                status.stats["entity_resolution"] = state_update["resolve_stats"]
+            if state_update.get("raw_path"):
+                status.stats["raw_file"] = state_update["raw_path"]
+            if state_update.get("chunks"):
+                status.stats["total_chunks"] = len(state_update["chunks"])
+                status.stats["total_chars"] = len(text)
+            if state_update.get("extraction_results"):
+                status.stats["extraction_results"] = len(state_update["extraction_results"])
 
-        # --- Step 4: Load into Neo4j ---
-        status.status = JobStatus.loading
-        status.progress = "Loading into Neo4j..."
-        load_stats = _load_into_neo4j(
-            namespace=namespace,
-            doc_id=doc_id,
-            title=title,
-            source=source,
-            chunks=chunks,
-            extraction_results=extraction_results,
-        )
-        status.stats.update(load_stats)
-        log.info(f"[{job_id}] Loaded into Neo4j: {load_stats}")
-
-        # --- Step 5: Entity resolution ---
-        status.status = JobStatus.resolving
-        status.progress = "Resolving and deduplicating entities..."
-        resolve_stats = resolve_entities(namespace)
-        status.stats["entity_resolution"] = resolve_stats
-        log.info(f"[{job_id}] Entity resolution: {resolve_stats}")
-
-        # --- Step 6: Compute graph metrics ---
-        status.status = JobStatus.computing_graph
-        status.progress = "Computing graph metrics (community detection, centrality)..."
-        _compute_graph_metrics(namespace)
-        log.info(f"[{job_id}] Graph metrics computed")
-
-        # --- Done ---
         status.status = JobStatus.completed
         status.progress = "Ingest complete"
         log.info(f"[{job_id}] Pipeline complete for '{title}' in namespace '{namespace}'")

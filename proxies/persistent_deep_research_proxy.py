@@ -1053,6 +1053,9 @@ async def _tool_fetch_webpage_direct(url: str, extract_info: str = "") -> str:
         content_type = resp.headers.get("content-type", "")
         if "pdf" in content_type.lower():
             return f"PDF document at {url} (binary content, cannot extract text directly)"
+        if ("text/html" not in content_type and "text/plain" not in content_type
+                and "text/xml" not in content_type and "application/json" not in content_type):
+            return f"Non-text content type: {content_type} at {url}"
 
         raw = resp.text
         text = re.sub(r'<script[^>]*>.*?</script>', '', raw, flags=re.DOTALL | re.IGNORECASE)

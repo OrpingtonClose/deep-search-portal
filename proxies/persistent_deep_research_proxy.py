@@ -102,6 +102,16 @@ from langgraph.graph import END, START, StateGraph
 
 import knowledge_client
 import veritas_inquisitor
+from research_metrics import (
+    MetricsCollector,
+    ResearchMetricsCallback,
+    SubagentMetrics,
+    list_available_reports,
+    load_metrics,
+    save_metrics,
+)
+import research_report
+import b2_publisher
 
 from shared import (
     ConcurrencyLimiter,
@@ -158,6 +168,9 @@ limiter = ConcurrencyLimiter(MAX_CONCURRENT)
 # Per-request live findings collectors, keyed by req_id.
 # Created when research starts, cleaned up when research ends.
 _live_collectors: dict[str, "LiveFindingsCollector"] = {}
+
+# Per-request metrics collectors, keyed by req_id.
+_metrics_collectors: dict[str, MetricsCollector] = {}
 
 
 # ============================================================================
@@ -2539,12 +2552,18 @@ class PersistentResearchState(TypedDict):
     # Progress
     progress_log: Annotated[list[str], _pdr_append_log]
     phase: str  # current phase name or "done"
+    # Report URLs (populated at end of pipeline)
+    report_url: str
+    metrics_url: str
 
 
 async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
     """Phase 1: Retrieve prior knowledge from Neo4j."""
     user_query = state["user_query"]
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("retrieve")
     progress: list[str] = ["**[Phase 1: Retrieving Prior Knowledge]**\n"]
 
     query_entities = [w for w in user_query.split() if len(w) > 3][:5]
@@ -2570,6 +2589,10 @@ async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
     else:
         progress.append("No graph neighbors found.\n")
 
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.end_node("retrieve")
+
     return {
         "prior_conditions": prior_conditions,
         "graph_neighbors": graph_neighbors,
@@ -2581,6 +2604,9 @@ async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
 async def pdr_node_plan(state: PersistentResearchState) -> dict:
     """Phase 2: Plan research angles."""
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("plan")
     progress: list[str] = [
         f"\n**[Phase 2: Planning Research Angles]**\n",
         f"Using {SUBAGENT_MODEL} for planning...\n",
@@ -2596,12 +2622,19 @@ async def pdr_node_plan(state: PersistentResearchState) -> dict:
         bridge_tag = " [BRIDGE]" if angle.get("is_bridge") else ""
         progress.append(f"  {i}. **{angle['title']}**{bridge_tag}: {angle.get('description', '')[:80]}\n")
 
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.end_node("plan")
+
     return {"angles": angles, "progress_log": progress, "phase": "subagents"}
 
 
 async def pdr_node_subagents(state: PersistentResearchState) -> dict:
     """Phase 3: Parallel subagent research."""
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("subagents")
     angles = state["angles"]
     n_agents = len(angles)
     progress: list[str] = [
@@ -2688,6 +2721,22 @@ async def pdr_node_subagents(state: PersistentResearchState) -> dict:
         progress.append(f", {total_children} recursive sub-subagents spawned")
     progress.append("\n")
 
+    # Record subagent metrics
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        for i, sr in enumerate(subagent_results):
+            mc.add_subagent_metrics(SubagentMetrics(
+                index=i,
+                angle=sr.angle,
+                turns_used=sr.turns_used,
+                tool_calls_made=sr.tool_calls_made,
+                conditions_found=len(sr.conditions),
+                novelty_history=sr.novelty_history,
+                children_spawned=sr.spawned_children,
+                error=sr.error,
+            ))
+        mc.end_node("subagents")
+
     return {
         "subagent_results": subagent_results,
         "all_conditions": all_conditions,
@@ -2702,6 +2751,9 @@ async def pdr_node_subagents(state: PersistentResearchState) -> dict:
 async def pdr_node_entities(state: PersistentResearchState) -> dict:
     """Phase 4: Entity extraction + knowledge graph update."""
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("entities")
     all_conditions = state["all_conditions"]
     progress: list[str] = []
 
@@ -2721,12 +2773,19 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
         else:
             progress.append("No entities extracted.\n")
 
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.end_node("entities")
+
     return {"progress_log": progress, "phase": "verify"}
 
 
 async def pdr_node_verify(state: PersistentResearchState) -> dict:
     """Phase 5: Citation verification."""
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("verify")
     all_conditions = list(state["all_conditions"])
     progress: list[str] = []
 
@@ -2743,12 +2802,19 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
             f"{low_conf} low-confidence conditions.\n"
         )
 
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.end_node("verify")
+
     return {"all_conditions": all_conditions, "progress_log": progress, "phase": "reflect"}
 
 
 async def pdr_node_reflect(state: PersistentResearchState) -> dict:
     """Phase 6: AoT Reflection."""
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("reflect")
     all_conditions = list(state["all_conditions"])
     user_query = state["user_query"]
     progress: list[str] = []
@@ -2780,6 +2846,11 @@ async def pdr_node_reflect(state: PersistentResearchState) -> dict:
                         confidence=0.4,
                     ))
 
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.set_reflection(reflection)
+        mc.end_node("reflect")
+
     return {
         "all_conditions": all_conditions,
         "reflection": reflection,
@@ -2791,6 +2862,9 @@ async def pdr_node_reflect(state: PersistentResearchState) -> dict:
 async def pdr_node_persist(state: PersistentResearchState) -> dict:
     """Phase 7: Persist findings to Neo4j + JSONL."""
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("persist")
     user_query = state["user_query"]
     all_conditions = state["all_conditions"]
     progress: list[str] = []
@@ -2801,12 +2875,19 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
         stored = await _store_conditions_neo4j(req_id, user_query, all_conditions)
         progress.append(f"Stored {stored} conditions to persistent knowledge base.\n")
 
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.end_node("persist")
+
     return {"progress_log": progress, "phase": "synthesize"}
 
 
 async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
     """Phase 8: Draft-Synthesis-Revision loop."""
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("synthesize")
     progress: list[str] = [
         f"\n**[Phase 8: Draft-Synthesis-Revision]** (model: {UPSTREAM_MODEL})\n",
         "Phase 8a: Generating draft synthesis...\n",
@@ -2832,7 +2913,79 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         progress.append(f" + {total_children} recursive sub-subagents")
     progress.append(")\n")
 
-    return {"final_answer": final_answer, "progress_log": progress, "phase": "done"}
+    # Generate report + metrics
+    report_url = ""
+    metrics_url = ""
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.end_node("synthesize")
+
+        # Feed conditions into metrics collector
+        condition_dicts = [
+            {
+                "fact": c.fact,
+                "source_url": c.source_url,
+                "confidence": c.confidence,
+                "angle": c.angle,
+                "trust_score": c.trust_score,
+                "is_serendipitous": c.is_serendipitous,
+                "serendipity_score_val": c.serendipity_score_val,
+            }
+            for c in all_conditions
+        ]
+        mc.set_conditions(condition_dicts)
+
+        # Try to get cost data from social media scrapers
+        try:
+            from social_media_scrapers import cost_tracker
+            if cost_tracker:
+                mc.set_cost_data({
+                    "session_total": cost_tracker.session_total(req_id),
+                    "monthly_total": cost_tracker.monthly_total(),
+                })
+        except Exception:
+            pass
+
+        # Finalise metrics
+        metrics_obj = mc.finalise()
+        metrics_dict = metrics_obj.to_dict()
+        save_metrics(metrics_obj)
+
+        # Generate HTML report
+        try:
+            html_report = research_report.generate_report(
+                metrics=metrics_dict,
+                conditions=condition_dicts,
+                final_answer=final_answer,
+                progress_log=list(state.get("progress_log", [])),
+            )
+            research_report.save_report(html_report, req_id)
+
+            # Publish to B2 if configured
+            if b2_publisher.is_configured():
+                try:
+                    report_url = b2_publisher.publish_report(req_id, html_report)
+                    metrics_json = json.dumps(metrics_dict, indent=2, default=str)
+                    metrics_url = b2_publisher.publish_metrics(req_id, metrics_json)
+                    log.info(f"[{req_id}] Published report to B2: {report_url}")
+                except Exception as e:
+                    log.error(f"[{req_id}] Failed to publish to B2: {e}")
+        except Exception as e:
+            log.error(f"[{req_id}] Failed to generate report: {e}")
+
+    # Append report link to progress if available
+    if report_url:
+        progress.append(f"\n**Report published:** {report_url}\n")
+    if metrics_url:
+        progress.append(f"**Metrics published:** {metrics_url}\n")
+
+    return {
+        "final_answer": final_answer,
+        "progress_log": progress,
+        "phase": "done",
+        "report_url": report_url,
+        "metrics_url": metrics_url,
+    }
 
 
 def build_persistent_research_graph() -> Any:
@@ -2982,6 +3135,8 @@ async def run_persistent_research(
         "final_answer": "",
         "progress_log": [],
         "phase": "retrieve",
+        "report_url": "",
+        "metrics_url": "",
     }
 
     # Create the shared output queue and live findings collector
@@ -2989,9 +3144,17 @@ async def run_persistent_research(
     collector = LiveFindingsCollector()
     _live_collectors[req_id] = collector
 
+    # Create metrics collector for this session
+    metrics_collector = MetricsCollector(session_id=req_id, query=user_query)
+    _metrics_collectors[req_id] = metrics_collector
+    metrics_callback = ResearchMetricsCallback(metrics_collector)
+
     yield chunk("<think>\n")
 
-    config = {"configurable": {"thread_id": req_id}}
+    config = {
+        "configurable": {"thread_id": req_id},
+        "callbacks": [metrics_callback],
+    }
 
     # Start the pipeline producer as a background task
     pipeline_task = asyncio.create_task(
@@ -3039,8 +3202,9 @@ async def run_persistent_research(
             except asyncio.CancelledError:
                 pass
 
-        # Clean up the live collector
+        # Clean up the live collector and metrics collector
         _live_collectors.pop(req_id, None)
+        _metrics_collectors.pop(req_id, None)
         tracker.finish(req_id)
 
 
@@ -3101,6 +3265,57 @@ async def knowledge_stats():
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/research/reports")
+async def get_research_reports():
+    """List all available research reports with metadata."""
+    try:
+        reports = list_available_reports()
+        return JSONResponse({"reports": reports, "count": len(reports)})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/research/report/{session_id}")
+async def get_research_report(session_id: str):
+    """Serve the HTML report for a research session.
+
+    First checks B2, then falls back to local file.
+    """
+    from fastapi.responses import HTMLResponse
+
+    # Try local file first
+    report_path = os.path.join(
+        os.getenv("RESEARCH_REPORTS_DIR", "/opt/persistent_research_logs/reports"),
+        f"{session_id}.html",
+    )
+    try:
+        with open(report_path, "r", encoding="utf-8") as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content)
+    except FileNotFoundError:
+        return JSONResponse(
+            {"error": f"Report not found for session {session_id}"},
+            status_code=404,
+        )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/research/metrics/{session_id}")
+async def get_research_metrics(session_id: str):
+    """Serve the metrics JSON for a research session.
+
+    Designed for LLM consumption — structured data for performance analysis.
+    """
+    metrics = load_metrics(session_id)
+    if metrics is None:
+        return JSONResponse(
+            {"error": f"Metrics not found for session {session_id}"},
+            status_code=404,
+        )
+    return JSONResponse(metrics)
 
 
 @app.post("/v1/verify")

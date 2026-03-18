@@ -516,6 +516,7 @@ async def run_document_ingestion(
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
 
+    ingestion_ok = False
     try:
         # Step 1: Submit to knowledge engine
         yield chunk("**[Step 1: Submitting to Knowledge Engine]**\n")
@@ -553,6 +554,7 @@ async def run_document_ingestion(
                 last_status = current_status
 
             if current_status == "completed":
+                ingestion_ok = True
                 stats = status.get("stats", {})
                 yield chunk(f"\n**[Step 3: Ingestion Complete]**\n")
                 if stats:
@@ -575,19 +577,26 @@ async def run_document_ingestion(
 
     yield chunk("\n</think>\n\n")
 
-    # Produce a user-facing summary
-    yield chunk(
-        f"## Document Ingested\n\n"
-        f"Your document ({doc_chars:,} characters) has been processed and loaded into "
-        f"the knowledge graph under namespace **{namespace}**.\n\n"
-        f"The knowledge engine has:\n"
-        f"- Chunked the document into overlapping segments\n"
-        f"- Extracted concepts, claims, evidence, and relationships\n"
-        f"- Resolved duplicate entities\n"
-        f"- Loaded everything into Neo4j\n\n"
-        f"You can now ask research questions about this document and it will be "
-        f"available as prior knowledge for all future research sessions.\n"
-    )
+    # Produce a user-facing summary based on actual outcome
+    if ingestion_ok:
+        yield chunk(
+            f"## Document Ingested\n\n"
+            f"Your document ({doc_chars:,} characters) has been processed and loaded into "
+            f"the knowledge graph under namespace **{namespace}**.\n\n"
+            f"The knowledge engine has:\n"
+            f"- Chunked the document into overlapping segments\n"
+            f"- Extracted concepts, claims, evidence, and relationships\n"
+            f"- Resolved duplicate entities\n"
+            f"- Loaded everything into Neo4j\n\n"
+            f"You can now ask research questions about this document and it will be "
+            f"available as prior knowledge for all future research sessions.\n"
+        )
+    else:
+        yield chunk(
+            f"## Document Ingestion Failed\n\n"
+            f"Your document ({doc_chars:,} characters) could not be fully processed. "
+            f"Please check the errors above and try again, or submit a smaller document.\n"
+        )
 
     yield chunk("", finish_reason="stop")
     yield "data: [DONE]\n\n"
@@ -2775,10 +2784,13 @@ async def chat_completions(request: Request):
 
             async def _guarded_ingest():
                 async with limiter.hold():
-                    async for event in run_document_ingestion(
-                        user_text, body, req_id
-                    ):
-                        yield event
+                    try:
+                        async for event in run_document_ingestion(
+                            user_text, body, req_id
+                        ):
+                            yield event
+                    finally:
+                        tracker.finish(req_id)
 
             generator = _guarded_ingest()
         else:

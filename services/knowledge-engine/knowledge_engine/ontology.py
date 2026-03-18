@@ -9,6 +9,7 @@ The ontology has four layers:
 """
 
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -502,6 +503,8 @@ def batch_create_research_entities(
         e1 = rel.get("entity1", "").strip().lower()
         e2 = rel.get("entity2", "").strip().lower()
         rtype = rel.get("type", "RELATED_TO").upper().replace(" ", "_")
+        # Sanitize: only allow alphanumeric and underscores to prevent Cypher injection
+        rtype = re.sub(r'[^A-Z0-9_]', '', rtype) or "RELATED_TO"
         is_bridge = bool(rel.get("is_bridge", False))
         if not e1 or not e2 or e1 == e2:
             continue

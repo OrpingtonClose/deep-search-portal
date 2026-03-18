@@ -34,17 +34,19 @@ no open Needs remain and the FinalJudge has emitted its report.
 import asyncio
 import json
 import logging
+import operator
 import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import AsyncGenerator, Optional
+from typing import Annotated, Any, AsyncGenerator, Optional, TypedDict
 
 import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
+from langgraph.graph import END, START, StateGraph
 
 from shared import (
     ConcurrencyLimiter,
@@ -924,8 +926,510 @@ async def run_final_judge(
 
 
 # ============================================================================
-# Artifact Reactor (INFINITE main loop)
+# LangGraph State & Reactor Graph
 # ============================================================================
+
+
+def _append_artifacts(left: list[dict], right: list[dict]) -> list[dict]:
+    """Reducer: append new artifacts to the list."""
+    return left + right
+
+
+def _append_needs(left: list[dict], right: list[dict]) -> list[dict]:
+    """Reducer: append new needs to the list."""
+    return left + right
+
+
+def _append_progress(left: list[str], right: list[str]) -> list[str]:
+    """Reducer: append progress messages."""
+    return left + right
+
+
+class ReactorState(TypedDict):
+    """LangGraph state for the Veritas Inquisitor reactor.
+
+    Each node reads from and writes to this shared state dict.
+    Annotated fields use reducers so concurrent/sequential
+    node outputs are merged correctly.
+    """
+    # Immutable inputs
+    target_text: str
+    original_query: str
+    req_id: str
+
+    # Artifact DAG (append-only via reducer)
+    artifacts: Annotated[list[dict], _append_artifacts]
+    # NeedQueue items (append-only; nodes mark closed in-place)
+    needs: Annotated[list[dict], _append_needs]
+    # Progress messages for streaming
+    progress: Annotated[list[str], _append_progress]
+
+    # Routing control
+    phase: str            # current phase: "interrogate", "decompose", ...
+    iteration: int        # reactor iteration counter
+    reactor_start: float  # wall-clock start time
+
+    # Intermediate results carried between nodes
+    current_need: dict    # the need being processed
+    claims: list[dict]    # decomposed claims (set by decomposer)
+    debate_round: int     # current debate round number
+    report: dict          # final report (set by final_judge)
+
+
+# ---------------------------------------------------------------------------
+# Helper: rebuild ArtifactIndex/NeedQueue from flat state lists
+# ---------------------------------------------------------------------------
+
+def _rebuild_index(state: ReactorState) -> ArtifactIndex:
+    """Reconstruct an ArtifactIndex from serialised artifact dicts."""
+    idx = ArtifactIndex()
+    for ad in state["artifacts"]:
+        art = Artifact(
+            id=ad["id"],
+            artifact_type=ad.get("artifact_type", ""),
+            content=ad.get("content", {}),
+            epistemic_tag=ad.get("epistemic_tag", ""),
+            tool_receipts=ad.get("tool_receipts", []),
+            parent_artifact_ids=ad.get("parent_artifact_ids", []),
+            pressure_score=ad.get("pressure_score", 0.0),
+            created_at=ad.get("created_at", ""),
+            created_by=ad.get("created_by", ""),
+        )
+        idx.append(art)
+    return idx
+
+
+def _open_needs(state: ReactorState) -> list[dict]:
+    """Return open needs sorted by pressure descending."""
+    return sorted(
+        [n for n in state["needs"] if n.get("is_open", True)],
+        key=lambda n: n.get("pressure_score", 0),
+        reverse=True,
+    )
+
+
+def _close_need(state: ReactorState, need_id: str) -> None:
+    """Mark a need as closed in-place."""
+    for n in state["needs"]:
+        if n["id"] == need_id:
+            n["is_open"] = False
+            break
+
+
+def _need_to_dict(need: NeedItem) -> dict:
+    """Serialise a NeedItem to a plain dict for state storage."""
+    return {
+        "id": need.id,
+        "need_type": need.need_type.value,
+        "target_artifact_id": need.target_artifact_id,
+        "target_claim_id": need.target_claim_id,
+        "pressure_score": need.pressure_score,
+        "required_skill": need.required_skill,
+        "context": need.context,
+        "is_open": need.is_open,
+    }
+
+
+# ---------------------------------------------------------------------------
+# LangGraph Nodes
+# ---------------------------------------------------------------------------
+
+async def node_init_reactor(state: ReactorState) -> dict:
+    """Create root artifact and post initial needs."""
+    target_text = state["target_text"]
+    original_query = state["original_query"]
+
+    root = Artifact(
+        artifact_type="root",
+        content={"target_text": target_text, "original_query": original_query},
+        created_by="system",
+    )
+
+    interrogate_need = NeedItem(
+        need_type=NeedType.INTERROGATE,
+        target_artifact_id=root.id,
+        pressure_score=0.9,
+        required_skill="Interrogator",
+    )
+    decompose_need = NeedItem(
+        need_type=NeedType.DECOMPOSE_CLAIMS,
+        target_artifact_id=root.id,
+        pressure_score=0.8,
+        required_skill="ClaimDecomposer",
+    )
+
+    return {
+        "artifacts": [root.to_dict()],
+        "needs": [_need_to_dict(interrogate_need), _need_to_dict(decompose_need)],
+        "progress": [f"Root artifact created ({len(target_text):,} chars)"],
+        "iteration": 0,
+        "reactor_start": time.monotonic(),
+        "claims": [],
+        "debate_round": 0,
+        "report": {},
+    }
+
+
+async def node_dispatch(state: ReactorState) -> dict:
+    """Pick the highest-pressure open need and route to the right agent.
+
+    This node does not execute agents itself — it selects the next need
+    and sets ``phase`` + ``current_need`` for the conditional edge router.
+    """
+    iteration = state["iteration"] + 1
+    open_needs = _open_needs(state)
+
+    if not open_needs:
+        return {"phase": "done", "iteration": iteration, "current_need": {}}
+
+    need = open_needs[0]
+
+    # Skip low-priority needs if report already exists
+    index = _rebuild_index(state)
+    if index.by_type("report") and need.get("pressure_score", 0) < PRESSURE_THRESHOLD:
+        _close_need(state, need["id"])
+        # Check if any more open needs remain
+        remaining = _open_needs(state)
+        if not remaining:
+            return {"phase": "done", "iteration": iteration, "current_need": {}}
+        need = remaining[0]
+
+    need_type = need.get("need_type", "")
+    phase_map = {
+        NeedType.INTERROGATE.value: "interrogate",
+        NeedType.DECOMPOSE_CLAIMS.value: "decompose",
+        NeedType.VERIFY_CLAIM.value: "verify",
+        NeedType.COUNTER_EVIDENCE.value: "verify",
+        NeedType.DEBATE_ROUND.value: "debate",
+        NeedType.FINAL_JUDGEMENT.value: "judge",
+    }
+    phase = phase_map.get(need_type, "done")
+
+    return {
+        "phase": phase,
+        "iteration": iteration,
+        "current_need": need,
+        "progress": [
+            f"Iteration {iteration}: Processing {need_type} "
+            f"(pressure: {need.get('pressure_score', 0):.2f}, "
+            f"open: {len(open_needs)})"
+        ],
+    }
+
+
+async def node_interrogate(state: ReactorState) -> dict:
+    """Run the Interrogator agent."""
+    need = state["current_need"]
+    _close_need(state, need["id"])
+
+    probe_artifact = await run_interrogator(
+        state["target_text"], state["original_query"],
+        need["target_artifact_id"], state["req_id"],
+    )
+    probes = probe_artifact.content.get("new_probe_questions", [])
+    return {
+        "artifacts": [probe_artifact.to_dict()],
+        "progress": [f"Interrogator produced {len(probes)} probes"],
+    }
+
+
+async def node_decompose(state: ReactorState) -> dict:
+    """Run the Claim Decomposer agent."""
+    need = state["current_need"]
+    _close_need(state, need["id"])
+
+    index = _rebuild_index(state)
+    probe_questions: list[str] = []
+    for art in index.by_type("probe"):
+        probe_questions.extend(art.content.get("new_probe_questions", []))
+
+    parent_ids = [need["target_artifact_id"]] + [a.id for a in index.by_type("probe")]
+
+    claims_artifact = await run_claim_decomposer(
+        state["target_text"], probe_questions, parent_ids, state["req_id"],
+    )
+    index.append(claims_artifact)
+    claims = claims_artifact.content.get("claims", [])
+
+    # Post verification needs for each claim
+    new_needs: list[dict] = []
+    for claim in claims:
+        claim_pressure = compute_pressure(
+            claim.get("tag", "inference"), 0,
+            dag_depth(claims_artifact.id, index),
+        )
+        new_needs.append(_need_to_dict(NeedItem(
+            need_type=NeedType.VERIFY_CLAIM,
+            target_artifact_id=claims_artifact.id,
+            target_claim_id=claim.get("id", ""),
+            pressure_score=claim_pressure,
+            required_skill="EvidenceGatherer",
+            context={"claim": claim},
+        )))
+
+    return {
+        "artifacts": [claims_artifact.to_dict()],
+        "needs": new_needs,
+        "claims": claims,
+        "progress": [f"Claim Decomposer found {len(claims)} atomic claims"],
+    }
+
+
+async def node_verify(state: ReactorState) -> dict:
+    """Run the Evidence Gatherer agent for one claim."""
+    need = state["current_need"]
+    _close_need(state, need["id"])
+    claim = need.get("context", {}).get("claim", {})
+
+    evidence_artifact = await run_evidence_gatherer(
+        claim, need["target_artifact_id"], state["req_id"],
+    )
+
+    conflicts = evidence_artifact.content.get("conflicts_found", 0)
+    new_needs: list[dict] = []
+
+    # Post counter-evidence need if conflicts found (only for initial verify)
+    if conflicts > 0 and need.get("need_type") != NeedType.COUNTER_EVIDENCE.value:
+        new_needs.append(_need_to_dict(NeedItem(
+            need_type=NeedType.COUNTER_EVIDENCE,
+            target_artifact_id=evidence_artifact.id,
+            target_claim_id=claim.get("id", ""),
+            pressure_score=min(evidence_artifact.pressure_score * 1.2, 1.0),
+            required_skill="EvidenceGatherer",
+            context={"claim": claim},
+        )))
+
+    # Check if all claims verified and no verify needs remain -> trigger debate
+    index = _rebuild_index(state)
+    index.append(evidence_artifact)
+    claims_artifacts = index.by_type("claims")
+    evidence_artifacts = index.by_type("evidence")
+
+    if claims_artifacts:
+        all_claims = claims_artifacts[0].content.get("claims", [])
+        verified_ids = {e.content.get("claim_id") for e in evidence_artifacts}
+        all_ids = {c.get("id") for c in all_claims}
+        unverified = all_ids - verified_ids
+
+        all_open = _open_needs(state)
+        remaining_verify = [
+            n for n in all_open
+            if n.get("need_type") in (NeedType.VERIFY_CLAIM.value, NeedType.COUNTER_EVIDENCE.value)
+        ]
+        # Also count the new needs we're about to post
+        remaining_verify_total = len(remaining_verify) + len([
+            n for n in new_needs
+            if n.get("need_type") in (NeedType.VERIFY_CLAIM.value, NeedType.COUNTER_EVIDENCE.value)
+        ])
+
+        if not unverified and remaining_verify_total == 0:
+            existing_debate = [
+                n for n in all_open if n.get("need_type") == NeedType.DEBATE_ROUND.value
+            ]
+            if not existing_debate and not index.by_type("debate"):
+                new_needs.append(_need_to_dict(NeedItem(
+                    need_type=NeedType.DEBATE_ROUND,
+                    target_artifact_id=claims_artifacts[0].id,
+                    pressure_score=0.7,
+                    required_skill="CriticDebater",
+                    context={"round": 1},
+                )))
+
+    return {
+        "artifacts": [evidence_artifact.to_dict()],
+        "needs": new_needs,
+        "progress": [
+            f"Evidence Gatherer: claim {claim.get('id', '?')} — {conflicts} conflict(s)"
+        ],
+    }
+
+
+async def node_debate(state: ReactorState) -> dict:
+    """Run the Critic/Debater agent for one round."""
+    need = state["current_need"]
+    _close_need(state, need["id"])
+    current_round = need.get("context", {}).get("round", 1)
+
+    index = _rebuild_index(state)
+
+    claims_with_evidence: list[dict] = []
+    claims_artifacts = index.by_type("claims")
+    evidence_artifacts = index.by_type("evidence")
+
+    if claims_artifacts:
+        all_claims = claims_artifacts[0].content.get("claims", [])
+        evidence_by_claim: dict[str, dict] = {}
+        for e in evidence_artifacts:
+            cid = e.content.get("claim_id", "")
+            evidence_by_claim[cid] = e.content
+        for claim in all_claims:
+            claims_with_evidence.append({
+                "claim": claim,
+                "evidence": evidence_by_claim.get(claim.get("id", ""), {}),
+            })
+
+    prior_debates = index.by_type("debate")
+    parent_ids = [need["target_artifact_id"]] + [a.id for a in prior_debates]
+
+    debate_artifact = await run_critic_debater(
+        claims_with_evidence, current_round, prior_debates,
+        parent_ids, state["req_id"],
+    )
+
+    msgs = debate_artifact.content.get("messages", [])
+    new_needs: list[dict] = []
+
+    # More debate rounds if conflicts remain
+    if current_round < MAX_DEBATE_ROUNDS:
+        key_conflicts = debate_artifact.content.get("key_conflicts", [])
+        if key_conflicts:
+            new_needs.append(_need_to_dict(NeedItem(
+                need_type=NeedType.DEBATE_ROUND,
+                target_artifact_id=debate_artifact.id,
+                pressure_score=0.6,
+                required_skill="CriticDebater",
+                context={"round": current_round + 1},
+            )))
+
+    # If no more debate rounds, post final judgement
+    all_open = _open_needs(state)
+    pending_debate = [
+        n for n in all_open if n.get("need_type") == NeedType.DEBATE_ROUND.value
+    ]
+    pending_debate_new = [
+        n for n in new_needs if n.get("need_type") == NeedType.DEBATE_ROUND.value
+    ]
+    if not pending_debate and not pending_debate_new:
+        existing_judge = [
+            n for n in all_open if n.get("need_type") == NeedType.FINAL_JUDGEMENT.value
+        ]
+        if not existing_judge and not index.by_type("report"):
+            new_needs.append(_need_to_dict(NeedItem(
+                need_type=NeedType.FINAL_JUDGEMENT,
+                target_artifact_id=debate_artifact.id,
+                pressure_score=1.0,
+                required_skill="FinalJudge",
+            )))
+
+    progress_msgs = [f"Debate round {current_round}: {len(msgs)} messages"]
+    if not pending_debate and not pending_debate_new:
+        progress_msgs.append(f"Debate converged after {current_round} round(s)")
+
+    return {
+        "artifacts": [debate_artifact.to_dict()],
+        "needs": new_needs,
+        "debate_round": current_round,
+        "progress": progress_msgs,
+    }
+
+
+async def node_judge(state: ReactorState) -> dict:
+    """Run the Final Judge agent."""
+    need = state["current_need"]
+    _close_need(state, need["id"])
+
+    index = _rebuild_index(state)
+    all_arts = index.all_artifacts()
+    parent_ids = [a.id for a in all_arts if a.artifact_type != "root"]
+
+    report_artifact = await run_final_judge(
+        state["original_query"], state["target_text"],
+        all_arts, parent_ids, state["req_id"],
+    )
+
+    claims_report = report_artifact.content.get("claims", [])
+    score = report_artifact.content.get("overall_score", -1)
+    halluc_prob = report_artifact.content.get("overall_hallucination_probability", -1)
+
+    return {
+        "artifacts": [report_artifact.to_dict()],
+        "report": report_artifact.content,
+        "progress": [
+            f"Final Judge: {len(claims_report)} claims scored, "
+            f"overall_score={score}, hallucination_prob={halluc_prob}"
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Conditional edge router
+# ---------------------------------------------------------------------------
+
+MAX_REACTOR_SECONDS = 1800  # 30-minute hard wall-clock timeout
+
+
+def route_after_dispatch(state: ReactorState) -> str:
+    """Route from dispatch node to the appropriate agent node (or END)."""
+    phase = state.get("phase", "done")
+    if phase == "done":
+        return END
+
+    # Wall-clock timeout
+    elapsed = time.monotonic() - state.get("reactor_start", time.monotonic())
+    if elapsed > MAX_REACTOR_SECONDS:
+        return END
+
+    return phase  # "interrogate", "decompose", "verify", "debate", "judge"
+
+
+# ---------------------------------------------------------------------------
+# Build the LangGraph StateGraph
+# ---------------------------------------------------------------------------
+
+def build_reactor_graph() -> StateGraph:
+    """Construct and compile the Veritas Inquisitor reactor graph.
+
+    Graph topology::
+
+        START -> init -> dispatch -+-> interrogate -> dispatch
+                                   +-> decompose   -> dispatch
+                                   +-> verify      -> dispatch
+                                   +-> debate      -> dispatch
+                                   +-> judge       -> dispatch
+                                   +-> END
+    """
+    graph = StateGraph(ReactorState)
+
+    # Add nodes
+    graph.add_node("init", node_init_reactor)
+    graph.add_node("dispatch", node_dispatch)
+    graph.add_node("interrogate", node_interrogate)
+    graph.add_node("decompose", node_decompose)
+    graph.add_node("verify", node_verify)
+    graph.add_node("debate", node_debate)
+    graph.add_node("judge", node_judge)
+
+    # Edges
+    graph.add_edge(START, "init")
+    graph.add_edge("init", "dispatch")
+
+    # Conditional routing from dispatch
+    graph.add_conditional_edges(
+        "dispatch",
+        route_after_dispatch,
+        {
+            "interrogate": "interrogate",
+            "decompose": "decompose",
+            "verify": "verify",
+            "debate": "debate",
+            "judge": "judge",
+            END: END,
+        },
+    )
+
+    # All agent nodes loop back to dispatch
+    graph.add_edge("interrogate", "dispatch")
+    graph.add_edge("decompose", "dispatch")
+    graph.add_edge("verify", "dispatch")
+    graph.add_edge("debate", "dispatch")
+    graph.add_edge("judge", "dispatch")
+
+    return graph.compile()
+
+
+# Pre-compile the graph (singleton)
+_reactor_graph = build_reactor_graph()
+
 
 async def run_reactor(
     target_text: str,
@@ -934,295 +1438,64 @@ async def run_reactor(
     progress_callback: Optional[callable] = None,
 ) -> dict:
     """
-    Main INFINITE reactor loop.
+    Main INFINITE reactor loop, powered by LangGraph.
 
     1. Create root artifact
     2. Post initial Needs
-    3. Loop: scan NeedQueue, assign to agents, create child artifacts
-    4. Terminate when FinalJudge has posted report
+    3. LangGraph loop: dispatch -> agent -> dispatch (conditional edges)
+    4. Terminate when FinalJudge has posted report or timeout
 
     Returns the final report dict.
     """
-    index = ArtifactIndex()
-    queue = NeedQueue()
-    registry = SkillRegistry()
+    initial_state: dict[str, Any] = {
+        "target_text": target_text,
+        "original_query": original_query,
+        "req_id": req_id,
+        "artifacts": [],
+        "needs": [],
+        "progress": [],
+        "phase": "init",
+        "iteration": 0,
+        "reactor_start": time.monotonic(),
+        "current_need": {},
+        "claims": [],
+        "debate_round": 0,
+        "report": {},
+    }
 
-    # Register all agent skills
-    registry.register("Interrogator", "Generates probing questions", [NeedType.INTERROGATE])
-    registry.register("ClaimDecomposer", "Decomposes text into atomic claims", [NeedType.DECOMPOSE_CLAIMS])
-    registry.register("EvidenceGatherer", "Gathers supporting and counter-evidence", [NeedType.VERIFY_CLAIM, NeedType.COUNTER_EVIDENCE])
-    registry.register("CriticDebater", "Runs adversarial debate rounds", [NeedType.DEBATE_ROUND])
-    registry.register("FinalJudge", "Produces final verdict", [NeedType.FINAL_JUDGEMENT])
+    config = {"configurable": {"thread_id": req_id}}
+    last_progress_idx = 0
 
-    async def _progress(msg: str) -> None:
-        if progress_callback:
-            await progress_callback(msg)
-        log.info(f"[{req_id}] {msg}")
+    # Stream execution step-by-step for progress callbacks
+    final_state = initial_state
+    async for state_update in _reactor_graph.astream(
+        initial_state, config=config, stream_mode="values",
+    ):
+        final_state = state_update
+        # Emit new progress messages
+        if progress_callback and "progress" in state_update:
+            progress_list = state_update["progress"]
+            for msg in progress_list[last_progress_idx:]:
+                await progress_callback(msg)
+            last_progress_idx = len(progress_list)
 
-    # Step 1: Create root artifact
-    root = Artifact(
-        artifact_type="root",
-        content={
-            "target_text": target_text,
-            "original_query": original_query,
-        },
-        created_by="system",
-    )
-    index.append(root)
-    await _progress(f"Root artifact created ({len(target_text):,} chars)")
+    # Extract final report
+    report = final_state.get("report", {})
+    artifacts = final_state.get("artifacts", [])
+    iteration = final_state.get("iteration", 0)
 
-    # Step 2: Post initial needs
-    queue.post(NeedItem(
-        need_type=NeedType.INTERROGATE,
-        target_artifact_id=root.id,
-        pressure_score=0.9,  # must run before ClaimDecomposer
-        required_skill="Interrogator",
-    ))
-    queue.post(NeedItem(
-        need_type=NeedType.DECOMPOSE_CLAIMS,
-        target_artifact_id=root.id,
-        pressure_score=0.8,  # high priority — must happen early, but after Interrogator
-        required_skill="ClaimDecomposer",
-    ))
-
-    # Step 3: Reactor loop
-    # Scale the iteration cap with the number of needs posted so that large
-    # claim sets (many VERIFY_CLAIM needs) can still reach FINAL_JUDGEMENT.
-    # Base: 20 fixed overhead + 3× the total needs posted so far.
-    # Re-evaluated each iteration so dynamically-posted needs are included.
-    iteration = 0
-    reactor_start = time.monotonic()
-    MAX_REACTOR_SECONDS = 1800  # 30-minute hard wall-clock timeout
-
-    while queue.has_open() and (time.monotonic() - reactor_start) < MAX_REACTOR_SECONDS:
-        iteration += 1
-        open_needs = queue.open_needs()
-
-        if not open_needs:
-            break
-
-        # Process highest-priority need
-        need = open_needs[0]
-
-        # Check pressure threshold (skip low-priority needs if we have the report)
-        reports = index.by_type("report")
-        if reports and need.pressure_score < PRESSURE_THRESHOLD:
-            queue.close(need.id)
-            continue
-
-        await _progress(
-            f"Iteration {iteration}: Processing {need.need_type.value} "
-            f"(pressure: {need.pressure_score:.2f}, open: {queue.open_count})"
-        )
-
-        # Dispatch to appropriate agent
-        if need.need_type == NeedType.INTERROGATE:
-            queue.close(need.id)
-            probe_artifact = await run_interrogator(
-                target_text, original_query, need.target_artifact_id, req_id,
-            )
-            index.append(probe_artifact)
-            await _progress(
-                f"Interrogator produced {len(probe_artifact.content.get('new_probe_questions', []))} probes"
-            )
-
-        elif need.need_type == NeedType.DECOMPOSE_CLAIMS:
-            queue.close(need.id)
-
-            # Gather probe questions from any probe artifacts
-            probe_questions = []
-            for art in index.by_type("probe"):
-                probe_questions.extend(art.content.get("new_probe_questions", []))
-
-            claims_artifact = await run_claim_decomposer(
-                target_text, probe_questions,
-                [need.target_artifact_id] + [a.id for a in index.by_type("probe")],
-                req_id,
-            )
-            index.append(claims_artifact)
-
-            claims = claims_artifact.content.get("claims", [])
-            await _progress(f"Claim Decomposer found {len(claims)} atomic claims")
-
-            # Post verification needs for each claim
-            for claim in claims:
-                claim_pressure = compute_pressure(
-                    claim.get("tag", "inference"), 0,
-                    dag_depth(claims_artifact.id, index),
-                )
-                queue.post(NeedItem(
-                    need_type=NeedType.VERIFY_CLAIM,
-                    target_artifact_id=claims_artifact.id,
-                    target_claim_id=claim.get("id", ""),
-                    pressure_score=claim_pressure,
-                    required_skill="EvidenceGatherer",
-                    context={"claim": claim},
-                ))
-
-        elif need.need_type in (NeedType.VERIFY_CLAIM, NeedType.COUNTER_EVIDENCE):
-            queue.close(need.id)
-            claim = need.context.get("claim", {})
-
-            evidence_artifact = await run_evidence_gatherer(
-                claim, need.target_artifact_id, req_id,
-            )
-            index.append(evidence_artifact)
-
-            conflicts = evidence_artifact.content.get("conflicts_found", 0)
-            await _progress(
-                f"Evidence Gatherer: claim {claim.get('id', '?')} — "
-                f"{conflicts} conflict(s)"
-            )
-
-            # If conflicts found, post counter-evidence need for deeper investigation
-            if conflicts > 0 and need.need_type != NeedType.COUNTER_EVIDENCE:
-                queue.post(NeedItem(
-                    need_type=NeedType.COUNTER_EVIDENCE,
-                    target_artifact_id=evidence_artifact.id,
-                    target_claim_id=claim.get("id", ""),
-                    pressure_score=evidence_artifact.pressure_score * 1.2,
-                    required_skill="EvidenceGatherer",
-                    context={"claim": claim},
-                ))
-
-            # Check if all claims have been verified — if so, trigger debate
-            claims_artifacts = index.by_type("claims")
-            evidence_artifacts = index.by_type("evidence")
-            if claims_artifacts:
-                all_claims = claims_artifacts[0].content.get("claims", [])
-                verified_claim_ids = {
-                    e.content.get("claim_id") for e in evidence_artifacts
-                }
-                all_claim_ids = {c.get("id") for c in all_claims}
-                unverified = all_claim_ids - verified_claim_ids
-
-                # Only start debate when all claims verified AND no
-                # verify/counter-evidence needs remain (prevents premature
-                # judgement while counter-evidence is still pending).
-                remaining_verify_needs = [
-                    n for n in queue.open_needs()
-                    if n.need_type in (NeedType.VERIFY_CLAIM, NeedType.COUNTER_EVIDENCE)
-                ]
-                if not unverified and not remaining_verify_needs:
-                    # Check if debate hasn't been posted yet
-                    debate_needs = [
-                        n for n in queue.open_needs()
-                        if n.need_type == NeedType.DEBATE_ROUND
-                    ]
-                    if not debate_needs and not index.by_type("debate"):
-                        queue.post(NeedItem(
-                            need_type=NeedType.DEBATE_ROUND,
-                            target_artifact_id=claims_artifacts[0].id,
-                            pressure_score=0.7,
-                            required_skill="CriticDebater",
-                            context={"round": 1},
-                        ))
-
-        elif need.need_type == NeedType.DEBATE_ROUND:
-            queue.close(need.id)
-            current_round = need.context.get("round", 1)
-
-            # Gather claims + evidence for debate
-            claims_with_evidence = []
-            claims_artifacts = index.by_type("claims")
-            evidence_artifacts = index.by_type("evidence")
-
-            if claims_artifacts:
-                all_claims = claims_artifacts[0].content.get("claims", [])
-                evidence_by_claim = {}
-                for e in evidence_artifacts:
-                    cid = e.content.get("claim_id", "")
-                    evidence_by_claim[cid] = e.content
-
-                for claim in all_claims:
-                    claims_with_evidence.append({
-                        "claim": claim,
-                        "evidence": evidence_by_claim.get(claim.get("id", ""), {}),
-                    })
-
-            prior_debates = index.by_type("debate")
-
-            debate_artifact = await run_critic_debater(
-                claims_with_evidence, current_round, prior_debates,
-                [need.target_artifact_id] + [a.id for a in prior_debates],
-                req_id,
-            )
-            index.append(debate_artifact)
-
-            msgs = debate_artifact.content.get("messages", [])
-            await _progress(
-                f"Debate round {current_round}: {len(msgs)} messages"
-            )
-
-            # Post another debate round if needed (up to MAX_DEBATE_ROUNDS)
-            if current_round < MAX_DEBATE_ROUNDS:
-                # Check if there are unresolved conflicts
-                key_conflicts = debate_artifact.content.get("key_conflicts", [])
-                if key_conflicts:
-                    queue.post(NeedItem(
-                        need_type=NeedType.DEBATE_ROUND,
-                        target_artifact_id=debate_artifact.id,
-                        pressure_score=0.6,
-                        required_skill="CriticDebater",
-                        context={"round": current_round + 1},
-                    ))
-                else:
-                    await _progress(f"Debate converged after {current_round} round(s)")
-
-            # If this is the last debate round or debate converged, post final judgement
-            debate_needs = [
-                n for n in queue.open_needs()
-                if n.need_type == NeedType.DEBATE_ROUND
-            ]
-            if not debate_needs:
-                judge_needs = [
-                    n for n in queue.open_needs()
-                    if n.need_type == NeedType.FINAL_JUDGEMENT
-                ]
-                if not judge_needs and not index.by_type("report"):
-                    queue.post(NeedItem(
-                        need_type=NeedType.FINAL_JUDGEMENT,
-                        target_artifact_id=debate_artifact.id,
-                        pressure_score=1.0,  # highest priority
-                        required_skill="FinalJudge",
-                    ))
-
-        elif need.need_type == NeedType.FINAL_JUDGEMENT:
-            queue.close(need.id)
-
-            report_artifact = await run_final_judge(
-                original_query, target_text,
-                index.all_artifacts(),
-                [a.id for a in index.all_artifacts() if a.artifact_type != "root"],
-                req_id,
-            )
-            index.append(report_artifact)
-
-            claims_report = report_artifact.content.get("claims", [])
-            score = report_artifact.content.get("overall_score", -1)
-            halluc_prob = report_artifact.content.get("overall_hallucination_probability", -1)
-            await _progress(
-                f"Final Judge: {len(claims_report)} claims scored, "
-                f"overall_score={score}, hallucination_prob={halluc_prob}"
-            )
-
-        else:
-            queue.close(need.id)
-            log.warning(f"[{req_id}] Unknown need type: {need.need_type}")
-
-    # Step 4: Extract final report
-    reports = index.by_type("report")
-    if reports:
-        report = reports[-1]  # last report is the final one
+    if report:
         return {
-            "report": report.content,
-            "artifact_count": index.count,
-            "dag": [a.to_dict() for a in index.all_artifacts()],
+            "report": report,
+            "artifact_count": len(artifacts),
+            "dag": artifacts,
             "iterations": iteration,
         }
 
-    # Fallback: no report produced (shouldn't happen normally)
-    await _progress("WARNING: Reactor terminated without producing a report")
+    # Fallback: no report produced
+    if progress_callback:
+        await progress_callback("WARNING: Reactor terminated without producing a report")
+    log.warning(f"[{req_id}] Reactor terminated without producing a report")
     return {
         "report": {
             "claims": [],
@@ -1231,8 +1504,8 @@ async def run_reactor(
             "revised_output": target_text,
             "error": "Reactor terminated without producing a report",
         },
-        "artifact_count": index.count,
-        "dag": [a.to_dict() for a in index.all_artifacts()],
+        "artifact_count": len(artifacts),
+        "dag": artifacts,
         "iterations": iteration,
     }
 

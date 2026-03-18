@@ -5,3 +5,4 @@ neo4j>=5.26.0
 networkx>=3.4
 python-community-louvain>=0.16
 pydantic>=2.10.0
+langgraph>=0.2.0

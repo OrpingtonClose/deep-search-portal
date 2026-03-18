@@ -97,6 +97,7 @@ from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
 import knowledge_client
+import veritas_inquisitor
 
 from shared import (
     ConcurrencyLimiter,
@@ -2645,6 +2646,65 @@ async def knowledge_stats():
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/v1/verify")
+async def verify_research(request: Request):
+    """Verify an LLM output using the Veritas Inquisitor swarm.
+
+    Request body:
+    {
+        "target_text": "text to verify",
+        "original_query": "original user query",
+        "stream": true/false  (default: true)
+    }
+    """
+    req_id = f"req-{uuid.uuid4().hex[:8]}"
+
+    try:
+        body = await request.json()
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": f"Invalid request body: {e}"}},
+        )
+
+    target_text = body.get("target_text", "")
+    original_query = body.get("original_query", "")
+    stream = body.get("stream", True)
+
+    if not target_text:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": "target_text is required"}},
+        )
+
+    log.info(f"[{req_id}] Verify request: {len(target_text)} chars")
+    tracker.start(req_id, phase="verify", target_chars=len(target_text))
+
+    if stream:
+        async def _stream_verify():
+            async for event in veritas_inquisitor.stream_verification(
+                target_text, original_query, req_id,
+            ):
+                yield event
+            tracker.finish(req_id)
+
+        return StreamingResponse(
+            _stream_verify(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    else:
+        result = await veritas_inquisitor.verify_output(
+            target_text, original_query, req_id,
+        )
+        tracker.finish(req_id)
+        return JSONResponse(result)
 
 
 @app.post("/v1/chat/completions")

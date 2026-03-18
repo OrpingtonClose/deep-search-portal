@@ -34,7 +34,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in deep-research thinking-proxy cftunnel owui searxng; do
+    for session in persistent-research deep-research thinking-proxy cftunnel owui searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     echo "All services stopped."
@@ -76,5 +76,12 @@ if ! pgrep -f "deep_research_proxy.py" > /dev/null; then
     echo "Deep Research Proxy starting..."
 fi
 wait_for_health "http://localhost:9200/health" "Deep Research Proxy" 15
+
+# --- Persistent Deep Research Proxy (Subagent Map-Reduce + AoT) ---
+if ! pgrep -f "persistent_deep_research_proxy.py" > /dev/null; then
+    screen -dmS persistent-research bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export UPSTREAM_MODEL='mistral-large-latest' && export SUBAGENT_MODEL='mistral-small-latest' && export SEARXNG_URL='http://localhost:8888' && export PERSISTENT_RESEARCH_PORT='9300' && python3 /opt/persistent_deep_research_proxy.py 2>&1 | tee /var/log/persistent_research_proxy.log"
+    echo "Persistent Deep Research Proxy starting..."
+fi
+wait_for_health "http://localhost:9300/health" "Persistent Deep Research Proxy" 15
 
 echo "All services started. Portal: ${WEBUI_URL:-https://deep-search.uk}"

@@ -92,6 +92,9 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, AsyncGenerator, Optional, TypedDict
 from urllib.parse import urlparse
 
+# Sentinel used to signal the SSE output queue that the pipeline is done.
+_STREAM_DONE = object()
+
 import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -151,6 +154,10 @@ log.info(
 # --- Shared state ---
 tracker = RequestTracker()
 limiter = ConcurrencyLimiter(MAX_CONCURRENT)
+
+# Per-request live findings collectors, keyed by req_id.
+# Created when research starts, cleaned up when research ends.
+_live_collectors: dict[str, "LiveFindingsCollector"] = {}
 
 
 # ============================================================================
@@ -1812,6 +1819,12 @@ async def run_subagent(
                         c.trust_score = trust_score_url(c.source_url)
                         c.serendipity_score_val = serendipity_score(c.fact, user_query, known_facts)
                     result.conditions.extend(conditions)
+                    # Feed live findings to heartbeat collector
+                    await progress_queue.put({
+                        "type": "conditions",
+                        "subagent": subagent_index,
+                        "conditions": conditions,
+                    })
                 break
 
             assistant_msg: dict = {"role": "assistant", "content": content or None, "tool_calls": tool_calls}
@@ -1904,6 +1917,13 @@ async def run_subagent(
                         known_facts.extend(new_fact_texts)
                         result.conditions.extend(mid_conditions)
 
+                        # Feed live findings to heartbeat collector
+                        await progress_queue.put({
+                            "type": "conditions",
+                            "subagent": subagent_index,
+                            "conditions": mid_conditions,
+                        })
+
                         if len(result.novelty_history) >= 2 and novelty < NOVELTY_STOP_THRESHOLD:
                             log.info(f"[{sa_id}] Saturation detected (novelty={novelty:.2f}), stopping early")
                             await progress_queue.put({
@@ -1950,6 +1970,12 @@ async def run_subagent(
                         c.trust_score = trust_score_url(c.source_url)
                         c.serendipity_score_val = serendipity_score(c.fact, user_query, known_facts)
                     result.conditions.extend(conditions)
+                    # Feed live findings to heartbeat collector
+                    await progress_queue.put({
+                        "type": "conditions",
+                        "subagent": subagent_index,
+                        "conditions": conditions,
+                    })
 
         # Recursive subagent spawning for rabbit holes
         if (depth < MAX_RECURSIVE_DEPTH
@@ -2091,6 +2117,182 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
         ]
 
     return []
+
+
+# ============================================================================
+# Live Findings Collector (shared state for heartbeat)
+# ============================================================================
+
+
+class LiveFindingsCollector:
+    """Thread-safe collector that subagents populate with conditions in real-time.
+
+    The heartbeat task reads from this to surface interesting findings.
+    """
+
+    def __init__(self) -> None:
+        self._conditions: list[AtomicCondition] = []
+        self._lock = asyncio.Lock()
+        self._shared_facts: set[str] = set()  # facts already sent to the user
+
+    async def add_conditions(self, conditions: list[AtomicCondition]) -> None:
+        async with self._lock:
+            self._conditions.extend(conditions)
+
+    async def get_new_findings(self) -> list[AtomicCondition]:
+        """Return conditions not yet shared via heartbeat."""
+        async with self._lock:
+            new = [
+                c for c in self._conditions
+                if c.fact.lower().strip()[:100] not in self._shared_facts
+            ]
+            return new
+
+    async def mark_shared(self, fact: str) -> None:
+        async with self._lock:
+            self._shared_facts.add(fact.lower().strip()[:100])
+
+    async def get_shared_facts(self) -> list[str]:
+        """Return a copy of facts already shared via heartbeat."""
+        async with self._lock:
+            return list(self._shared_facts)
+
+    async def all_conditions(self) -> list[AtomicCondition]:
+        async with self._lock:
+            return list(self._conditions)
+
+
+# ============================================================================
+# Heartbeat Prompt & Task
+# ============================================================================
+
+_HEARTBEAT_PROMPT = """You are a research assistant giving a brief live update to a curious friend about what you just discovered.
+
+Pick the single most interesting NEW finding from the list below and describe it conversationally in under 40 words.
+
+Rules:
+- Share a concrete, specific finding — not a vague progress update
+- Write like you're excited to tell a friend what you just learned
+- No technical jargon about subagents, turns, models, or system internals
+- No bullet points or markdown
+- If nothing is genuinely new or interesting, reply with a brief natural status like "Still searching through regulatory databases..." or "Digging into the academic literature on this..."
+
+New findings:
+{findings}
+
+Already shared (do NOT repeat these):
+{already_shared}"""
+
+
+_HEARTBEAT_STATUS_PHRASES = [
+    "Still searching through databases for relevant patterns...",
+    "Digging deeper into the academic literature on this...",
+    "Cross-referencing findings across different sources...",
+    "Following a promising trail through regulatory records...",
+    "Scanning through recent publications for fresh insights...",
+    "Checking historical archives for additional context...",
+    "Comparing data across multiple jurisdictions...",
+    "Verifying claims against primary sources...",
+]
+
+
+async def _generate_heartbeat_message(
+    collector: LiveFindingsCollector,
+    req_id: str,
+    _phrase_idx: list[int],
+) -> str:
+    """Generate an engaging heartbeat message using Mistral Small.
+
+    Falls back to a static status phrase if the LLM call fails or
+    there are no new findings.
+    """
+    new_findings = await collector.get_new_findings()
+
+    if not new_findings:
+        # Nothing new — pick a rotating status phrase
+        idx = _phrase_idx[0] % len(_HEARTBEAT_STATUS_PHRASES)
+        _phrase_idx[0] += 1
+        return _HEARTBEAT_STATUS_PHRASES[idx]
+
+    # Build a compact list of new facts for the LLM
+    findings_text = "\n".join(
+        f"- {c.fact[:200]}" for c in new_findings[:10]
+    )
+
+    shared_facts = await collector.get_shared_facts()
+    already_text = "\n".join(
+        f"- {f[:120]}" for f in shared_facts[:8]
+    ) if shared_facts else "(none yet)"
+
+    prompt = _HEARTBEAT_PROMPT.format(
+        findings=findings_text,
+        already_shared=already_text,
+    )
+
+    try:
+        result = await call_llm(
+            [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": "Give a brief update."},
+            ],
+            req_id,
+            model=SUBAGENT_MODEL,
+            max_tokens=60,
+            temperature=0.5,
+        )
+
+        if "error" not in result:
+            msg = result.get("content", "").strip()
+            if msg and len(msg) > 10:
+                # Mark the finding that was most likely used
+                if new_findings:
+                    await collector.mark_shared(new_findings[0].fact)
+                return msg
+    except Exception as e:
+        log.debug(f"[{req_id}] Heartbeat LLM call failed: {e}")
+
+    # Fallback
+    idx = _phrase_idx[0] % len(_HEARTBEAT_STATUS_PHRASES)
+    _phrase_idx[0] += 1
+    return _HEARTBEAT_STATUS_PHRASES[idx]
+
+
+async def _heartbeat_loop(
+    output_queue: asyncio.Queue,
+    collector: LiveFindingsCollector,
+    chunk_fn,
+    req_id: str,
+    interval: float = 8.0,
+) -> None:
+    """Background task: emit engaging heartbeat updates into the SSE stream.
+
+    Also emits `: keepalive` SSE comments every 5 seconds to prevent
+    proxy/CDN timeouts (these are invisible to the UI parser).
+    """
+    phrase_idx = [0]
+    last_heartbeat = time.monotonic()
+    KEEPALIVE_INTERVAL = 5.0
+
+    try:
+        while True:
+            now = time.monotonic()
+            time_since_heartbeat = now - last_heartbeat
+
+            if time_since_heartbeat >= interval:
+                msg = await _generate_heartbeat_message(collector, req_id, phrase_idx)
+                await output_queue.put(chunk_fn(f"\n{msg}\n"))
+                last_heartbeat = time.monotonic()
+            else:
+                # Emit invisible keepalive comment
+                await output_queue.put(": keepalive\n\n")
+
+            # Sleep until next event (keepalive or heartbeat, whichever is sooner)
+            next_heartbeat_in = max(0.1, interval - (time.monotonic() - last_heartbeat))
+            await asyncio.sleep(min(KEEPALIVE_INTERVAL, next_heartbeat_in))
+
+    except asyncio.CancelledError:
+        log.debug(f"[{req_id}] Heartbeat task cancelled")
+        return
 
 
 # ============================================================================
@@ -2443,6 +2645,11 @@ async def pdr_node_subagents(state: PersistentResearchState) -> dict:
             progress.append(msg["text"])
         elif msg["type"] == "tool":
             progress.append(msg["text"])
+        elif msg["type"] == "conditions":
+            # Feed live conditions to the heartbeat collector
+            collector = _live_collectors.get(req_id)
+            if collector:
+                await collector.add_conditions(msg["conditions"])
         elif msg["type"] == "done":
             completed_count += 1
             progress.append(
@@ -2667,12 +2874,64 @@ _persistent_research_graph = build_persistent_research_graph()
 # Main Orchestrator
 # ============================================================================
 
+async def _pipeline_producer(
+    initial_state: dict[str, Any],
+    config: dict,
+    output_queue: asyncio.Queue,
+    chunk_fn,
+    req_id: str,
+) -> None:
+    """Run the LangGraph pipeline and push SSE chunks to the output queue.
+
+    This runs as a background task so the heartbeat can interleave its
+    updates into the same queue.
+    """
+    last_progress_idx = 0
+    final_state = initial_state
+
+    try:
+        async for state_update in _persistent_research_graph.astream(
+            initial_state, config=config, stream_mode="values",
+        ):
+            final_state = state_update
+            progress_list = state_update.get("progress_log", [])
+            for msg in progress_list[last_progress_idx:]:
+                await output_queue.put(chunk_fn(msg))
+            last_progress_idx = len(progress_list)
+
+        # Pipeline done — emit closing think tag and final answer
+        await output_queue.put(chunk_fn("\n</think>\n\n"))
+        final_answer = final_state.get("final_answer", "(No answer generated)")
+        for i in range(0, len(final_answer), 200):
+            await output_queue.put(chunk_fn(final_answer[i:i + 200]))
+        await output_queue.put(chunk_fn("", finish_reason="stop"))
+        await output_queue.put("data: [DONE]\n\n")
+
+    except Exception as e:
+        start_time = initial_state.get("start_time", 0)
+        elapsed = time.monotonic() - start_time if start_time else 0
+        tb = traceback.format_exc()
+        log.error(f"[{req_id}] Persistent research error after {elapsed:.2f}s: {e}\n{tb}")
+        await output_queue.put(chunk_fn(f"\nError: {str(e)}\n"))
+        await output_queue.put(chunk_fn("\n</think>\n\n"))
+        await output_queue.put(chunk_fn(f"**Deep Research Error**\n\nAn error occurred during research: {str(e)}"))
+        await output_queue.put(chunk_fn("", finish_reason="stop"))
+        await output_queue.put("data: [DONE]\n\n")
+
+    finally:
+        await output_queue.put(_STREAM_DONE)
+
+
 async def run_persistent_research(
     user_messages: list[dict],
     original_body: dict,
     req_id: str,
 ) -> AsyncGenerator[str, None]:
-    """Orchestrate the full persistent deep research pipeline via LangGraph."""
+    """Orchestrate the full persistent deep research pipeline via LangGraph.
+
+    Uses an asyncio.Queue so the pipeline, heartbeat task, and keepalive
+    comments can all push SSE chunks into a single ordered stream.
+    """
     model_id = original_body.get("model", "persistent-miroflow")
     request_id = f"chatcmpl-pdr-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
@@ -2725,57 +2984,63 @@ async def run_persistent_research(
         "phase": "retrieve",
     }
 
+    # Create the shared output queue and live findings collector
+    output_queue: asyncio.Queue = asyncio.Queue()
+    collector = LiveFindingsCollector()
+    _live_collectors[req_id] = collector
+
     yield chunk("<think>\n")
 
     config = {"configurable": {"thread_id": req_id}}
-    last_progress_idx = 0
-    final_state = initial_state
+
+    # Start the pipeline producer as a background task
+    pipeline_task = asyncio.create_task(
+        _pipeline_producer(initial_state, config, output_queue, chunk, req_id)
+    )
+
+    # Start the heartbeat task (will be cancelled when synthesis starts or pipeline ends)
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_loop(output_queue, collector, chunk, req_id, interval=8.0)
+    )
 
     try:
-        # Wrap astream iteration with keepalive: emit a dot every 8s when
-        # no state update arrives (e.g. during long subagent runs) to prevent
-        # reverse proxies and HTTP clients from timing out the SSE stream.
-        KEEPALIVE_INTERVAL = 8  # seconds
-        astream_iter = _persistent_research_graph.astream(
-            initial_state, config=config, stream_mode="values",
-        ).__aiter__()
-        done = False
-        while not done:
+        # Consume from the output queue and yield to the SSE response
+        while True:
             try:
-                state_update = await asyncio.wait_for(
-                    astream_iter.__anext__(), timeout=KEEPALIVE_INTERVAL,
-                )
+                item = await asyncio.wait_for(output_queue.get(), timeout=5.0)
             except asyncio.TimeoutError:
-                yield chunk(".")
+                # No items for 5s — emit invisible keepalive to prevent timeouts
+                yield ": keepalive\n\n"
                 continue
-            except StopAsyncIteration:
-                done = True
+
+            if item is _STREAM_DONE:
                 break
 
-            final_state = state_update
-            progress_list = state_update.get("progress_log", [])
-            for msg in progress_list[last_progress_idx:]:
-                yield chunk(msg)
-            last_progress_idx = len(progress_list)
+            yield item
 
-        yield chunk("\n</think>\n\n")
-        final_answer = final_state.get("final_answer", "(No answer generated)")
-        for i in range(0, len(final_answer), 200):
-            yield chunk(final_answer[i:i + 200])
-        yield chunk("", finish_reason="stop")
-        yield "data: [DONE]\n\n"
-
-    except Exception as e:
-        elapsed = time.monotonic() - start_time
-        tb = traceback.format_exc()
-        log.error(f"[{req_id}] Persistent research error after {elapsed:.2f}s: {e}\n{tb}")
-        yield chunk(f"\nError: {str(e)}\n")
-        yield chunk("\n</think>\n\n")
-        yield chunk(f"**Deep Research Error**\n\nAn error occurred during research: {str(e)}")
-        yield chunk("", finish_reason="stop")
-        yield "data: [DONE]\n\n"
+    except asyncio.CancelledError:
+        log.info(f"[{req_id}] Client disconnected, cancelling pipeline")
+        pipeline_task.cancel()
+        raise
 
     finally:
+        # Stop the heartbeat
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+
+        # Ensure the pipeline task is done
+        if not pipeline_task.done():
+            pipeline_task.cancel()
+            try:
+                await pipeline_task
+            except asyncio.CancelledError:
+                pass
+
+        # Clean up the live collector
+        _live_collectors.pop(req_id, None)
         tracker.finish(req_id)
 
 

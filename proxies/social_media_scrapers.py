@@ -83,7 +83,10 @@ class CostTracker:
         self._entries: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
         # Ensure log directory exists
-        Path(COST_LOG_DIR).mkdir(parents=True, exist_ok=True)
+        try:
+            Path(COST_LOG_DIR).mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            log.warning(f"Failed to create cost log directory {COST_LOG_DIR}: {e}")
 
     async def record(
         self,
@@ -587,29 +590,35 @@ _FORMATTERS = {
 
 
 def _bd_twitter_input(query: str) -> list[dict]:
-    return [{"url": f"https://x.com/search?q={query}&src=typed_query&f=live"}]
+    from urllib.parse import quote
+    return [{"url": f"https://x.com/search?q={quote(query, safe='')}&src=typed_query&f=live"}]
 
 
 def _bd_reddit_input(query: str, subreddit: str = "") -> list[dict]:
+    from urllib.parse import quote
     if subreddit:
-        return [{"url": f"https://www.reddit.com/r/{subreddit}/search/?q={query}&sort=relevance&t=all"}]
-    return [{"url": f"https://www.reddit.com/search/?q={query}&sort=relevance&t=all"}]
+        return [{"url": f"https://www.reddit.com/r/{subreddit}/search/?q={quote(query, safe='')}&sort=relevance&t=all"}]
+    return [{"url": f"https://www.reddit.com/search/?q={quote(query, safe='')}&sort=relevance&t=all"}]
 
 
 def _bd_instagram_input(query: str) -> list[dict]:
-    return [{"url": f"https://www.instagram.com/explore/tags/{query.replace(' ', '').lower()}/"}]
+    from urllib.parse import quote
+    return [{"url": f"https://www.instagram.com/explore/tags/{quote(query.replace(' ', '').lower(), safe='')}/"}]
 
 
 def _bd_tiktok_input(query: str) -> list[dict]:
-    return [{"url": f"https://www.tiktok.com/search?q={query}"}]
+    from urllib.parse import quote
+    return [{"url": f"https://www.tiktok.com/search?q={quote(query, safe='')}"}]
 
 
 def _bd_linkedin_input(query: str) -> list[dict]:
-    return [{"url": f"https://www.linkedin.com/search/results/content/?keywords={query}"}]
+    from urllib.parse import quote
+    return [{"url": f"https://www.linkedin.com/search/results/content/?keywords={quote(query, safe='')}"}]
 
 
 def _bd_youtube_input(query: str) -> list[dict]:
-    return [{"url": f"https://www.youtube.com/results?search_query={query}"}]
+    from urllib.parse import quote
+    return [{"url": f"https://www.youtube.com/results?search_query={quote(query, safe='')}"}]
 
 
 _BD_DATASETS = {

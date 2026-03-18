@@ -766,7 +766,7 @@ class TestInputBuilders:
         result = _bd_twitter_input("AI news")
         assert len(result) == 1
         assert "x.com/search" in result[0]["url"]
-        assert "AI news" in result[0]["url"]
+        assert "AI%20news" in result[0]["url"]
 
     def test_bd_reddit_input_global(self):
         from social_media_scrapers import _bd_reddit_input
@@ -777,6 +777,14 @@ class TestInputBuilders:
         from social_media_scrapers import _bd_reddit_input
         result = _bd_reddit_input("GME", subreddit="wallstreetbets")
         assert "r/wallstreetbets" in result[0]["url"]
+
+    def test_bd_url_encoding_special_chars(self):
+        from social_media_scrapers import _bd_twitter_input
+        result = _bd_twitter_input("test&query=bad#fragment")
+        url = result[0]["url"]
+        assert "&query=bad" not in url  # & should be encoded
+        assert "#fragment" not in url  # # should be encoded
+        assert "test%26query%3Dbad%23fragment" in url
 
     def test_bd_instagram_input(self):
         from social_media_scrapers import _bd_instagram_input

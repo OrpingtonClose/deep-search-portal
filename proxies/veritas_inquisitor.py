@@ -1275,96 +1275,107 @@ async def stream_verification(
         run_reactor(target_text, original_query, req_id, progress_callback)
     )
 
-    # Stream progress updates while reactor runs
-    while not reactor_task.done():
-        try:
-            msg = await asyncio.wait_for(progress_messages.get(), timeout=1.0)
-            yield chunk(f"  {msg}\n")
-        except asyncio.TimeoutError:
-            continue
-
-    # Drain any remaining messages
-    while not progress_messages.empty():
-        msg = await progress_messages.get()
-        yield chunk(f"  {msg}\n")
-
-    yield chunk("\n</think>\n\n")
-
-    # Get the result
     try:
-        result = reactor_task.result()
-    except Exception as e:
-        log.error(f"[{req_id}] Reactor error: {e}")
-        yield chunk(f"## Verification Error\n\n{e}\n")
+        # Stream progress updates while reactor runs
+        while not reactor_task.done():
+            try:
+                msg = await asyncio.wait_for(progress_messages.get(), timeout=1.0)
+                yield chunk(f"  {msg}\n")
+            except asyncio.TimeoutError:
+                continue
+
+        # Drain any remaining messages
+        while not progress_messages.empty():
+            msg = await progress_messages.get()
+            yield chunk(f"  {msg}\n")
+
+        yield chunk("\n</think>\n\n")
+
+        # Get the result
+        try:
+            result = reactor_task.result()
+        except Exception as e:
+            log.error(f"[{req_id}] Reactor error: {e}")
+            yield chunk(f"## Verification Error\n\n{e}\n")
+            yield chunk("", finish_reason="stop")
+            yield "data: [DONE]\n\n"
+            return
+
+        report = result.get("report", {})
+        artifact_count = result.get("artifact_count", 0)
+        iterations = result.get("iterations", 0)
+
+        # Format the report as markdown
+        yield chunk("## Veritas Inquisitor Report\n\n")
+        yield chunk(f"**Artifacts produced:** {artifact_count} | **Reactor iterations:** {iterations}\n\n")
+
+        overall_score = report.get("overall_score", -1)
+        halluc_prob = report.get("overall_hallucination_probability", -1)
+
+        if overall_score >= 0:
+            yield chunk(f"**Overall truthfulness score:** {overall_score:.1%}\n")
+        if halluc_prob >= 0:
+            yield chunk(f"**Hallucination probability:** {halluc_prob:.1%}\n\n")
+
+        # Claims table
+        claims = report.get("claims", [])
+        if claims:
+            yield chunk("### Claim Analysis\n\n")
+            yield chunk("| # | Status | Confidence | Claim | Evidence |\n")
+            yield chunk("|---|--------|------------|-------|----------|\n")
+
+            for i, c in enumerate(claims, 1):
+                status = c.get("status", "?")
+                confidence = c.get("confidence", 0)
+                try:
+                    confidence = float(confidence)
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                claim_text = c.get("claim_text", "")[:80]
+                evidence = c.get("evidence_summary", "")[:60]
+
+                status_emoji = {
+                    "verified": "VERIFIED",
+                    "plausible-unverified": "UNVERIFIED",
+                    "hallucinated": "**HALLUCINATED**",
+                    "overconfident": "OVERCONFIDENT",
+                }.get(status, status)
+
+                yield chunk(
+                    f"| {i} | {status_emoji} | {confidence:.0%} | "
+                    f"{claim_text} | {evidence} |\n"
+                )
+            yield chunk("\n")
+
+        # Evidence links
+        evidence_links = report.get("evidence_links", [])
+        if evidence_links:
+            yield chunk("### Evidence Links\n\n")
+            for link in evidence_links[:20]:
+                if isinstance(link, str):
+                    yield chunk(f"- {link}\n")
+                elif isinstance(link, dict):
+                    yield chunk(f"- [{link.get('title', link.get('url', '?'))}]({link.get('url', '')})\n")
+            yield chunk("\n")
+
+        # Revised output
+        revised = report.get("revised_output", "")
+        if revised:
+            yield chunk("### Revised Output\n\n")
+            yield chunk(f"{revised}\n\n")
+
         yield chunk("", finish_reason="stop")
         yield "data: [DONE]\n\n"
-        return
 
-    report = result.get("report", {})
-    artifact_count = result.get("artifact_count", 0)
-    iterations = result.get("iterations", 0)
-
-    # Format the report as markdown
-    yield chunk("## Veritas Inquisitor Report\n\n")
-    yield chunk(f"**Artifacts produced:** {artifact_count} | **Reactor iterations:** {iterations}\n\n")
-
-    overall_score = report.get("overall_score", -1)
-    halluc_prob = report.get("overall_hallucination_probability", -1)
-
-    if overall_score >= 0:
-        yield chunk(f"**Overall truthfulness score:** {overall_score:.1%}\n")
-    if halluc_prob >= 0:
-        yield chunk(f"**Hallucination probability:** {halluc_prob:.1%}\n\n")
-
-    # Claims table
-    claims = report.get("claims", [])
-    if claims:
-        yield chunk("### Claim Analysis\n\n")
-        yield chunk("| # | Status | Confidence | Claim | Evidence |\n")
-        yield chunk("|---|--------|------------|-------|----------|\n")
-
-        for i, c in enumerate(claims, 1):
-            status = c.get("status", "?")
-            confidence = c.get("confidence", 0)
+    finally:
+        # Cancel the reactor task on client disconnect or generator close
+        # to prevent orphaned LLM/tool calls from consuming resources.
+        if not reactor_task.done():
+            reactor_task.cancel()
             try:
-                confidence = float(confidence)
-            except (TypeError, ValueError):
-                confidence = 0.0
-            claim_text = c.get("claim_text", "")[:80]
-            evidence = c.get("evidence_summary", "")[:60]
-
-            status_emoji = {
-                "verified": "VERIFIED",
-                "plausible-unverified": "UNVERIFIED",
-                "hallucinated": "**HALLUCINATED**",
-                "overconfident": "OVERCONFIDENT",
-            }.get(status, status)
-
-            yield chunk(
-                f"| {i} | {status_emoji} | {confidence:.0%} | "
-                f"{claim_text} | {evidence} |\n"
-            )
-        yield chunk("\n")
-
-    # Evidence links
-    evidence_links = report.get("evidence_links", [])
-    if evidence_links:
-        yield chunk("### Evidence Links\n\n")
-        for link in evidence_links[:20]:
-            if isinstance(link, str):
-                yield chunk(f"- {link}\n")
-            elif isinstance(link, dict):
-                yield chunk(f"- [{link.get('title', link.get('url', '?'))}]({link.get('url', '')})\n")
-        yield chunk("\n")
-
-    # Revised output
-    revised = report.get("revised_output", "")
-    if revised:
-        yield chunk("### Revised Output\n\n")
-        yield chunk(f"{revised}\n\n")
-
-    yield chunk("", finish_reason="stop")
-    yield "data: [DONE]\n\n"
+                await reactor_task
+            except asyncio.CancelledError:
+                log.info(f"[{req_id}] Reactor task cancelled (client disconnect)")
 
 
 # ============================================================================

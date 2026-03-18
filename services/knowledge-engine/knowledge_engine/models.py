@@ -133,3 +133,86 @@ class GraphStatsResponse(BaseModel):
     relationships: dict = Field(default_factory=dict)
     communities: int = 0
     top_entities: list[dict] = Field(default_factory=list)
+
+
+# --- Research Condition Models ---
+
+class ResearchConditionInput(BaseModel):
+    """A single research condition (atomic finding) to store."""
+    fact: str = Field(..., description="The research finding text")
+    source_url: str = Field("", description="Source URL")
+    confidence: float = Field(0.5, ge=0.0, le=1.0)
+    trust_score: float = Field(0.5, ge=0.0, le=1.0)
+    angle: str = Field("", description="Research angle that produced this")
+    domain: str = Field("", description="Source domain")
+    is_serendipitous: bool = Field(False)
+    serendipity_score: float = Field(0.0, ge=0.0, le=1.0)
+
+
+class StoreConditionsRequest(BaseModel):
+    """Request to store research conditions from a research session."""
+    namespace: str = Field("research", description="Namespace for research data")
+    session_id: str = Field(..., description="Research session ID")
+    query: str = Field(..., description="Original research query")
+    conditions: list[ResearchConditionInput] = Field(
+        ..., description="List of atomic conditions to store"
+    )
+
+
+class EntityInput(BaseModel):
+    """An entity extracted from research."""
+    name: str
+    type: str = "concept"
+
+
+class RelationshipInput(BaseModel):
+    """A relationship between two entities."""
+    entity1: str
+    entity2: str
+    type: str = "RELATED_TO"
+    is_bridge: bool = False
+
+
+class StoreEntitiesRequest(BaseModel):
+    """Request to store entities and relationships from research."""
+    namespace: str = Field("research", description="Namespace for research data")
+    session_id: str = Field(..., description="Research session ID")
+    entities: list[EntityInput] = Field(default_factory=list)
+    relationships: list[RelationshipInput] = Field(default_factory=list)
+
+
+class SearchConditionsRequest(BaseModel):
+    """Request to search prior research conditions."""
+    namespace: str = Field("research")
+    query: str = Field(..., description="Search query")
+    limit: int = Field(20, ge=1, le=100)
+
+
+class GraphNeighborsRequest(BaseModel):
+    """Request to find conditions related to given entities via graph."""
+    namespace: str = Field("research")
+    entity_names: list[str] = Field(..., description="Entity names to start from")
+    max_hops: int = Field(2, ge=1, le=4)
+    limit: int = Field(20, ge=1, le=100)
+
+
+class ResearchConditionResult(BaseModel):
+    """A research condition returned from search."""
+    fact: str
+    source_url: str = ""
+    confidence: float = 0.0
+    angle: str = ""
+    is_serendipitous: bool = False
+    query: str = ""
+    created_at: str = ""
+    trust_score: float = 0.0
+    serendipity_score: float = 0.0
+
+
+class ResearchStatsResponse(BaseModel):
+    """Statistics about the persistent research knowledge base."""
+    total_conditions: int = 0
+    total_sessions: int = 0
+    total_queries: int = 0
+    total_entities: int = 0
+    total_relationships: int = 0

@@ -13,10 +13,11 @@ document, extending the base MiroFlow deep research loop with:
     accumulating raw tool output, preventing context-window overflow.
   - **AoT Reflection**: Validates decomposition quality and triggers
     redecomposition when contraction quality is poor.
-  - **Persistent memory**: Atomic conditions are stored in a local SQLite database
-    so future queries can retrieve relevant prior findings.
+  - **Persistent memory**: Atomic conditions are stored in Neo4j (via the
+    Knowledge Engine) so future queries can retrieve relevant prior findings.
+    JSONL flat files provide local archival logging.
   - **Knowledge Graph**: Entity extraction from findings, relationship storage,
-    cross-domain bridge edges, and graph-aware retrieval alongside FTS5.
+    cross-domain bridge edges, and graph-aware retrieval via Neo4j fulltext search.
   - **Dual-model architecture**: A small, fast model (e.g. Mistral Small) handles
     planning and subagent research; the large model handles final synthesis.
   - **Serendipity-aware exploration**: The planning agent generates cross-domain
@@ -39,7 +40,7 @@ Architecture:
   User Query
       |
       v
-  [Retrieve Prior Knowledge] -- SQLite FTS5 + Knowledge Graph lookup
+  [Retrieve Prior Knowledge] -- Neo4j fulltext + Knowledge Graph lookup
       |
       v
   [Planning Agent] (small model) -- decomposes into N angles + bridge queries
@@ -56,7 +57,7 @@ Architecture:
   [Citation Verification] -- verify claims, detect contradictions
       |
       v
-  [Store Conditions] -- persist to SQLite + graph
+  [Store Conditions] -- persist to Neo4j + JSONL archive
       |
       v
   [Draft Synthesis] (large model) -- cross-reference, produce draft
@@ -80,7 +81,6 @@ import json
 import math
 import os
 import re
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -95,6 +95,8 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
+
+import knowledge_client
 
 from shared import (
     ConcurrencyLimiter,
@@ -124,7 +126,8 @@ LISTEN_PORT = env_int("PERSISTENT_RESEARCH_PORT", 9300, minimum=1)
 MAX_SUBAGENTS = env_int("MAX_SUBAGENTS", 7, minimum=1)
 MAX_SUBAGENT_TURNS = env_int("MAX_SUBAGENT_TURNS", 15, minimum=1)
 MAX_CONCURRENT = env_int("MAX_CONCURRENT_PERSISTENT", 2, minimum=1)
-PERSISTENCE_DB = os.getenv("PERSISTENCE_DB", "/opt/persistent_research_logs/knowledge.db")
+RESEARCH_NAMESPACE = os.getenv("RESEARCH_NAMESPACE", "research")
+JSONL_LOG_DIR = os.getenv("JSONL_LOG_DIR", "/opt/persistent_research_logs/jsonl")
 MAX_RECURSIVE_DEPTH = env_int("MAX_RECURSIVE_DEPTH", 3, minimum=0)
 SEARCH_ANGLES_PER_TURN = env_int("SEARCH_ANGLES_PER_TURN", 5, minimum=1)
 TARGET_UNIQUE_SOURCES = env_int("TARGET_UNIQUE_SOURCES", 100, minimum=10)
@@ -140,7 +143,7 @@ log.info(
     f"Config: synthesis_model={UPSTREAM_MODEL}, subagent_model={SUBAGENT_MODEL}, "
     f"upstream={UPSTREAM_BASE}, searxng={SEARXNG_URL}, port={LISTEN_PORT}, "
     f"max_subagents={MAX_SUBAGENTS}, max_subagent_turns={MAX_SUBAGENT_TURNS}, "
-    f"max_recursive_depth={MAX_RECURSIVE_DEPTH}, persistence_db={PERSISTENCE_DB}"
+    f"max_recursive_depth={MAX_RECURSIVE_DEPTH}, research_ns={RESEARCH_NAMESPACE}"
 )
 
 # --- Shared state ---
@@ -262,324 +265,339 @@ class SubagentResult:
 # Persistent Storage (SQLite + FTS5 + Knowledge Graph)
 # ============================================================================
 
-def _init_db(db_path: str) -> None:
-    """Create the SQLite database and tables if they don't exist."""
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = sqlite3.connect(db_path)
+# ============================================================================
+# JSONL Flat-File Logging (archival)
+# ============================================================================
+
+def _ensure_jsonl_dir() -> None:
+    """Ensure the JSONL log directory exists."""
+    os.makedirs(JSONL_LOG_DIR, exist_ok=True)
+
+
+def _append_jsonl(session_id: str, record: dict) -> None:
+    """Append a single JSON record to the session's JSONL log file."""
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS atomic_conditions (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                query TEXT NOT NULL,
-                angle TEXT DEFAULT '',
-                fact TEXT NOT NULL,
-                source_url TEXT DEFAULT '',
-                confidence REAL DEFAULT 0.5,
-                trust_score REAL DEFAULT 0.5,
-                domain TEXT DEFAULT '',
-                is_serendipitous INTEGER DEFAULT 0,
-                serendipity_score REAL DEFAULT 0.0,
-                verified INTEGER DEFAULT 0,
-                contradiction_of TEXT DEFAULT '',
-                created_at TEXT NOT NULL
-            )
-        """)
-
-        conn.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS conditions_fts
-            USING fts5(fact, query, angle, content=atomic_conditions, content_rowid=rowid)
-        """)
-
-        conn.execute("""
-            CREATE TRIGGER IF NOT EXISTS conditions_ai AFTER INSERT ON atomic_conditions BEGIN
-                INSERT INTO conditions_fts(rowid, fact, query, angle)
-                VALUES (new.rowid, new.fact, new.query, new.angle);
-            END
-        """)
-
-        # --- Knowledge Graph tables ---
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS entities (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                entity_type TEXT DEFAULT 'concept',
-                first_seen_session TEXT NOT NULL,
-                mention_count INTEGER DEFAULT 1,
-                created_at TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_entity_name ON entities(name)
-        """)
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS entity_relationships (
-                id TEXT PRIMARY KEY,
-                entity1_name TEXT NOT NULL,
-                entity2_name TEXT NOT NULL,
-                relationship_type TEXT DEFAULT 'related_to',
-                source_condition_id TEXT DEFAULT '',
-                is_bridge INTEGER DEFAULT 0,
-                weight REAL DEFAULT 1.0,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (source_condition_id) REFERENCES atomic_conditions(id)
-            )
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_rel_e1 ON entity_relationships(entity1_name)
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_rel_e2 ON entity_relationships(entity2_name)
-        """)
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS contradictions (
-                id TEXT PRIMARY KEY,
-                condition1_id TEXT NOT NULL,
-                condition2_id TEXT NOT NULL,
-                description TEXT DEFAULT '',
-                resolved INTEGER DEFAULT 0,
-                resolution TEXT DEFAULT '',
-                created_at TEXT NOT NULL
-            )
-        """)
-
-        conn.commit()
-    finally:
-        conn.close()
+        _ensure_jsonl_dir()
+        path = os.path.join(JSONL_LOG_DIR, f"{session_id}.jsonl")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except Exception as e:
+        log.warning(f"JSONL write error: {e}")
 
 
-def _store_conditions_sync(
-    db_path: str,
+def _log_conditions_jsonl(
     session_id: str,
     query: str,
-    conditions: list[AtomicCondition],
-) -> int:
-    """Store atomic conditions in the database. Returns count stored."""
-    if not conditions:
-        return 0
-    conn = sqlite3.connect(db_path, timeout=10)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        now = datetime.now(timezone.utc).isoformat()
-        rows = [
-            (
-                f"cond-{uuid.uuid4().hex[:12]}",
-                session_id,
-                query,
-                c.angle,
-                c.fact,
-                c.source_url,
-                c.confidence,
-                c.trust_score,
-                c.domain,
-                1 if c.is_serendipitous else 0,
-                c.serendipity_score_val,
-                0,
-                "",
-                now,
-            )
-            for c in conditions
-        ]
-        conn.executemany(
-            """INSERT INTO atomic_conditions
-               (id, session_id, query, angle, fact, source_url, confidence,
-                trust_score, domain, is_serendipitous, serendipity_score,
-                verified, contradiction_of, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            rows,
-        )
-        conn.commit()
-        return len(rows)
-    finally:
-        conn.close()
+    conditions: list["AtomicCondition"],
+) -> None:
+    """Write conditions to a JSONL archive file."""
+    now = datetime.now(timezone.utc).isoformat()
+    for c in conditions:
+        _append_jsonl(session_id, {
+            "type": "condition",
+            "session_id": session_id,
+            "query": query,
+            "fact": c.fact,
+            "angle": c.angle,
+            "source_url": c.source_url,
+            "confidence": c.confidence,
+            "trust_score": c.trust_score,
+            "domain": c.domain,
+            "is_serendipitous": c.is_serendipitous,
+            "serendipity_score": c.serendipity_score_val,
+            "created_at": now,
+        })
 
 
-def _store_entities_sync(
-    db_path: str,
+def _log_entities_jsonl(
     session_id: str,
     entities: list[dict],
     relationships: list[dict],
-    condition_id: str = "",
-) -> tuple[int, int]:
-    """Store extracted entities and relationships in the knowledge graph."""
-    conn = sqlite3.connect(db_path, timeout=10)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        now = datetime.now(timezone.utc).isoformat()
-
-        ent_count = 0
-        for ent in entities:
-            name = ent.get("name", "").strip().lower()
-            etype = ent.get("type", "concept")
-            if not name or len(name) < 2:
-                continue
-            existing = conn.execute(
-                "SELECT id, mention_count FROM entities WHERE name = ?", (name,)
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    "UPDATE entities SET mention_count = mention_count + 1 WHERE id = ?",
-                    (existing[0],),
-                )
-            else:
-                conn.execute(
-                    """INSERT INTO entities (id, name, entity_type, first_seen_session, mention_count, created_at)
-                       VALUES (?, ?, ?, ?, 1, ?)""",
-                    (f"ent-{uuid.uuid4().hex[:12]}", name, etype, session_id, now),
-                )
-                ent_count += 1
-
-        rel_count = 0
-        for rel in relationships:
-            e1 = rel.get("entity1", "").strip().lower()
-            e2 = rel.get("entity2", "").strip().lower()
-            rtype = rel.get("type", "related_to")
-            is_bridge = 1 if rel.get("is_bridge", False) else 0
-            if not e1 or not e2 or e1 == e2:
-                continue
-            conn.execute(
-                """INSERT INTO entity_relationships
-                   (id, entity1_name, entity2_name, relationship_type, source_condition_id, is_bridge, weight, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, 1.0, ?)""",
-                (f"rel-{uuid.uuid4().hex[:12]}", e1, e2, rtype, condition_id, is_bridge, now),
-            )
-            rel_count += 1
-
-        conn.commit()
-        return ent_count, rel_count
-    finally:
-        conn.close()
-
-
-def _store_contradiction_sync(
-    db_path: str,
-    cond1_id: str,
-    cond2_id: str,
-    description: str,
 ) -> None:
-    """Record a contradiction between two conditions."""
-    conn = sqlite3.connect(db_path, timeout=10)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            """INSERT INTO contradictions (id, condition1_id, condition2_id, description, resolved, resolution, created_at)
-               VALUES (?, ?, ?, ?, 0, '', ?)""",
-            (f"contra-{uuid.uuid4().hex[:12]}", cond1_id, cond2_id, description, now),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    """Write entities and relationships to a JSONL archive file."""
+    now = datetime.now(timezone.utc).isoformat()
+    for ent in entities:
+        _append_jsonl(session_id, {
+            "type": "entity",
+            "name": ent.get("name", ""),
+            "entity_type": ent.get("type", "concept"),
+            "session_id": session_id,
+            "created_at": now,
+        })
+    for rel in relationships:
+        _append_jsonl(session_id, {
+            "type": "relationship",
+            "entity1": rel.get("entity1", ""),
+            "entity2": rel.get("entity2", ""),
+            "relationship_type": rel.get("type", "related_to"),
+            "is_bridge": rel.get("is_bridge", False),
+            "session_id": session_id,
+            "created_at": now,
+        })
 
 
-def _retrieve_related_sync(db_path: str, query: str, limit: int = 20) -> list[dict]:
-    """Retrieve prior conditions related to the query using FTS5."""
-    conn = sqlite3.connect(db_path, timeout=10)
+# ============================================================================
+# Neo4j-backed Persistence (via Knowledge Engine)
+# ============================================================================
+
+async def _store_conditions_neo4j(
+    session_id: str,
+    query: str,
+    conditions: list["AtomicCondition"],
+) -> int:
+    """Store atomic conditions in Neo4j via the knowledge engine. Returns count stored."""
+    if not conditions:
+        return 0
+    cond_dicts = [
+        {
+            "fact": c.fact,
+            "source_url": c.source_url,
+            "confidence": c.confidence,
+            "trust_score": c.trust_score,
+            "angle": c.angle,
+            "domain": c.domain,
+            "is_serendipitous": c.is_serendipitous,
+            "serendipity_score": c.serendipity_score_val,
+        }
+        for c in conditions
+    ]
     try:
-        tokens = [t.strip() for t in query.split() if len(t.strip()) > 2]
-        if not tokens:
-            return []
-        fts_query = " OR ".join(tokens[:10])
-        cursor = conn.execute(
-            """SELECT ac.fact, ac.source_url, ac.confidence, ac.angle,
-                      ac.is_serendipitous, ac.query, ac.created_at,
-                      ac.trust_score, ac.serendipity_score
-               FROM conditions_fts
-               JOIN atomic_conditions ac ON conditions_fts.rowid = ac.rowid
-               WHERE conditions_fts MATCH ?
-               ORDER BY rank
-               LIMIT ?""",
-            (fts_query, limit),
+        result = await knowledge_client.store_conditions(
+            session_id=session_id,
+            query=query,
+            conditions=cond_dicts,
+            namespace=RESEARCH_NAMESPACE,
         )
-        rows = cursor.fetchall()
+        return result.get("stored", 0)
+    except Exception as e:
+        log.error(f"Neo4j condition storage error: {e}")
+        return 0
+
+
+async def _store_entities_neo4j(
+    session_id: str,
+    entities: list[dict],
+    relationships: list[dict],
+) -> tuple[int, int]:
+    """Store entities and relationships in Neo4j via the knowledge engine."""
+    try:
+        result = await knowledge_client.store_entities(
+            session_id=session_id,
+            entities=entities,
+            relationships=relationships,
+            namespace=RESEARCH_NAMESPACE,
+        )
+        return result.get("entities_stored", 0), result.get("relationships_stored", 0)
+    except Exception as e:
+        log.error(f"Neo4j entity storage error: {e}")
+        return 0, 0
+
+
+async def _retrieve_related(query: str, limit: int = 20) -> list[dict]:
+    """Retrieve prior conditions related to the query using Neo4j fulltext search."""
+    try:
+        results = await knowledge_client.search_conditions(
+            query=query,
+            namespace=RESEARCH_NAMESPACE,
+            limit=limit,
+        )
         return [
             {
-                "fact": r[0],
-                "source_url": r[1],
-                "confidence": r[2],
-                "angle": r[3],
-                "is_serendipitous": bool(r[4]),
-                "original_query": r[5],
-                "created_at": r[6],
-                "trust_score": r[7],
-                "serendipity_score": r[8],
+                "fact": r.get("fact", ""),
+                "source_url": r.get("source_url", ""),
+                "confidence": r.get("confidence", 0.0),
+                "angle": r.get("angle", ""),
+                "is_serendipitous": r.get("is_serendipitous", False),
+                "original_query": r.get("query", ""),
+                "created_at": r.get("created_at", ""),
+                "trust_score": r.get("trust_score", 0.0),
+                "serendipity_score": r.get("serendipity_score", 0.0),
             }
-            for r in rows
+            for r in results
         ]
     except Exception as e:
-        log.warning(f"FTS5 retrieval error: {e}")
+        log.warning(f"Neo4j condition search error: {e}")
         return []
-    finally:
-        conn.close()
 
 
-def _retrieve_graph_neighbors_sync(
-    db_path: str, entity_names: list[str], max_hops: int = 2, limit: int = 20
+async def _retrieve_graph_neighbors(
+    entity_names: list[str], max_hops: int = 2, limit: int = 20
 ) -> list[dict]:
-    """Retrieve related conditions via knowledge graph traversal."""
-    conn = sqlite3.connect(db_path, timeout=10)
-    try:
-        visited: set[str] = set()
-        frontier: set[str] = {n.strip().lower() for n in entity_names if n.strip()}
-        all_found_entities: set[str] = set(frontier)
-
-        for _hop in range(max_hops):
-            if not frontier:
-                break
-            placeholders = ",".join("?" for _ in frontier)
-            rows = conn.execute(
-                f"""SELECT entity2_name FROM entity_relationships
-                    WHERE entity1_name IN ({placeholders})
-                    UNION
-                    SELECT entity1_name FROM entity_relationships
-                    WHERE entity2_name IN ({placeholders})""",
-                list(frontier) + list(frontier),
-            ).fetchall()
-            visited.update(frontier)
-            frontier = {r[0] for r in rows} - visited
-            all_found_entities.update(frontier)
-
-        if not all_found_entities:
-            return []
-
-        results = []
-        for ent in list(all_found_entities)[:50]:
-            rows = conn.execute(
-                """SELECT id, fact, source_url, confidence, angle, trust_score
-                   FROM atomic_conditions
-                   WHERE LOWER(fact) LIKE ?
-                   LIMIT ?""",
-                (f"%{ent}%", max(limit // len(all_found_entities), 2)),
-            ).fetchall()
-            for r in rows:
-                results.append({
-                    "condition_id": r[0],
-                    "fact": r[1],
-                    "source_url": r[2],
-                    "confidence": r[3],
-                    "angle": r[4],
-                    "trust_score": r[5],
-                    "via_entity": ent,
-                })
-        return results[:limit]
-    except Exception as e:
-        log.warning(f"Graph retrieval error: {e}")
+    """Retrieve related conditions via knowledge graph traversal in Neo4j."""
+    if not entity_names:
         return []
-    finally:
-        conn.close()
+    try:
+        results = await knowledge_client.graph_neighbors(
+            entity_names=entity_names,
+            namespace=RESEARCH_NAMESPACE,
+            max_hops=max_hops,
+            limit=limit,
+        )
+        return [
+            {
+                "fact": r.get("fact", ""),
+                "source_url": r.get("source_url", ""),
+                "confidence": r.get("confidence", 0.0),
+                "angle": r.get("angle", ""),
+                "trust_score": r.get("trust_score", 0.0),
+                "via_entity": "graph",
+            }
+            for r in results
+        ]
+    except Exception as e:
+        log.warning(f"Neo4j graph neighbor error: {e}")
+        return []
 
 
-# Initialise the database at import time
+# ============================================================================
+# Large Document Ingestion
+# ============================================================================
+
+LARGE_DOC_CHAR_THRESHOLD = 10000
+
+
+def _is_large_document(text: str) -> bool:
+    """Detect whether a message is a large document rather than a research query.
+
+    Heuristics:
+      - Length > LARGE_DOC_CHAR_THRESHOLD chars
+      - Low question density (few '?' relative to text length)
+    """
+    if len(text) < LARGE_DOC_CHAR_THRESHOLD:
+        return False
+    question_marks = text.count("?")
+    question_density = question_marks / max(len(text), 1)
+    if question_density < 0.0005:
+        return True
+    return False
+
+
+async def run_document_ingestion(
+    text: str,
+    original_body: dict,
+    req_id: str,
+) -> AsyncGenerator[str, None]:
+    """Distinct pipeline for large document ingestion — not a research query.
+
+    Flow:
+      1. Send document text to the Knowledge Engine for ingestion.
+      2. Stream progress updates to the user.
+      3. After ingestion completes, summarise what was extracted.
+    """
+    model_id = original_body.get("model", "persistent-miroflow")
+    request_id = f"chatcmpl-ingest-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+
+    def chunk(content: str, finish_reason: Optional[str] = None) -> str:
+        return make_sse_chunk(
+            content,
+            request_id=request_id,
+            created=created,
+            model_id=model_id,
+            finish_reason=finish_reason,
+        )
+
+    title = text[:80].replace("\n", " ").strip()
+    namespace = RESEARCH_NAMESPACE
+    doc_chars = len(text)
+
+    yield chunk("<think>\n")
+    yield chunk(f"**[Document Ingestion Mode]** Detected large document ({doc_chars:,} chars)\n")
+    yield chunk(f"Title: {title}...\n")
+    yield chunk(f"Namespace: {namespace}\n\n")
+
+    # Archive the raw text to a JSONL file
+    _append_jsonl(req_id, {
+        "type": "document_ingestion",
+        "title": title,
+        "char_count": doc_chars,
+        "namespace": namespace,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    try:
+        # Step 1: Submit to knowledge engine
+        yield chunk("**[Step 1: Submitting to Knowledge Engine]**\n")
+        ingest_result = await knowledge_client.ingest(
+            namespace=namespace,
+            title=title,
+            text=text,
+            source="document-ingestion",
+            rebuild=False,  # Append, don't clear existing data
+        )
+        job_id = ingest_result.get("job_id", "")
+        yield chunk(f"Ingest job started: {job_id}\n")
+        yield chunk(f"Total chars: {ingest_result.get('total_chars', doc_chars):,}\n\n")
+
+        # Step 2: Poll for completion
+        yield chunk("**[Step 2: Processing Document]**\n")
+        max_polls = 300  # up to ~10 minutes
+        last_status = ""
+        for _ in range(max_polls):
+            await asyncio.sleep(2)
+            try:
+                status = await knowledge_client.ingest_status(job_id)
+            except Exception as e:
+                yield chunk(f"  Poll error: {e}\n")
+                continue
+
+            current_status = status.get("status", "unknown")
+            progress = status.get("progress", "")
+
+            if current_status != last_status:
+                yield chunk(f"  Status: {current_status}")
+                if progress:
+                    yield chunk(f" — {progress}")
+                yield chunk("\n")
+                last_status = current_status
+
+            if current_status == "completed":
+                stats = status.get("stats", {})
+                yield chunk(f"\n**[Step 3: Ingestion Complete]**\n")
+                if stats:
+                    yield chunk(f"  Chunks: {stats.get('total_chunks', '?')}\n")
+                    yield chunk(f"  Entities extracted: {stats.get('entities_created', '?')}\n")
+                    yield chunk(f"  Relationships: {stats.get('relationships_created', '?')}\n")
+                    yield chunk(f"  Claims: {stats.get('claims_created', '?')}\n")
+                break
+            elif current_status == "failed":
+                error = status.get("error", "Unknown error")
+                yield chunk(f"\n**Ingestion failed:** {error}\n")
+                break
+        else:
+            yield chunk("\n**Warning:** Ingestion is still running (timed out waiting).\n")
+            yield chunk("You can check status later via the knowledge engine API.\n")
+
+    except Exception as e:
+        log.error(f"[{req_id}] Document ingestion error: {e}")
+        yield chunk(f"\n**Error during ingestion:** {e}\n")
+
+    yield chunk("\n</think>\n\n")
+
+    # Produce a user-facing summary
+    yield chunk(
+        f"## Document Ingested\n\n"
+        f"Your document ({doc_chars:,} characters) has been processed and loaded into "
+        f"the knowledge graph under namespace **{namespace}**.\n\n"
+        f"The knowledge engine has:\n"
+        f"- Chunked the document into overlapping segments\n"
+        f"- Extracted concepts, claims, evidence, and relationships\n"
+        f"- Resolved duplicate entities\n"
+        f"- Loaded everything into Neo4j\n\n"
+        f"You can now ask research questions about this document and it will be "
+        f"available as prior knowledge for all future research sessions.\n"
+    )
+
+    yield chunk("", finish_reason="stop")
+    yield "data: [DONE]\n\n"
+
+
+# Initialise JSONL log directory
 try:
-    _init_db(PERSISTENCE_DB)
-    log.info(f"Persistence DB initialised: {PERSISTENCE_DB}")
+    _ensure_jsonl_dir()
+    log.info(f"JSONL log directory ready: {JSONL_LOG_DIR}")
 except Exception as e:
-    log.error(f"Failed to initialise persistence DB: {e}")
+    log.warning(f"Failed to create JSONL log directory: {e}")
 
 
 # ============================================================================
@@ -2327,25 +2345,19 @@ async def run_persistent_research(
 
     try:
         # ================================================================
-        # Phase 1: Retrieve Prior Knowledge (FTS5 + Knowledge Graph)
+        # Phase 1: Retrieve Prior Knowledge (Neo4j fulltext + graph)
         # ================================================================
         yield chunk("**[Phase 1: Retrieving Prior Knowledge]**\n")
 
-        loop = asyncio.get_running_loop()
-
-        fts_task = loop.run_in_executor(
-            None, _retrieve_related_sync, PERSISTENCE_DB, user_query, MAX_PRIOR_CONDITIONS
-        )
-
         query_entities = [w for w in user_query.split() if len(w) > 3][:5]
-        graph_task = loop.run_in_executor(
-            None, _retrieve_graph_neighbors_sync, PERSISTENCE_DB, query_entities, 2, 10
-        )
 
-        prior_conditions, graph_neighbors = await asyncio.gather(fts_task, graph_task)
+        prior_conditions, graph_neighbors = await asyncio.gather(
+            _retrieve_related(user_query, MAX_PRIOR_CONDITIONS),
+            _retrieve_graph_neighbors(query_entities, max_hops=2, limit=10),
+        )
 
         if prior_conditions:
-            yield chunk(f"Found {len(prior_conditions)} relevant prior findings (FTS5):\n")
+            yield chunk(f"Found {len(prior_conditions)} relevant prior findings:\n")
             for pc in prior_conditions[:5]:
                 yield chunk(f"  - {pc['fact'][:100]}...\n")
             if len(prior_conditions) > 5:
@@ -2467,8 +2479,9 @@ async def run_persistent_research(
             entities, relationships = await extract_entities_from_conditions(all_conditions, req_id)
 
             if entities or relationships:
-                ent_stored, rel_stored = await loop.run_in_executor(
-                    None, _store_entities_sync, PERSISTENCE_DB, req_id, entities, relationships, ""
+                _log_entities_jsonl(req_id, entities, relationships)
+                ent_stored, rel_stored = await _store_entities_neo4j(
+                    req_id, entities, relationships
                 )
                 yield chunk(
                     f"Extracted {len(entities)} entities, {len(relationships)} relationships. "
@@ -2527,9 +2540,8 @@ async def run_persistent_research(
         # ================================================================
         if all_conditions:
             yield chunk("\n**[Phase 7: Persisting Knowledge]**\n")
-            stored = await loop.run_in_executor(
-                None, _store_conditions_sync, PERSISTENCE_DB, req_id, user_query, all_conditions
-            )
+            _log_conditions_jsonl(req_id, user_query, all_conditions)
+            stored = await _store_conditions_neo4j(req_id, user_query, all_conditions)
             yield chunk(f"Stored {stored} conditions to persistent knowledge base.\n")
 
         # ================================================================
@@ -2595,7 +2607,8 @@ register_standard_routes(
         "max_subagents": MAX_SUBAGENTS,
         "max_subagent_turns": MAX_SUBAGENT_TURNS,
         "max_recursive_depth": MAX_RECURSIVE_DEPTH,
-        "persistence_db": PERSISTENCE_DB,
+        "research_namespace": RESEARCH_NAMESPACE,
+        "jsonl_log_dir": JSONL_LOG_DIR,
         "tools": [t["function"]["name"] for t in NATIVE_TOOLS],
     },
 )
@@ -2618,36 +2631,18 @@ async def list_models():
 
 @app.get("/knowledge/stats")
 async def knowledge_stats():
-    """Return statistics about the persistent knowledge base."""
+    """Return statistics about the persistent knowledge base (from Neo4j)."""
     try:
-        conn = sqlite3.connect(PERSISTENCE_DB)
-        try:
-            total = conn.execute("SELECT COUNT(*) FROM atomic_conditions").fetchone()[0]
-            sessions = conn.execute("SELECT COUNT(DISTINCT session_id) FROM atomic_conditions").fetchone()[0]
-            queries = conn.execute("SELECT COUNT(DISTINCT query) FROM atomic_conditions").fetchone()[0]
-            entities = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
-            relationships = conn.execute("SELECT COUNT(*) FROM entity_relationships").fetchone()[0]
-            contradictions = conn.execute("SELECT COUNT(*) FROM contradictions").fetchone()[0]
-            recent = conn.execute(
-                "SELECT query, COUNT(*) as cnt FROM atomic_conditions "
-                "GROUP BY query ORDER BY created_at DESC LIMIT 5"
-            ).fetchall()
-            top_entities = conn.execute(
-                "SELECT name, entity_type, mention_count FROM entities "
-                "ORDER BY mention_count DESC LIMIT 10"
-            ).fetchall()
-            return JSONResponse({
-                "total_conditions": total,
-                "total_sessions": sessions,
-                "unique_queries": queries,
-                "total_entities": entities,
-                "total_relationships": relationships,
-                "total_contradictions": contradictions,
-                "recent_queries": [{"query": r[0], "conditions": r[1]} for r in recent],
-                "top_entities": [{"name": e[0], "type": e[1], "mentions": e[2]} for e in top_entities],
-            })
-        finally:
-            conn.close()
+        stats = await knowledge_client.research_stats(namespace=RESEARCH_NAMESPACE)
+        return JSONResponse({
+            "total_conditions": stats.get("total_conditions", 0),
+            "total_sessions": stats.get("total_sessions", 0),
+            "unique_queries": stats.get("total_queries", 0),
+            "total_entities": stats.get("total_entities", 0),
+            "total_relationships": stats.get("total_relationships", 0),
+            "storage_backend": "neo4j",
+            "namespace": RESEARCH_NAMESPACE,
+        })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -2698,29 +2693,58 @@ async def chat_completions(request: Request):
             log=log,
         )
     else:
-        if not limiter.available():
-            tracker.finish(req_id)
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": {
-                        "message": (
-                            f"Too many concurrent persistent research sessions "
-                            f"({limiter.max_concurrent}). Try again shortly."
-                        ),
-                        "type": "rate_limit",
-                    }
-                },
+        # Check if the last user message is a large document for ingestion
+        user_text = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    user_text = content
+                elif isinstance(content, list):
+                    user_text = " ".join(
+                        p.get("text", "") for p in content
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    )
+                break
+
+        if _is_large_document(user_text):
+            log.info(
+                f"[{req_id}] Routing to DOCUMENT INGESTION "
+                f"({len(user_text):,} chars)"
             )
 
-        log.info(f"[{req_id}] Routing to PERSISTENT DEEP RESEARCH")
+            async def _guarded_ingest():
+                async with limiter.hold():
+                    async for event in run_document_ingestion(
+                        user_text, body, req_id
+                    ):
+                        yield event
 
-        async def _guarded_research():
-            async with limiter.hold():
-                async for event in run_persistent_research(messages, body, req_id):
-                    yield event
+            generator = _guarded_ingest()
+        else:
+            if not limiter.available():
+                tracker.finish(req_id)
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": {
+                            "message": (
+                                f"Too many concurrent persistent research sessions "
+                                f"({limiter.max_concurrent}). Try again shortly."
+                            ),
+                            "type": "rate_limit",
+                        }
+                    },
+                )
 
-        generator = _guarded_research()
+            log.info(f"[{req_id}] Routing to PERSISTENT DEEP RESEARCH")
+
+            async def _guarded_research():
+                async with limiter.hold():
+                    async for event in run_persistent_research(messages, body, req_id):
+                        yield event
+
+            generator = _guarded_research()
 
     return StreamingResponse(
         generator,

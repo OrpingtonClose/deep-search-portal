@@ -224,6 +224,103 @@ async def concept_neighborhood(
 
 
 # ---------------------------------------------------------------------------
+# Research Conditions (persistent research memory)
+# ---------------------------------------------------------------------------
+
+async def store_conditions(
+    session_id: str,
+    query: str,
+    conditions: list[dict],
+    namespace: str = "research",
+) -> dict:
+    """Store atomic research conditions into the knowledge graph."""
+    client = _get_client()
+    resp = await client.post(
+        "/v1/research/conditions",
+        json={
+            "namespace": namespace,
+            "session_id": session_id,
+            "query": query,
+            "conditions": conditions,
+        },
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def store_entities(
+    session_id: str,
+    entities: list[dict],
+    relationships: list[dict],
+    namespace: str = "research",
+) -> dict:
+    """Store entities and relationships from a research session."""
+    client = _get_client()
+    resp = await client.post(
+        "/v1/research/entities",
+        json={
+            "namespace": namespace,
+            "session_id": session_id,
+            "entities": entities,
+            "relationships": relationships,
+        },
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def search_conditions(
+    query: str,
+    namespace: str = "research",
+    limit: int = 20,
+) -> list[dict]:
+    """Full-text search over prior research conditions."""
+    client = _get_client()
+    resp = await client.post(
+        "/v1/research/conditions/search",
+        json={
+            "namespace": namespace,
+            "query": query,
+            "limit": limit,
+        },
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def graph_neighbors(
+    entity_names: list[str],
+    namespace: str = "research",
+    max_hops: int = 2,
+    limit: int = 20,
+) -> list[dict]:
+    """Find conditions related to given entities via graph traversal."""
+    client = _get_client()
+    resp = await client.post(
+        "/v1/research/conditions/neighbors",
+        json={
+            "namespace": namespace,
+            "entity_names": entity_names,
+            "max_hops": max_hops,
+            "limit": limit,
+        },
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def research_stats(namespace: str = "research") -> dict:
+    """Get statistics about the persistent research knowledge base."""
+    client = _get_client()
+    resp = await client.get(
+        "/v1/research/stats",
+        params={"namespace": namespace},
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+# ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
 

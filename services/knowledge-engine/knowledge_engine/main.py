@@ -17,18 +17,25 @@ from .algorithms import (
 )
 from .config import LISTEN_PORT, setup_logging
 from .models import (
+    GraphNeighborsRequest,
     GraphStatsResponse,
     IngestJobStatus,
     IngestRequest,
     IngestResponse,
     JobStatus,
     NamespaceInfo,
+    ResearchConditionResult,
+    ResearchStatsResponse,
+    SearchConditionsRequest,
     SearchRequest,
     SearchResponse,
     SpreadingActivationRequest,
+    StoreConditionsRequest,
+    StoreEntitiesRequest,
     SwansonABCRequest,
 )
-from .neo4j_client import close_driver, get_driver, init_schema, clear_namespace, run_query
+from .neo4j_client import close_driver, get_driver, get_session, init_schema, clear_namespace, run_query
+from .ontology import batch_create_research_conditions, batch_create_research_entities
 from .pipeline import get_job, list_jobs, run_ingest_pipeline
 from .search import search as do_search
 
@@ -320,6 +327,176 @@ async def graph_stats(namespace: str):
         relationships=rel_counts,
         communities=communities,
         top_entities=top_entities,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Research Conditions (persistent research memory)
+# ---------------------------------------------------------------------------
+
+@app.post("/v1/research/conditions")
+async def store_research_conditions(req: StoreConditionsRequest):
+    """Store atomic conditions from a research session into Neo4j."""
+    conditions_dicts = [c.model_dump() for c in req.conditions]
+    with get_session() as session:
+        count = session.execute_write(
+            batch_create_research_conditions,
+            namespace=req.namespace,
+            session_id=req.session_id,
+            query=req.query,
+            conditions=conditions_dicts,
+        )
+    return {"stored": count, "session_id": req.session_id}
+
+
+@app.post("/v1/research/entities")
+async def store_research_entities(req: StoreEntitiesRequest):
+    """Store entities and relationships from a research session."""
+    entities_dicts = [e.model_dump() for e in req.entities]
+    rels_dicts = [r.model_dump() for r in req.relationships]
+    with get_session() as session:
+        ent_count, rel_count = session.execute_write(
+            batch_create_research_entities,
+            namespace=req.namespace,
+            session_id=req.session_id,
+            entities=entities_dicts,
+            relationships=rels_dicts,
+        )
+    return {"entities_stored": ent_count, "relationships_stored": rel_count}
+
+
+@app.post("/v1/research/conditions/search", response_model=list[ResearchConditionResult])
+async def search_research_conditions(req: SearchConditionsRequest):
+    """Full-text search over prior research conditions."""
+    tokens = [t.strip() for t in req.query.split() if len(t.strip()) > 2]
+    if not tokens:
+        return []
+    # Build Lucene query for the fulltext index
+    lucene_query = " OR ".join(tokens[:10])
+    records = run_query(
+        """
+        CALL db.index.fulltext.queryNodes('fulltext_research_conditions', $q)
+        YIELD node, score
+        WHERE node.namespace = $ns
+        RETURN node.fact AS fact, node.source_url AS source_url,
+               node.confidence AS confidence, node.angle AS angle,
+               node.is_serendipitous AS is_serendipitous,
+               node.query AS query, node.created_at AS created_at,
+               node.trust_score AS trust_score,
+               node.serendipity_score AS serendipity_score,
+               score
+        ORDER BY score DESC
+        LIMIT $limit
+        """,
+        {"q": lucene_query, "ns": req.namespace, "limit": req.limit},
+    )
+    return [
+        ResearchConditionResult(
+            fact=r["fact"],
+            source_url=r.get("source_url", ""),
+            confidence=r.get("confidence", 0.0),
+            angle=r.get("angle", ""),
+            is_serendipitous=bool(r.get("is_serendipitous", False)),
+            query=r.get("query", ""),
+            created_at=r.get("created_at", ""),
+            trust_score=r.get("trust_score", 0.0),
+            serendipity_score=r.get("serendipity_score", 0.0),
+        )
+        for r in records
+    ]
+
+
+@app.post("/v1/research/conditions/neighbors", response_model=list[ResearchConditionResult])
+async def graph_neighbor_conditions(req: GraphNeighborsRequest):
+    """Find research conditions related to given entities via graph traversal."""
+    if not req.entity_names:
+        return []
+    seed_names = [n.strip().lower() for n in req.entity_names if n.strip()]
+    if not seed_names:
+        return []
+
+    # Multi-hop expansion through Concept relationships
+    records = run_query(
+        """
+        UNWIND $seeds AS seed_name
+        MATCH (start:Concept {name: seed_name, namespace: $ns})
+        CALL {
+            WITH start
+            MATCH (start)-[*1..""" + str(req.max_hops) + """]->(neighbor:Concept {namespace: $ns})
+            RETURN DISTINCT neighbor.name AS entity_name
+        }
+        WITH collect(DISTINCT entity_name) + $seeds AS all_entities
+        UNWIND all_entities AS ename
+        MATCH (rc:ResearchCondition {namespace: $ns})
+        WHERE toLower(rc.fact) CONTAINS ename
+        RETURN DISTINCT rc.fact AS fact, rc.source_url AS source_url,
+               rc.confidence AS confidence, rc.angle AS angle,
+               rc.is_serendipitous AS is_serendipitous,
+               rc.query AS query, rc.created_at AS created_at,
+               rc.trust_score AS trust_score,
+               rc.serendipity_score AS serendipity_score
+        LIMIT $limit
+        """,
+        {"seeds": seed_names, "ns": req.namespace, "limit": req.limit},
+    )
+    return [
+        ResearchConditionResult(
+            fact=r["fact"],
+            source_url=r.get("source_url", ""),
+            confidence=r.get("confidence", 0.0),
+            angle=r.get("angle", ""),
+            is_serendipitous=bool(r.get("is_serendipitous", False)),
+            query=r.get("query", ""),
+            created_at=r.get("created_at", ""),
+            trust_score=r.get("trust_score", 0.0),
+            serendipity_score=r.get("serendipity_score", 0.0),
+        )
+        for r in records
+    ]
+
+
+@app.get("/v1/research/stats", response_model=ResearchStatsResponse)
+async def research_stats(namespace: str = "research"):
+    """Get statistics about the persistent research knowledge base."""
+    cond_records = run_query(
+        "MATCH (rc:ResearchCondition {namespace: $ns}) RETURN count(rc) AS cnt",
+        {"ns": namespace},
+    )
+    total_conditions = cond_records[0]["cnt"] if cond_records else 0
+
+    session_records = run_query(
+        "MATCH (rc:ResearchCondition {namespace: $ns}) RETURN count(DISTINCT rc.session_id) AS cnt",
+        {"ns": namespace},
+    )
+    total_sessions = session_records[0]["cnt"] if session_records else 0
+
+    query_records = run_query(
+        "MATCH (rc:ResearchCondition {namespace: $ns}) RETURN count(DISTINCT rc.query) AS cnt",
+        {"ns": namespace},
+    )
+    total_queries = query_records[0]["cnt"] if query_records else 0
+
+    ent_records = run_query(
+        "MATCH (c:Concept {namespace: $ns}) RETURN count(c) AS cnt",
+        {"ns": namespace},
+    )
+    total_entities = ent_records[0]["cnt"] if ent_records else 0
+
+    rel_records = run_query(
+        """
+        MATCH (a:Concept {namespace: $ns})-[r]->(b:Concept {namespace: $ns})
+        RETURN count(r) AS cnt
+        """,
+        {"ns": namespace},
+    )
+    total_relationships = rel_records[0]["cnt"] if rel_records else 0
+
+    return ResearchStatsResponse(
+        total_conditions=total_conditions,
+        total_sessions=total_sessions,
+        total_queries=total_queries,
+        total_entities=total_entities,
+        total_relationships=total_relationships,
     )
 
 

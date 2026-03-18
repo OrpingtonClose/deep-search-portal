@@ -57,6 +57,7 @@ def init_schema() -> None:
         ("constraint_method_id", "CREATE CONSTRAINT constraint_method_id IF NOT EXISTS FOR (m:Method) REQUIRE m.id IS UNIQUE"),
         ("constraint_topic_id", "CREATE CONSTRAINT constraint_topic_id IF NOT EXISTS FOR (t:Topic) REQUIRE t.id IS UNIQUE"),
         ("constraint_extraction_run_id", "CREATE CONSTRAINT constraint_extraction_run_id IF NOT EXISTS FOR (er:ExtractionRun) REQUIRE er.id IS UNIQUE"),
+        ("constraint_research_condition_id", "CREATE CONSTRAINT constraint_research_condition_id IF NOT EXISTS FOR (rc:ResearchCondition) REQUIRE rc.id IS UNIQUE"),
     ]
 
     indexes = [
@@ -79,6 +80,11 @@ def init_schema() -> None:
         "CREATE FULLTEXT INDEX fulltext_concepts IF NOT EXISTS FOR (c:Concept) ON EACH [c.name]",
         "CREATE FULLTEXT INDEX fulltext_claims IF NOT EXISTS FOR (c:Claim) ON EACH [c.statement]",
         "CREATE FULLTEXT INDEX fulltext_anomalies IF NOT EXISTS FOR (a:Anomaly) ON EACH [a.description]",
+        # ResearchCondition indexes
+        "CREATE INDEX idx_rc_ns IF NOT EXISTS FOR (rc:ResearchCondition) ON (rc.namespace)",
+        "CREATE INDEX idx_rc_session IF NOT EXISTS FOR (rc:ResearchCondition) ON (rc.session_id)",
+        "CREATE INDEX idx_rc_query IF NOT EXISTS FOR (rc:ResearchCondition) ON (rc.query)",
+        "CREATE FULLTEXT INDEX fulltext_research_conditions IF NOT EXISTS FOR (rc:ResearchCondition) ON EACH [rc.fact, rc.query, rc.angle]",
     ]
 
     with driver.session() as session:
@@ -109,6 +115,7 @@ def clear_namespace(namespace: str) -> dict:
         labels = [
             "Chunk", "Concept", "Claim", "Hypothesis", "Anomaly",
             "Evidence", "Method", "Topic", "ExtractionRun", "Document",
+            "ResearchCondition",
         ]
         total_deleted = 0
         for label in labels:

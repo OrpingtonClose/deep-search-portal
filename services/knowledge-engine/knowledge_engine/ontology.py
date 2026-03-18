@@ -1,7 +1,8 @@
 """Epistemic ontology — node types, relationship types, and Neo4j loading.
 
 The ontology has four layers:
-  1. Epistemic nodes: Concept, Claim, Hypothesis, Anomaly, Evidence, Method
+  1. Epistemic nodes: Concept, Claim, Hypothesis, Anomaly, Evidence, Method,
+     ResearchCondition
   2. Epistemic relationships: typed, directional, with confidence/strength
   3. Provenance: Document → Chunk → extracted nodes, ExtractionRun metadata
   4. Serendipity scoring: computed properties (betweenness, community, RNS)
@@ -354,6 +355,170 @@ def create_method_node(
         )
 
     return actual_id
+
+
+def create_research_condition_node(
+    tx: Any,
+    namespace: str,
+    session_id: str,
+    query: str,
+    fact: str,
+    source_url: str = "",
+    confidence: float = 0.5,
+    trust_score: float = 0.5,
+    angle: str = "",
+    domain: str = "",
+    is_serendipitous: bool = False,
+    serendipity_score: float = 0.0,
+) -> str:
+    """Create a :ResearchCondition node — a finding from a live research session."""
+    cond_id = _uid("rc-")
+    tx.run(
+        """
+        CREATE (rc:ResearchCondition {
+            id: $id,
+            namespace: $ns,
+            session_id: $session_id,
+            query: $query,
+            fact: $fact,
+            source_url: $source_url,
+            confidence: $confidence,
+            trust_score: $trust_score,
+            angle: $angle,
+            domain: $domain,
+            is_serendipitous: $is_serendipitous,
+            serendipity_score: $serendipity_score,
+            verified: false,
+            created_at: $now
+        })
+        """,
+        id=cond_id, ns=namespace, session_id=session_id, query=query,
+        fact=fact, source_url=source_url, confidence=confidence,
+        trust_score=trust_score, angle=angle, domain=domain,
+        is_serendipitous=is_serendipitous, serendipity_score=serendipity_score,
+        now=_now(),
+    )
+    return cond_id
+
+
+def batch_create_research_conditions(
+    tx: Any,
+    namespace: str,
+    session_id: str,
+    query: str,
+    conditions: list[dict],
+) -> int:
+    """Create multiple :ResearchCondition nodes in a single transaction.
+
+    Each dict in *conditions* should have keys: fact, source_url, confidence,
+    trust_score, angle, domain, is_serendipitous, serendipity_score.
+    Returns the number of nodes created.
+    """
+    now = _now()
+    count = 0
+    for c in conditions:
+        fact = c.get("fact", "").strip()
+        if not fact:
+            continue
+        cond_id = _uid("rc-")
+        tx.run(
+            """
+            CREATE (rc:ResearchCondition {
+                id: $id,
+                namespace: $ns,
+                session_id: $session_id,
+                query: $query,
+                fact: $fact,
+                source_url: $source_url,
+                confidence: $confidence,
+                trust_score: $trust_score,
+                angle: $angle,
+                domain: $domain,
+                is_serendipitous: $is_serendipitous,
+                serendipity_score: $serendipity_score,
+                verified: false,
+                created_at: $now
+            })
+            """,
+            id=cond_id, ns=namespace, session_id=session_id, query=query,
+            fact=fact,
+            source_url=c.get("source_url", ""),
+            confidence=float(c.get("confidence", 0.5)),
+            trust_score=float(c.get("trust_score", 0.5)),
+            angle=c.get("angle", ""),
+            domain=c.get("domain", ""),
+            is_serendipitous=bool(c.get("is_serendipitous", False)),
+            serendipity_score=float(c.get("serendipity_score", 0.0)),
+            now=now,
+        )
+        count += 1
+    return count
+
+
+def batch_create_research_entities(
+    tx: Any,
+    namespace: str,
+    session_id: str,
+    entities: list[dict],
+    relationships: list[dict],
+) -> tuple[int, int]:
+    """Create Concept nodes and relationships from research entity extraction.
+
+    Returns (entities_created, relationships_created).
+    """
+    now = _now()
+    ent_count = 0
+    for ent in entities:
+        name = ent.get("name", "").strip().lower()
+        etype = ent.get("type", "concept")
+        if not name or len(name) < 2:
+            continue
+        concept_id = _uid("concept-")
+        tx.run(
+            """
+            MERGE (c:Concept {name: $name, namespace: $ns})
+            ON CREATE SET
+                c.id = $id,
+                c.domains = [$etype],
+                c.abstraction_level = 'concrete',
+                c.mention_count = 1,
+                c.created_at = $now,
+                c.community_id = -1,
+                c.cross_community_edges = 0,
+                c.betweenness_centrality = 0.0,
+                c.rns_score = 0.0,
+                c.visit_count = 0,
+                c.first_seen_session = $session_id
+            ON MATCH SET
+                c.mention_count = c.mention_count + 1
+            """,
+            id=concept_id, name=name, ns=namespace, etype=etype,
+            session_id=session_id, now=now,
+        )
+        ent_count += 1
+
+    rel_count = 0
+    for rel in relationships:
+        e1 = rel.get("entity1", "").strip().lower()
+        e2 = rel.get("entity2", "").strip().lower()
+        rtype = rel.get("type", "RELATED_TO").upper().replace(" ", "_")
+        is_bridge = bool(rel.get("is_bridge", False))
+        if not e1 or not e2 or e1 == e2:
+            continue
+        tx.run(
+            """
+            MATCH (a:Concept {name: $e1, namespace: $ns})
+            MATCH (b:Concept {name: $e2, namespace: $ns})
+            MERGE (a)-[r:""" + rtype + """]->(b)
+            SET r.is_bridge = $is_bridge,
+                r.weight = coalesce(r.weight, 0.0) + 1.0,
+                r.updated_at = $now
+            """,
+            e1=e1, e2=e2, ns=namespace, is_bridge=is_bridge, now=now,
+        )
+        rel_count += 1
+
+    return ent_count, rel_count
 
 
 def create_extraction_run(

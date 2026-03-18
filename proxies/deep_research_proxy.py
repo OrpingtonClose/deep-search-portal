@@ -36,6 +36,7 @@ from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from shared import (
+    INGEST_DB_PATH,
     ConcurrencyLimiter,
     RequestTracker,
     create_app,
@@ -43,8 +44,10 @@ from shared import (
     http_client,
     is_utility_request,
     make_sse_chunk,
+    register_ingest_routes,
     register_standard_routes,
     require_env,
+    search_ingested_text,
     setup_logging,
     stream_passthrough,
 )
@@ -64,6 +67,7 @@ MAX_CONCURRENT = env_int("MAX_CONCURRENT_RESEARCH", 4, minimum=1)
 WEBPAGE_MAX_CHARS = 15000
 PYTHON_TIMEOUT = 30
 PYTHON_OUTPUT_MAX = 5000
+INGEST_DB = os.getenv("INGEST_DB", INGEST_DB_PATH)
 
 log.info(
     f"Config: model={UPSTREAM_MODEL}, upstream={UPSTREAM_BASE}, "
@@ -120,6 +124,32 @@ NATIVE_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "knowledge_search",
+            "description": (
+                "Search through previously ingested text documents (books, papers, reports, etc.) "
+                "that have been uploaded to the knowledge base. Returns the most relevant text "
+                "chunks matching the query. Use this FIRST when the user's question may relate "
+                "to documents they have provided."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query to find relevant text in ingested documents",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of text chunks to return (default 5, max 20)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 # --- System Prompt ---
@@ -167,6 +197,7 @@ Your final answer must be:
 - After each tool result, briefly explain what you learned and what gap remains.
 - Do NOT repeat the same search query or fetch the same URL twice \u2014 try different queries instead.
 - If a tool call fails, try a different approach immediately.
+- If there are ingested documents in the knowledge base, use knowledge_search FIRST to check for relevant content before searching the web.
 """
 
 
@@ -278,6 +309,30 @@ def tool_python_exec(code: str) -> str:
         return f"Error executing code: {str(e)}"
 
 
+def tool_knowledge_search(query: str, limit: int = 5) -> str:
+    """Search through ingested text documents."""
+    limit = min(max(limit, 1), 20)
+    results = search_ingested_text(INGEST_DB, query, limit)
+    if not results:
+        return "No matching content found in ingested documents."
+
+    formatted = []
+    for i, r in enumerate(results, 1):
+        doc_title = r.get("doc_title", "Unknown")
+        chunk_idx = r.get("chunk_index", 0)
+        content = r.get("content", "")
+        source = r.get("source", "")
+        header = f"{i}. **{doc_title}** (chunk {chunk_idx + 1})"
+        if source:
+            header += f" [source: {source}]"
+        # Truncate very long chunks for readability in agent context
+        if len(content) > 3000:
+            content = content[:3000] + "\n[... chunk truncated ...]"
+        formatted.append(f"{header}\n{content}")
+
+    return "\n\n---\n\n".join(formatted)
+
+
 async def execute_tool(tool_name: str, arguments: dict) -> str:
     """Route and execute a tool call."""
     if tool_name == "searxng_search":
@@ -290,6 +345,13 @@ async def execute_tool(tool_name: str, arguments: dict) -> str:
     elif tool_name == "python_exec":
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, tool_python_exec, arguments.get("code", ""))
+    elif tool_name == "knowledge_search":
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, tool_knowledge_search,
+            arguments.get("query", ""),
+            arguments.get("limit", 5),
+        )
     else:
         return f"Unknown tool: {tool_name}"
 
@@ -453,6 +515,13 @@ def _summarize_tool_result(tool_name: str, arguments: dict, result: str, duratio
         if len(output) <= 150:
             return f"{duration:.1f}s \u2014 {output}"
         return f"{duration:.1f}s \u2014 {output[:150]}..."
+
+    elif tool_name == "knowledge_search":
+        query = arguments.get("query", "?")
+        chunks = result.count("---")
+        if "No matching content" in result:
+            return f"{duration:.1f}s \u2014 no matching documents"
+        return f"{duration:.1f}s \u2014 {chunks + 1} chunks found for \"{query[:50]}\""
 
     else:
         return f"{duration:.1f}s \u2014 {len(result)} chars"
@@ -664,6 +733,8 @@ async def run_deep_research(
                 elif tool_name == "python_exec":
                     code_preview = arguments.get('code', '')[:100].replace('\n', ' ')
                     yield chunk(f"\U0001f40d Running code: `{code_preview}`\n")
+                elif tool_name == "knowledge_search":
+                    yield chunk(f"\U0001f4da Searching knowledge base: `{arguments.get('query', '')}`\n")
                 else:
                     yield chunk(f"\U0001f527 Calling: {tool_name}\n")
 
@@ -761,6 +832,8 @@ register_standard_routes(
         "max_turns": MAX_AGENT_TURNS,
     },
 )
+
+register_ingest_routes(app, INGEST_DB, log)
 
 
 @app.get("/v1/models")

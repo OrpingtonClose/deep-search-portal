@@ -32,12 +32,14 @@ from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from shared import (
+    INGEST_DB_PATH,
     RequestTracker,
     create_app,
     env_int,
     http_client,
     is_utility_request,
     make_sse_chunk,
+    register_ingest_routes,
     register_standard_routes,
     require_env,
     setup_logging,
@@ -53,6 +55,7 @@ UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://api.mistral.ai/v1")
 UPSTREAM_KEY = require_env("UPSTREAM_KEY")
 UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "mistral-large-latest")
 LISTEN_PORT = env_int("THINKING_PROXY_PORT", 9100, minimum=1)
+INGEST_DB = os.getenv("INGEST_DB", INGEST_DB_PATH)
 
 log.info(f"Config: upstream={UPSTREAM_BASE}, model={UPSTREAM_MODEL}, port={LISTEN_PORT}")
 
@@ -434,6 +437,8 @@ register_standard_routes(
         "upstream_model": UPSTREAM_MODEL,
     },
 )
+
+register_ingest_routes(app, INGEST_DB, log)
 
 
 @app.get("/v1/models")

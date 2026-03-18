@@ -97,6 +97,7 @@ from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from shared import (
+    INGEST_DB_PATH,
     ConcurrencyLimiter,
     RequestTracker,
     create_app,
@@ -104,8 +105,10 @@ from shared import (
     http_client,
     is_utility_request,
     make_sse_chunk,
+    register_ingest_routes,
     register_standard_routes,
     require_env,
+    search_ingested_text,
     setup_logging,
     stream_passthrough,
 )
@@ -132,6 +135,7 @@ WEBPAGE_MAX_CHARS = 15000
 PYTHON_TIMEOUT = 30
 PYTHON_OUTPUT_MAX = 5000
 MAX_PRIOR_CONDITIONS = 20
+INGEST_DB = os.getenv("INGEST_DB", INGEST_DB_PATH)
 # Saturation detection thresholds
 NOVELTY_EXPAND_THRESHOLD = 0.3
 NOVELTY_STOP_THRESHOLD = 0.05
@@ -709,6 +713,32 @@ NATIVE_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "knowledge_search",
+            "description": (
+                "Search through previously ingested text documents (books, papers, reports, etc.) "
+                "that have been uploaded to the knowledge base. Returns the most relevant text "
+                "chunks matching the query. Use this FIRST when the user's question may relate "
+                "to documents they have provided."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query to find relevant text in ingested documents",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of text chunks to return (default 5, max 20)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -980,6 +1010,29 @@ async def tool_wikidata_query(entity: str) -> str:
         return f"Wikidata query error: {str(e)}"
 
 
+def tool_knowledge_search(query: str, limit: int = 5) -> str:
+    """Search through ingested text documents."""
+    limit = min(max(limit, 1), 20)
+    results = search_ingested_text(INGEST_DB, query, limit)
+    if not results:
+        return "No matching content found in ingested documents."
+
+    formatted = []
+    for i, r in enumerate(results, 1):
+        doc_title = r.get("doc_title", "Unknown")
+        chunk_idx = r.get("chunk_index", 0)
+        content = r.get("content", "")
+        source = r.get("source", "")
+        header = f"{i}. **{doc_title}** (chunk {chunk_idx + 1})"
+        if source:
+            header += f" [source: {source}]"
+        if len(content) > 3000:
+            content = content[:3000] + "\n[... chunk truncated ...]"
+        formatted.append(f"{header}\n{content}")
+
+    return "\n\n---\n\n".join(formatted)
+
+
 async def execute_tool(tool_name: str, arguments: dict) -> str:
     """Route and execute a tool call."""
     if tool_name == "searxng_search":
@@ -1001,6 +1054,13 @@ async def execute_tool(tool_name: str, arguments: dict) -> str:
         return await tool_wayback_fetch(arguments.get("url", ""))
     elif tool_name == "wikidata_query":
         return await tool_wikidata_query(arguments.get("entity", ""))
+    elif tool_name == "knowledge_search":
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, tool_knowledge_search,
+            arguments.get("query", ""),
+            arguments.get("limit", 5),
+        )
     else:
         return f"Unknown tool: {tool_name}"
 
@@ -1445,6 +1505,7 @@ Initial search query: {angle_query}
 5. Be thorough but focused on your assigned angle.
 6. Use arxiv_search for academic papers, wikidata_query for structured facts.
 7. Use wayback_fetch if a link is dead or unavailable.
+8. Use knowledge_search to search through any ingested text documents in the knowledge base.
 
 {serendipity_instruction}
 
@@ -1462,7 +1523,7 @@ When you are done researching, output your findings in this exact JSON format:
 - You MUST use tools. Never answer from training data alone.
 - Do NOT repeat the same search query or fetch the same URL twice.
 - If a tool call fails, try a different approach.
-- Use different tools for different needs (web search, arxiv for papers, wikidata for facts).
+- Use different tools for different needs (web search, arxiv for papers, wikidata for facts, knowledge_search for ingested documents).
 
 **WHEN TO STOP:**
 - You have found 3-10 distinct facts about your angle
@@ -2413,6 +2474,8 @@ register_standard_routes(
         "tools": [t["function"]["name"] for t in NATIVE_TOOLS],
     },
 )
+
+register_ingest_routes(app, INGEST_DB, log)
 
 
 @app.get("/v1/models")

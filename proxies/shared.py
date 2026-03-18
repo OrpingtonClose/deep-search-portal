@@ -12,6 +12,7 @@ import json
 import logging
 import logging.handlers
 import os
+import sqlite3
 import sys
 import time
 import uuid
@@ -20,7 +21,7 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 
@@ -348,6 +349,295 @@ def register_standard_routes(
                 })
         except FileNotFoundError:
             return JSONResponse({"error": "Log file not found"}, status_code=404)
+
+
+# ============================================================================
+# Text Ingestion Infrastructure
+# ============================================================================
+
+INGEST_DB_PATH = os.getenv("INGEST_DB", "/opt/ingested_texts/ingest.db")
+INGEST_CHUNK_SIZE = int(os.getenv("INGEST_CHUNK_SIZE", "2000"))
+INGEST_CHUNK_OVERLAP = int(os.getenv("INGEST_CHUNK_OVERLAP", "200"))
+
+
+def _init_ingest_db(db_path: str) -> None:
+    """Create the ingestion SQLite database and tables if they don't exist."""
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ingested_documents (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                source TEXT DEFAULT '',
+                total_chunks INTEGER DEFAULT 0,
+                total_chars INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS document_chunks (
+                id TEXT PRIMARY KEY,
+                doc_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (doc_id) REFERENCES ingested_documents(id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON document_chunks(doc_id)
+        """)
+
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
+            USING fts5(content, doc_title, source, content=document_chunks, content_rowid=rowid)
+        """)
+
+        # Triggers to keep FTS5 in sync
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON document_chunks BEGIN
+                INSERT INTO chunks_fts(rowid, content, doc_title, source)
+                SELECT new.rowid, new.content,
+                       d.title, d.source
+                FROM ingested_documents d WHERE d.id = new.doc_id;
+            END
+        """)
+
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON document_chunks BEGIN
+                INSERT INTO chunks_fts(chunks_fts, rowid, content, doc_title, source)
+                SELECT 'delete', old.rowid, old.content,
+                       d.title, d.source
+                FROM ingested_documents d WHERE d.id = old.doc_id;
+            END
+        """)
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
+    """Split *text* into overlapping chunks."""
+    if len(text) <= chunk_size:
+        return [text]
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunk = text[start:end]
+        chunks.append(chunk)
+        start += chunk_size - overlap
+    return chunks
+
+
+def ingest_document(
+    db_path: str,
+    title: str,
+    text: str,
+    source: str = "",
+    chunk_size: int = INGEST_CHUNK_SIZE,
+    chunk_overlap: int = INGEST_CHUNK_OVERLAP,
+) -> dict:
+    """Chunk and store a large text document. Returns metadata about the ingestion."""
+    _init_ingest_db(db_path)
+    doc_id = f"doc-{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc).isoformat()
+    chunks = _chunk_text(text, chunk_size, chunk_overlap)
+
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """INSERT INTO ingested_documents (id, title, source, total_chunks, total_chars, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (doc_id, title, source, len(chunks), len(text), now),
+        )
+        rows = [
+            (f"chunk-{uuid.uuid4().hex[:12]}", doc_id, i, chunk, now)
+            for i, chunk in enumerate(chunks)
+        ]
+        conn.executemany(
+            """INSERT INTO document_chunks (id, doc_id, chunk_index, content, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "doc_id": doc_id,
+        "title": title,
+        "source": source,
+        "total_chunks": len(chunks),
+        "total_chars": len(text),
+        "chunk_size": chunk_size,
+        "chunk_overlap": chunk_overlap,
+    }
+
+
+def search_ingested_text(db_path: str, query: str, limit: int = 10) -> list[dict]:
+    """Search ingested documents using FTS5. Returns matching chunks ranked by relevance."""
+    _init_ingest_db(db_path)
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
+        tokens = [t.strip() for t in query.split() if len(t.strip()) > 1]
+        if not tokens:
+            return []
+        fts_query = " OR ".join(tokens[:15])
+
+        cursor = conn.execute(
+            """SELECT dc.doc_id, dc.chunk_index, dc.content,
+                      d.title, d.source,
+                      rank
+               FROM chunks_fts
+               JOIN document_chunks dc ON chunks_fts.rowid = dc.rowid
+               JOIN ingested_documents d ON dc.doc_id = d.id
+               WHERE chunks_fts MATCH ?
+               ORDER BY rank
+               LIMIT ?""",
+            (fts_query, limit),
+        )
+        rows = cursor.fetchall()
+        return [
+            {
+                "doc_id": r[0],
+                "chunk_index": r[1],
+                "content": r[2],
+                "doc_title": r[3],
+                "source": r[4],
+                "rank": r[5],
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logging.getLogger("ingest").warning(f"FTS5 search error: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def list_ingested_documents(db_path: str) -> list[dict]:
+    """Return metadata for all ingested documents."""
+    _init_ingest_db(db_path)
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
+        cursor = conn.execute(
+            """SELECT id, title, source, total_chunks, total_chars, created_at
+               FROM ingested_documents
+               ORDER BY created_at DESC"""
+        )
+        rows = cursor.fetchall()
+        return [
+            {
+                "doc_id": r[0],
+                "title": r[1],
+                "source": r[2],
+                "total_chunks": r[3],
+                "total_chars": r[4],
+                "created_at": r[5],
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def delete_ingested_document(db_path: str, doc_id: str) -> bool:
+    """Delete a document and all its chunks. Returns True if the document existed."""
+    _init_ingest_db(db_path)
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        existing = conn.execute(
+            "SELECT id FROM ingested_documents WHERE id = ?", (doc_id,)
+        ).fetchone()
+        if not existing:
+            return False
+        # The FTS delete trigger fires automatically for each chunk row
+        conn.execute("DELETE FROM document_chunks WHERE doc_id = ?", (doc_id,))
+        conn.execute("DELETE FROM ingested_documents WHERE id = ?", (doc_id,))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def register_ingest_routes(
+    app: FastAPI,
+    db_path: str,
+    log: logging.Logger,
+) -> None:
+    """
+    Register text-ingestion REST endpoints on *app*:
+
+    - ``POST /v1/ingest`` — ingest a large text document
+    - ``GET  /v1/documents`` — list ingested documents
+    - ``DELETE /v1/documents/{doc_id}`` — remove a document
+    """
+
+    @app.post("/v1/ingest")
+    async def ingest_text(request: Request):
+        try:
+            body = await request.json()
+        except Exception as e:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"message": f"Invalid JSON body: {e}", "type": "invalid_request"}},
+            )
+
+        title = body.get("title", "").strip()
+        text = body.get("text", "").strip()
+        source = body.get("source", "").strip()
+
+        if not title:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"message": "'title' is required", "type": "invalid_request"}},
+            )
+        if not text:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"message": "'text' is required and must not be empty", "type": "invalid_request"}},
+            )
+
+        log.info(f"Ingesting document: title={title!r}, chars={len(text)}, source={source!r}")
+
+        try:
+            result = ingest_document(db_path, title, text, source)
+        except Exception as e:
+            log.error(f"Ingestion failed: {e}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": {"message": f"Ingestion failed: {e}", "type": "internal_error"}},
+            )
+
+        log.info(
+            f"Ingested document {result['doc_id']}: "
+            f"{result['total_chunks']} chunks, {result['total_chars']} chars"
+        )
+        return JSONResponse(result)
+
+    @app.get("/v1/documents")
+    async def list_documents():
+        docs = list_ingested_documents(db_path)
+        return JSONResponse({"documents": docs, "total": len(docs)})
+
+    @app.delete("/v1/documents/{doc_id}")
+    async def remove_document(doc_id: str):
+        deleted = delete_ingested_document(db_path, doc_id)
+        if not deleted:
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"message": f"Document {doc_id} not found", "type": "not_found"}},
+            )
+        log.info(f"Deleted document: {doc_id}")
+        return JSONResponse({"deleted": True, "doc_id": doc_id})
 
 
 # ============================================================================

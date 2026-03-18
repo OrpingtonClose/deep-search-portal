@@ -40,6 +40,7 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 - **`searxng_search`** — Web search via local SearXNG (returns top 10 results with snippets)
 - **`fetch_webpage`** — Fetches and extracts text from web pages (15K char limit)
 - **`python_exec`** — Sandboxed Python execution for calculations/analysis (30s timeout)
+- **`knowledge_search`** — Search through ingested text documents (books, papers, reports)
 
 ## Repo Structure
 
@@ -88,6 +89,9 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 | `/v1/chat/completions` | Main OpenAI-compatible endpoint (on each proxy) |
 | `/health` | Health check with active request details |
 | `/logs?lines=100` | Last N lines from the debug log |
+| `POST /v1/ingest` | Ingest a large text document into the knowledge base |
+| `GET /v1/documents` | List all ingested documents |
+| `DELETE /v1/documents/{doc_id}` | Remove an ingested document |
 
 ## Provider Configuration
 
@@ -103,6 +107,46 @@ Open WebUI connects to 8 providers (configured in `start_openwebui.sh`):
 | 5 | Thinking Proxy | `mistral-large-thinking` |
 | 6 | Deep Research | `miroflow` |
 | 7 | Mistral Direct | `mistral-large-latest`, `mistral-medium-latest` |
+
+## Text Ingestion
+
+All three proxies support ingesting large text documents (books, papers, reports) that agents can search during research.
+
+### Ingest a document
+
+```bash
+curl -X POST http://localhost:9200/v1/ingest \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "My Research Paper",
+    "text": "Full text content here...",
+    "source": "https://example.com/paper.pdf"
+  }'
+```
+
+The text is automatically chunked (~2000 chars with 200 char overlap) and indexed with SQLite FTS5 for fast full-text search.
+
+### List / delete documents
+
+```bash
+# List all ingested documents
+curl http://localhost:9200/v1/documents
+
+# Delete a document
+curl -X DELETE http://localhost:9200/v1/documents/doc-abc123
+```
+
+### Agent usage
+
+The `knowledge_search` tool is available to the MiroFlow and Persistent Research agents. When ingested documents exist, agents will search them first before querying the web.
+
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `INGEST_DB` | `/opt/ingested_texts/ingest.db` | Path to the ingestion SQLite database |
+| `INGEST_CHUNK_SIZE` | `2000` | Characters per chunk |
+| `INGEST_CHUNK_OVERLAP` | `200` | Overlap between consecutive chunks |
 
 ## Design Philosophy
 

@@ -120,6 +120,78 @@ NATIVE_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "knowledge_graph_search",
+            "description": (
+                "Search the Neo4j knowledge graph for relevant concepts, claims, evidence, "
+                "anomalies, and text chunks. Supports hybrid search (keyword + graph traversal "
+                "with reciprocal rank fusion). Use this FIRST when the user's question may relate "
+                "to documents or knowledge that has been ingested into the knowledge engine."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query",
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "The conversation/context namespace to search within (default: 'default')",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["hybrid", "keyword", "graph"],
+                        "description": "Search mode (default: 'hybrid')",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results to return (default 10, max 50)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "knowledge_discover",
+            "description": (
+                "Run graph discovery algorithms on the knowledge graph to find hidden "
+                "connections and serendipitous links. Supports: spreading_activation (multi-hop "
+                "activation propagation from seed concepts), swanson_abc (find concepts connected "
+                "through intermediaries but not directly — bisociation discovery), and "
+                "information_gaps (find under-connected but important concepts)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "algorithm": {
+                        "type": "string",
+                        "enum": ["spreading_activation", "swanson_abc", "information_gaps"],
+                        "description": "The discovery algorithm to run",
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "The conversation/context namespace",
+                    },
+                    "seed_concepts": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Starting concept names (required for spreading_activation and swanson_abc)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results (default 15)",
+                    },
+                },
+                "required": ["algorithm", "namespace"],
+            },
+        },
+    },
 ]
 
 # --- System Prompt ---
@@ -167,6 +239,8 @@ Your final answer must be:
 - After each tool result, briefly explain what you learned and what gap remains.
 - Do NOT repeat the same search query or fetch the same URL twice \u2014 try different queries instead.
 - If a tool call fails, try a different approach immediately.
+- If there is a knowledge graph available, use knowledge_graph_search FIRST to check for relevant ingested content before searching the web.
+- Use knowledge_discover to find hidden connections between concepts via graph algorithms (spreading activation, Swanson ABC, information gaps).
 """
 
 
@@ -278,6 +352,116 @@ def tool_python_exec(code: str) -> str:
         return f"Error executing code: {str(e)}"
 
 
+async def tool_knowledge_graph_search(arguments: dict) -> str:
+    """Search the knowledge graph via the knowledge engine microservice."""
+    try:
+        import knowledge_client
+        result = await knowledge_client.search(
+            namespace=arguments.get("namespace", "default"),
+            query=arguments.get("query", ""),
+            mode=arguments.get("mode", "hybrid"),
+            limit=min(arguments.get("limit", 10), 50),
+        )
+        results = result.get("results", [])
+        if not results:
+            return "No matching knowledge found in the graph."
+
+        formatted = []
+        for i, r in enumerate(results, 1):
+            node_type = r.get("node_type", "")
+            name = r.get("name", "")
+            content = r.get("content", "")
+            score = r.get("score", 0)
+            props = r.get("properties", {})
+            source_doc = r.get("source_doc", "")
+
+            header = f"{i}. [{node_type}]"
+            if name:
+                header += f" **{name}**"
+            if source_doc:
+                header += f" (from: {source_doc})"
+            header += f" [score: {score:.3f}]"
+
+            body = content[:2000] if content else ""
+            if props:
+                prop_strs = []
+                for k, v in props.items():
+                    if k not in ("id",) and v is not None:
+                        prop_strs.append(f"{k}: {v}")
+                if prop_strs:
+                    body += "\n  Properties: " + ", ".join(prop_strs[:5])
+
+            formatted.append(f"{header}\n{body}" if body else header)
+
+        return "\n\n---\n\n".join(formatted)
+
+    except Exception as e:
+        return f"Knowledge graph search error: {e}"
+
+
+async def tool_knowledge_discover(arguments: dict) -> str:
+    """Run graph discovery algorithms via the knowledge engine microservice."""
+    try:
+        import knowledge_client
+        algorithm = arguments.get("algorithm", "")
+        namespace = arguments.get("namespace", "default")
+        seed_concepts = arguments.get("seed_concepts", [])
+        limit = arguments.get("limit", 15)
+
+        if algorithm == "spreading_activation":
+            if not seed_concepts:
+                return "Error: seed_concepts required for spreading_activation"
+            result = await knowledge_client.spreading_activation(
+                namespace=namespace,
+                seed_concepts=seed_concepts,
+                limit=limit,
+            )
+        elif algorithm == "swanson_abc":
+            if not seed_concepts:
+                return "Error: seed_concepts required for swanson_abc"
+            result = await knowledge_client.swanson_abc(
+                namespace=namespace,
+                seed_concept=seed_concepts[0],
+                limit=limit,
+            )
+        elif algorithm == "information_gaps":
+            result = await knowledge_client.information_gaps(
+                namespace=namespace,
+                limit=limit,
+            )
+        else:
+            return f"Unknown algorithm: {algorithm}. Use: spreading_activation, swanson_abc, information_gaps"
+
+        discoveries = result.get("results", [])
+        if not discoveries:
+            return f"No discoveries from {algorithm}."
+
+        formatted = [f"**{algorithm.replace('_', ' ').title()} Results:**\n"]
+        for i, d in enumerate(discoveries, 1):
+            parts = [f"{i}."]
+            if "name" in d:
+                parts.append(f"**{d['name']}**")
+            elif "target_concept" in d:
+                parts.append(f"**{d['target_concept']}**")
+            if "activation" in d:
+                parts.append(f"(activation: {d['activation']:.3f})")
+            if "discovery_score" in d:
+                parts.append(f"(discovery score: {d['discovery_score']:.3f})")
+            if "gap_score" in d:
+                parts.append(f"(gap score: {d['gap_score']:.3f})")
+            if "bridge_count" in d:
+                parts.append(f"via {d['bridge_count']} bridge concepts")
+            if "top_bridges" in d:
+                bridge_names = [b.get("name", "?") for b in d["top_bridges"][:3]]
+                parts.append(f"[bridges: {', '.join(bridge_names)}]")
+            formatted.append(" ".join(parts))
+
+        return "\n".join(formatted)
+
+    except Exception as e:
+        return f"Knowledge discovery error: {e}"
+
+
 async def execute_tool(tool_name: str, arguments: dict) -> str:
     """Route and execute a tool call."""
     if tool_name == "searxng_search":
@@ -290,6 +474,10 @@ async def execute_tool(tool_name: str, arguments: dict) -> str:
     elif tool_name == "python_exec":
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, tool_python_exec, arguments.get("code", ""))
+    elif tool_name == "knowledge_graph_search":
+        return await tool_knowledge_graph_search(arguments)
+    elif tool_name == "knowledge_discover":
+        return await tool_knowledge_discover(arguments)
     else:
         return f"Unknown tool: {tool_name}"
 

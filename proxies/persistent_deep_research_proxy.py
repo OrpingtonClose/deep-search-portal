@@ -101,6 +101,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from langgraph.graph import END, START, StateGraph
 
 import knowledge_client
+import social_media_scrapers
 import veritas_inquisitor
 
 from shared import (
@@ -931,6 +932,159 @@ NATIVE_TOOLS = [
                             "Twitter search query. Supports operators like "
                             "'from:elonmusk since:2024-01-01 \"AI safety\"'"
                         ),
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "social_media_search",
+            "description": (
+                "Search social media platforms via commercial scrapers (Bright Data + Apify). "
+                "Supports: twitter, reddit, instagram, tiktok, linkedin, youtube. "
+                "WARNING: These are censored commercial services — results may be filtered, "
+                "truncated, or silently dropped. The tool will flag suspicious gaps. "
+                "Cost is tracked per-call; budget limits are enforced. "
+                "For Twitter specifically, prefer the dedicated twitter_search tool."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "platform": {
+                        "type": "string",
+                        "enum": ["twitter", "reddit", "instagram", "tiktok", "linkedin", "youtube"],
+                        "description": "Social media platform to search",
+                    },
+                    "query": {"type": "string", "description": "Search query"},
+                    "subreddit": {
+                        "type": "string",
+                        "description": "Reddit-only: subreddit to search within (e.g., 'wallstreetbets')",
+                    },
+                    "result_type": {
+                        "type": "string",
+                        "description": "Platform-specific result type (e.g., 'posts', 'videos')",
+                    },
+                },
+                "required": ["platform", "query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reddit_search",
+            "description": (
+                "Search Reddit posts and comments via commercial scrapers (Bright Data/Apify). "
+                "WARNING: Censored service — content moderation may filter results. "
+                "Cross-validate thin results with chan archives or web search. "
+                "Cost tracked and budget-limited."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "subreddit": {
+                        "type": "string",
+                        "description": "Optional: subreddit to search within (e.g., 'wallstreetbets')",
+                    },
+                    "sort": {
+                        "type": "string",
+                        "enum": ["relevance", "hot", "top", "new"],
+                        "description": "Sort order (default: relevance)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "instagram_search",
+            "description": (
+                "Search Instagram posts by hashtag or keyword via commercial scrapers. "
+                "WARNING: Heavily censored platform — NSFW, political, and controversial "
+                "content is aggressively filtered. Treat thin results with skepticism. "
+                "Cost tracked and budget-limited."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Hashtag or keyword to search"},
+                    "result_type": {
+                        "type": "string",
+                        "description": "'posts' (default) or 'profiles'",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "tiktok_search",
+            "description": (
+                "Search TikTok videos by keyword via commercial scrapers. "
+                "WARNING: Censored platform — content moderation and geo-restrictions "
+                "may limit results. Cost tracked and budget-limited."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "result_type": {
+                        "type": "string",
+                        "description": "'posts' (default)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "linkedin_search",
+            "description": (
+                "Search LinkedIn posts by keyword via Bright Data (no Apify fallback). "
+                "WARNING: Heavily restricted platform — LinkedIn aggressively blocks scrapers "
+                "and filters content. Only available via Bright Data. "
+                "Cost tracked and budget-limited."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "result_type": {
+                        "type": "string",
+                        "description": "'posts' (default)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "youtube_search",
+            "description": (
+                "Search YouTube videos by keyword via commercial scrapers. "
+                "Returns video titles, channels, view counts, and descriptions. "
+                "WARNING: Censored service — content moderation may filter results. "
+                "Cost tracked and budget-limited."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "result_type": {
+                        "type": "string",
+                        "description": "'videos' (default)",
                     },
                 },
                 "required": ["query"],
@@ -1954,6 +2108,39 @@ async def execute_tool(tool_name: str, arguments: dict) -> str:
         )
     elif tool_name == "twitter_search":
         return await tool_twitter_search(arguments.get("query", ""))
+    elif tool_name == "social_media_search":
+        return await social_media_scrapers.tool_social_media_search(
+            platform=arguments.get("platform", ""),
+            query=arguments.get("query", ""),
+            subreddit=arguments.get("subreddit", ""),
+            result_type=arguments.get("result_type", "posts"),
+        )
+    elif tool_name == "reddit_search":
+        return await social_media_scrapers.tool_reddit_search(
+            query=arguments.get("query", ""),
+            subreddit=arguments.get("subreddit", ""),
+            sort=arguments.get("sort", "relevance"),
+        )
+    elif tool_name == "instagram_search":
+        return await social_media_scrapers.tool_instagram_search(
+            query=arguments.get("query", ""),
+            result_type=arguments.get("result_type", "posts"),
+        )
+    elif tool_name == "tiktok_search":
+        return await social_media_scrapers.tool_tiktok_search(
+            query=arguments.get("query", ""),
+            result_type=arguments.get("result_type", "posts"),
+        )
+    elif tool_name == "linkedin_search":
+        return await social_media_scrapers.tool_linkedin_search(
+            query=arguments.get("query", ""),
+            result_type=arguments.get("result_type", "posts"),
+        )
+    elif tool_name == "youtube_search":
+        return await social_media_scrapers.tool_youtube_search(
+            query=arguments.get("query", ""),
+            result_type=arguments.get("result_type", "videos"),
+        )
     else:
         return f"Unknown tool: {tool_name}"
 
@@ -3939,6 +4126,7 @@ async def knowledge_stats():
             "total_relationships": stats.get("total_relationships", 0),
             "storage_backend": "neo4j",
             "namespace": RESEARCH_NAMESPACE,
+            "social_scraper_costs": social_media_scrapers.get_cost_tracker().get_session_stats(),
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)

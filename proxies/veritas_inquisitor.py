@@ -1217,6 +1217,7 @@ async def node_verify(state: ReactorState) -> dict:
         remaining_verify = [
             n for n in all_open
             if n.get("need_type") in (NeedType.VERIFY_CLAIM.value, NeedType.COUNTER_EVIDENCE.value)
+            and n["id"] != need["id"]  # exclude the current need (about to be closed)
         ]
         # Also count the new needs we're about to post
         remaining_verify_total = len(remaining_verify) + len([
@@ -1296,7 +1297,9 @@ async def node_debate(state: ReactorState) -> dict:
     # If no more debate rounds, post final judgement
     all_open = _open_needs(state)
     pending_debate = [
-        n for n in all_open if n.get("need_type") == NeedType.DEBATE_ROUND.value
+        n for n in all_open
+        if n.get("need_type") == NeedType.DEBATE_ROUND.value
+        and n["id"] != need["id"]  # exclude the current need (about to be closed)
     ]
     pending_debate_new = [
         n for n in new_needs if n.get("need_type") == NeedType.DEBATE_ROUND.value

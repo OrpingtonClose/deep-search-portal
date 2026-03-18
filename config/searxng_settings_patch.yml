@@ -21,3 +21,48 @@ search:
 #   - Brave: works reliably
 #   - Bing: works reliably
 #   - Wikipedia: works reliably
+
+# Long-tail search engines: index the "small web" that Google/Bing ignore.
+# These surface text-heavy, non-commercial, uncensored content ideal for research.
+engines:
+  # Marginalia — indexes the non-commercial, text-heavy web (indie blogs,
+  # personal sites, academic pages). High signal-to-noise for research queries.
+  - name: marginalia
+    engine: xpath
+    search_url: https://search.marginalia.nu/search?query={query}&profile=default&js=default
+    results_xpath: //div[contains(@class, "search-result")]
+    url_xpath: .//a[contains(@class, "search-result-url")]/@href
+    title_xpath: .//a[contains(@class, "search-result-title")]
+    content_xpath: .//p[contains(@class, "search-result-description")]
+    shortcut: mar
+    categories: [general]
+    timeout: 10
+    disabled: false
+
+  # Wiby — curates old-school, handmade web pages. Good for niche hobbyist
+  # knowledge, retro-computing, and content de-ranked by mainstream engines.
+  - name: wiby
+    engine: xpath
+    search_url: https://wiby.me/?q={query}
+    results_xpath: //div[@id="results"]/div
+    url_xpath: .//a/@href
+    title_xpath: .//a
+    content_xpath: .//span
+    shortcut: wiby
+    categories: [general]
+    timeout: 10
+    disabled: false
+
+  # Mojeek — independent crawler (not a Google/Bing proxy). No tracking,
+  # no filter bubbles. Indexes content that other engines suppress.
+  - name: mojeek
+    engine: xpath
+    search_url: https://www.mojeek.com/search?q={query}
+    results_xpath: //ul[@class="results-standard"]/li
+    url_xpath: .//a[contains(@class, "ob")]/@href
+    title_xpath: .//a[contains(@class, "ob")]
+    content_xpath: .//p[contains(@class, "s")]
+    shortcut: mjk
+    categories: [general]
+    timeout: 10
+    disabled: false

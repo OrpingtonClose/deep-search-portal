@@ -1025,7 +1025,12 @@ async def enhanced_web_fetch(url: str, extract_info: str = "") -> str:
     direct = await _tool_fetch_webpage_direct(url, extract_info)
 
     # If direct fetch looks censored, append a warning
-    if _is_censored_response(direct):
+    # Only append censorship warning for actual page content, not for
+    # error messages from _tool_fetch_webpage_direct (which are short
+    # strings like "Fetch error: HTTP 404..." that would falsely trigger
+    # the <50 char check in _is_censored_response).
+    _error_prefixes = ("Fetch error", "Non-text content", "PDF document", "No readable text")
+    if _is_censored_response(direct) and not direct.startswith(_error_prefixes):
         direct += (
             "\n\n[WARNING: This result may be incomplete or blocked. "
             "The page may require JavaScript rendering, authentication, "
@@ -2521,7 +2526,9 @@ async def tree_research_reactor(
     nodes_by_id: dict[str, ResearchNode] = {}
     total_queued = 0
     total_processed = 0
+    active_workers = 0  # count of workers currently researching a node
     lock = asyncio.Lock()
+    done_event = asyncio.Event()  # set when tree exploration is complete
 
     # Build the root node
     prior_text = ""
@@ -2555,64 +2562,85 @@ async def tree_research_reactor(
     })
 
     async def worker(worker_id: int) -> None:
-        nonlocal total_processed, total_queued
+        nonlocal total_processed, total_queued, active_workers
 
         while True:
-            # Try to get work from the queue
-            try:
-                node = await asyncio.wait_for(
-                    pending.get(), timeout=TREE_WORKER_IDLE_TIMEOUT
-                )
-            except asyncio.TimeoutError:
-                return  # no more work
+            # Wait for work or termination.  Instead of a simple timeout
+            # (which causes idle workers to exit before children are
+            # spawned), we poll the queue in short intervals and only
+            # exit when done_event is set.
+            node = None
+            while node is None:
+                if done_event.is_set():
+                    return
+                try:
+                    node = await asyncio.wait_for(
+                        pending.get(), timeout=2.0
+                    )
+                except asyncio.TimeoutError:
+                    # Check if exploration is complete: no items in
+                    # queue and no workers actively researching.
+                    async with lock:
+                        if active_workers == 0 and pending.empty():
+                            done_event.set()
+                            return
+                    continue
 
             # Skip pruned nodes
             if node.status == "pruned":
                 continue
 
-            # Acquire semaphore — only active research counts
-            async with sem:
-                node.status = "researching"
-
-                conditions, sa_result = await _research_single_node(
-                    node, user_query, req_id, collector, curated_queue,
-                )
-
-                node.status = "done"
-
+            # Mark this worker as active before acquiring semaphore
             async with lock:
-                total_processed += 1
-                all_conditions.extend(conditions)
-                all_results.append(sa_result)
+                active_workers += 1
 
-            # Spawn children (doesn't hold semaphore)
-            async with lock:
-                current_queued = total_queued
+            try:
+                # Acquire semaphore — only active research counts
+                async with sem:
+                    node.status = "researching"
 
-            if current_queued < TREE_MAX_NODES and conditions:
-                children = await _spawn_sub_questions(
-                    node, conditions, user_query, all_questions, req_id,
-                )
+                    conditions, sa_result = await _research_single_node(
+                        node, user_query, req_id, collector, curated_queue,
+                    )
+
+                    node.status = "done"
 
                 async with lock:
-                    actually_queued = 0
-                    for child in children:
-                        if total_queued >= TREE_MAX_NODES:
-                            break
-                        nodes_by_id[child.id] = child
-                        all_questions.append(child.question)
-                        await pending.put(child)
-                        total_queued += 1
-                        actually_queued += 1
+                    total_processed += 1
+                    all_conditions.extend(conditions)
+                    all_results.append(sa_result)
 
-                if actually_queued > 0:
-                    await curated_queue.put({
-                        "type": "branch",
-                        "parent_question": node.question[:80],
-                        "children_count": actually_queued,
-                        "top_child": children[0].question[:100] if children else "",
-                        "depth": node.depth + 1,
-                    })
+                # Spawn children (doesn't hold semaphore)
+                async with lock:
+                    current_queued = total_queued
+
+                if current_queued < TREE_MAX_NODES and conditions:
+                    children = await _spawn_sub_questions(
+                        node, conditions, user_query, all_questions, req_id,
+                    )
+
+                    async with lock:
+                        actually_queued = 0
+                        for child in children:
+                            if total_queued >= TREE_MAX_NODES:
+                                break
+                            nodes_by_id[child.id] = child
+                            all_questions.append(child.question)
+                            await pending.put(child)
+                            total_queued += 1
+                            actually_queued += 1
+
+                    if actually_queued > 0:
+                        await curated_queue.put({
+                            "type": "branch",
+                            "parent_question": node.question[:80],
+                            "children_count": actually_queued,
+                            "top_child": children[0].question[:100] if children else "",
+                            "depth": node.depth + 1,
+                        })
+            finally:
+                async with lock:
+                    active_workers -= 1
 
     # Launch worker pool
     workers = [

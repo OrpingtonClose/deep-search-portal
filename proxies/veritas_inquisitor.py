@@ -393,7 +393,7 @@ def _parse_json_from_llm(text: str) -> Optional[dict | list]:
     except json.JSONDecodeError:
         # Try to find JSON object/array in the text using forward scan with
         # proper nesting depth tracking. Continue past failed candidates.
-        for start_char, end_char in [("{" , "}"), ("[", "]")]:
+        for start_char, end_char in [("[", "]"), ("{" , "}")]:
             search_from = 0
             while True:
                 start = text.find(start_char, search_from)
@@ -975,13 +975,13 @@ async def run_reactor(
     queue.post(NeedItem(
         need_type=NeedType.INTERROGATE,
         target_artifact_id=root.id,
-        pressure_score=0.5,
+        pressure_score=0.9,  # must run before ClaimDecomposer
         required_skill="Interrogator",
     ))
     queue.post(NeedItem(
         need_type=NeedType.DECOMPOSE_CLAIMS,
         target_artifact_id=root.id,
-        pressure_score=0.8,  # high priority — must happen early
+        pressure_score=0.8,  # high priority — must happen early, but after Interrogator
         required_skill="ClaimDecomposer",
     ))
 
@@ -1326,6 +1326,10 @@ async def stream_verification(
         for i, c in enumerate(claims, 1):
             status = c.get("status", "?")
             confidence = c.get("confidence", 0)
+            try:
+                confidence = float(confidence)
+            except (TypeError, ValueError):
+                confidence = 0.0
             claim_text = c.get("claim_text", "")[:80]
             evidence = c.get("evidence_summary", "")[:60]
 

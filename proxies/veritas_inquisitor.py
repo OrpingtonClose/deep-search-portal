@@ -1096,12 +1096,14 @@ async def run_reactor(
                 all_claim_ids = {c.get("id") for c in all_claims}
                 unverified = all_claim_ids - verified_claim_ids
 
-                # If all claims checked or we have enough evidence, start debate
+                # Only start debate when all claims verified AND no
+                # verify/counter-evidence needs remain (prevents premature
+                # judgement while counter-evidence is still pending).
                 remaining_verify_needs = [
                     n for n in queue.open_needs()
                     if n.need_type in (NeedType.VERIFY_CLAIM, NeedType.COUNTER_EVIDENCE)
                 ]
-                if not unverified or not remaining_verify_needs:
+                if not unverified and not remaining_verify_needs:
                     # Check if debate hasn't been posted yet
                     debate_needs = [
                         n for n in queue.open_needs()

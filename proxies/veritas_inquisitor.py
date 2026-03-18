@@ -1445,11 +1445,13 @@ async def verify_endpoint(request: Request):
     if stream:
         async def _guarded_verify():
             async with limiter.hold():
-                async for event in stream_verification(
-                    target_text, original_query, req_id,
-                ):
-                    yield event
-            tracker.finish(req_id)
+                try:
+                    async for event in stream_verification(
+                        target_text, original_query, req_id,
+                    ):
+                        yield event
+                finally:
+                    tracker.finish(req_id)
 
         return StreamingResponse(
             _guarded_verify(),
@@ -1461,10 +1463,12 @@ async def verify_endpoint(request: Request):
             },
         )
     else:
-        async with limiter.hold():
-            result = await verify_output(target_text, original_query, req_id)
-        tracker.finish(req_id)
-        return JSONResponse(result)
+        try:
+            async with limiter.hold():
+                result = await verify_output(target_text, original_query, req_id)
+            return JSONResponse(result)
+        finally:
+            tracker.finish(req_id)
 
 
 @app.post("/v1/chat/completions")
@@ -1536,12 +1540,14 @@ async def chat_completions(request: Request):
 
     async def _guarded_verify():
         async with limiter.hold():
-            model_id = body.get("model", "veritas-inquisitor")
-            async for event in stream_verification(
-                target_text, original_query, req_id, model_id,
-            ):
-                yield event
-        tracker.finish(req_id)
+            try:
+                model_id = body.get("model", "veritas-inquisitor")
+                async for event in stream_verification(
+                    target_text, original_query, req_id, model_id,
+                ):
+                    yield event
+            finally:
+                tracker.finish(req_id)
 
     return StreamingResponse(
         _guarded_verify(),

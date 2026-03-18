@@ -2691,13 +2691,31 @@ async def verify_research(request: Request):
     log.info(f"[{req_id}] Verify request: {len(target_text)} chars")
     tracker.start(req_id, phase="verify", target_chars=len(target_text))
 
+    if not limiter.available():
+        tracker.finish(req_id)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": {
+                    "message": (
+                        f"Too many concurrent persistent research sessions "
+                        f"({limiter.max_concurrent}). Try again shortly."
+                    ),
+                    "type": "rate_limit",
+                }
+            },
+        )
+
     if stream:
         async def _stream_verify():
-            async for event in veritas_inquisitor.stream_verification(
-                target_text, original_query, req_id,
-            ):
-                yield event
-            tracker.finish(req_id)
+            async with limiter.hold():
+                try:
+                    async for event in veritas_inquisitor.stream_verification(
+                        target_text, original_query, req_id,
+                    ):
+                        yield event
+                finally:
+                    tracker.finish(req_id)
 
         return StreamingResponse(
             _stream_verify(),
@@ -2709,11 +2727,14 @@ async def verify_research(request: Request):
             },
         )
     else:
-        result = await veritas_inquisitor.verify_output(
-            target_text, original_query, req_id,
-        )
-        tracker.finish(req_id)
-        return JSONResponse(result)
+        try:
+            async with limiter.hold():
+                result = await veritas_inquisitor.verify_output(
+                    target_text, original_query, req_id,
+                )
+            return JSONResponse(result)
+        finally:
+            tracker.finish(req_id)
 
 
 @app.post("/v1/chat/completions")

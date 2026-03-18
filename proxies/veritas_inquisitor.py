@@ -959,8 +959,10 @@ class ReactorState(TypedDict):
 
     # Artifact DAG (append-only via reducer)
     artifacts: Annotated[list[dict], _append_artifacts]
-    # NeedQueue items (append-only; nodes mark closed in-place)
+    # NeedQueue items (append-only via reducer)
     needs: Annotated[list[dict], _append_needs]
+    # IDs of needs that have been closed (append-only via reducer)
+    closed_need_ids: Annotated[list[str], _append_progress]
     # Progress messages for streaming
     progress: Annotated[list[str], _append_progress]
 
@@ -1001,19 +1003,17 @@ def _rebuild_index(state: ReactorState) -> ArtifactIndex:
 
 def _open_needs(state: ReactorState) -> list[dict]:
     """Return open needs sorted by pressure descending."""
+    closed_ids = set(state.get("closed_need_ids", []))
     return sorted(
-        [n for n in state["needs"] if n.get("is_open", True)],
+        [n for n in state["needs"] if n["id"] not in closed_ids],
         key=lambda n: n.get("pressure_score", 0),
         reverse=True,
     )
 
 
-def _close_need(state: ReactorState, need_id: str) -> None:
-    """Mark a need as closed in-place."""
-    for n in state["needs"]:
-        if n["id"] == need_id:
-            n["is_open"] = False
-            break
+def _close_need_ids(need_ids: list[str]) -> dict:
+    """Return a state update that closes the given need IDs via the reducer."""
+    return {"closed_need_ids": need_ids}
 
 
 def _need_to_dict(need: NeedItem) -> dict:
@@ -1084,15 +1084,18 @@ async def node_dispatch(state: ReactorState) -> dict:
 
     need = open_needs[0]
 
-    # Skip low-priority needs if report already exists
+    # Skip low-priority needs if report already exists.
+    # Since open_needs is sorted by pressure descending, if the highest-pressure
+    # need is below threshold then ALL remaining needs are too — close them all.
     index = _rebuild_index(state)
     if index.by_type("report") and need.get("pressure_score", 0) < PRESSURE_THRESHOLD:
-        _close_need(state, need["id"])
-        # Check if any more open needs remain
-        remaining = _open_needs(state)
-        if not remaining:
-            return {"phase": "done", "iteration": iteration, "current_need": {}}
-        need = remaining[0]
+        all_ids = [n["id"] for n in open_needs]
+        return {
+            "phase": "done",
+            "iteration": iteration,
+            "current_need": {},
+            **_close_need_ids(all_ids),
+        }
 
     need_type = need.get("need_type", "")
     phase_map = {
@@ -1120,7 +1123,6 @@ async def node_dispatch(state: ReactorState) -> dict:
 async def node_interrogate(state: ReactorState) -> dict:
     """Run the Interrogator agent."""
     need = state["current_need"]
-    _close_need(state, need["id"])
 
     probe_artifact = await run_interrogator(
         state["target_text"], state["original_query"],
@@ -1130,13 +1132,13 @@ async def node_interrogate(state: ReactorState) -> dict:
     return {
         "artifacts": [probe_artifact.to_dict()],
         "progress": [f"Interrogator produced {len(probes)} probes"],
+        **_close_need_ids([need["id"]]),
     }
 
 
 async def node_decompose(state: ReactorState) -> dict:
     """Run the Claim Decomposer agent."""
     need = state["current_need"]
-    _close_need(state, need["id"])
 
     index = _rebuild_index(state)
     probe_questions: list[str] = []
@@ -1172,13 +1174,13 @@ async def node_decompose(state: ReactorState) -> dict:
         "needs": new_needs,
         "claims": claims,
         "progress": [f"Claim Decomposer found {len(claims)} atomic claims"],
+        **_close_need_ids([need["id"]]),
     }
 
 
 async def node_verify(state: ReactorState) -> dict:
     """Run the Evidence Gatherer agent for one claim."""
     need = state["current_need"]
-    _close_need(state, need["id"])
     claim = need.get("context", {}).get("claim", {})
 
     evidence_artifact = await run_evidence_gatherer(
@@ -1241,13 +1243,13 @@ async def node_verify(state: ReactorState) -> dict:
         "progress": [
             f"Evidence Gatherer: claim {claim.get('id', '?')} — {conflicts} conflict(s)"
         ],
+        **_close_need_ids([need["id"]]),
     }
 
 
 async def node_debate(state: ReactorState) -> dict:
     """Run the Critic/Debater agent for one round."""
     need = state["current_need"]
-    _close_need(state, need["id"])
     current_round = need.get("context", {}).get("round", 1)
 
     index = _rebuild_index(state)
@@ -1320,13 +1322,13 @@ async def node_debate(state: ReactorState) -> dict:
         "needs": new_needs,
         "debate_round": current_round,
         "progress": progress_msgs,
+        **_close_need_ids([need["id"]]),
     }
 
 
 async def node_judge(state: ReactorState) -> dict:
     """Run the Final Judge agent."""
     need = state["current_need"]
-    _close_need(state, need["id"])
 
     index = _rebuild_index(state)
     all_arts = index.all_artifacts()
@@ -1348,6 +1350,7 @@ async def node_judge(state: ReactorState) -> dict:
             f"Final Judge: {len(claims_report)} claims scored, "
             f"overall_score={score}, hallucination_prob={halluc_prob}"
         ],
+        **_close_need_ids([need["id"]]),
     }
 
 
@@ -1453,6 +1456,7 @@ async def run_reactor(
         "req_id": req_id,
         "artifacts": [],
         "needs": [],
+        "closed_need_ids": [],
         "progress": [],
         "phase": "init",
         "iteration": 0,

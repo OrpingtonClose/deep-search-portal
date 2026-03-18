@@ -1044,9 +1044,26 @@ async def run_deep_research(
     final_state = initial_state
 
     try:
-        async for state_update in _research_graph.astream(
+        # Wrap astream iteration with keepalive: emit a dot every 8s when
+        # no state update arrives (e.g. during long LLM calls) to prevent
+        # reverse proxies and HTTP clients from timing out the SSE stream.
+        KEEPALIVE_INTERVAL = 8  # seconds
+        astream_iter = _research_graph.astream(
             initial_state, config=config, stream_mode="values",
-        ):
+        ).__aiter__()
+        done = False
+        while not done:
+            try:
+                state_update = await asyncio.wait_for(
+                    astream_iter.__anext__(), timeout=KEEPALIVE_INTERVAL,
+                )
+            except asyncio.TimeoutError:
+                yield chunk(".")
+                continue
+            except StopAsyncIteration:
+                done = True
+                break
+
             final_state = state_update
             tracker.update(req_id, current_turn=state_update.get("turn", 0))
             # Emit new progress messages

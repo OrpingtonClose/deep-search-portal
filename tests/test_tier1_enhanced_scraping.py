@@ -630,12 +630,12 @@ class TestToolTwitterSearch:
 
 class TestTwitterViaBrightData:
     @pytest.mark.asyncio
-    async def test_returns_none_when_no_key(self):
-        with patch.object(proxy, "BRIGHT_DATA_API_KEY", ""):
-            # Function checks BRIGHT_DATA_API_KEY at the top of tool_twitter_search,
-            # but _twitter_via_bright_data itself doesn't gate on key.
-            # Still, calling it without a proxy should except gracefully.
-            pass
+    async def test_returns_none_on_exception(self):
+        """_twitter_via_bright_data should return None gracefully on any error."""
+        with patch.object(proxy, "BRIGHT_DATA_API_KEY", "test-key"), \
+             patch("httpx.AsyncClient", side_effect=Exception("connection refused")):
+            result = await proxy._twitter_via_bright_data("bitcoin")
+            assert result is None
 
     @pytest.mark.asyncio
     async def test_successful_fetch(self):
@@ -761,18 +761,21 @@ class TestExecuteToolRouting:
 # SearXNG config validation (YAML structure)
 # ===================================================================
 
+_CONFIG_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "config", "searxng_settings_patch.yml"
+)
+
+
 class TestSearxngConfig:
     def test_config_is_valid_yaml(self):
         import yaml
-        config_path = "/home/ubuntu/repos/deep-search-portal/config/searxng_settings_patch.yml"
-        with open(config_path) as f:
+        with open(_CONFIG_PATH) as f:
             data = yaml.safe_load(f)
         assert data is not None
 
     def test_config_has_long_tail_engines(self):
         import yaml
-        config_path = "/home/ubuntu/repos/deep-search-portal/config/searxng_settings_patch.yml"
-        with open(config_path) as f:
+        with open(_CONFIG_PATH) as f:
             data = yaml.safe_load(f)
 
         engines = data.get("engines", [])
@@ -783,8 +786,7 @@ class TestSearxngConfig:
 
     def test_engines_have_required_fields(self):
         import yaml
-        config_path = "/home/ubuntu/repos/deep-search-portal/config/searxng_settings_patch.yml"
-        with open(config_path) as f:
+        with open(_CONFIG_PATH) as f:
             data = yaml.safe_load(f)
 
         required_fields = {"name", "engine", "search_url", "shortcut"}
@@ -794,8 +796,7 @@ class TestSearxngConfig:
 
     def test_engines_not_disabled(self):
         import yaml
-        config_path = "/home/ubuntu/repos/deep-search-portal/config/searxng_settings_patch.yml"
-        with open(config_path) as f:
+        with open(_CONFIG_PATH) as f:
             data = yaml.safe_load(f)
 
         for engine in data.get("engines", []):

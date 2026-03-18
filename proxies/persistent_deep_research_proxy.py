@@ -1098,20 +1098,22 @@ async def _fetch_via_playwright(url: str) -> Optional[str]:
     try:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True)
-            ctx = await browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 720},
-            )
-            page = await ctx.new_page()
-            await page.goto(url, wait_until="networkidle", timeout=30000)
-            body_text = await page.inner_text("body")
-            await browser.close()
-            if body_text and len(body_text.strip()) > 50:
-                return body_text.strip()
-            return None
+            try:
+                ctx = await browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1280, "height": 720},
+                )
+                page = await ctx.new_page()
+                await page.goto(url, wait_until="networkidle", timeout=30000)
+                body_text = await page.inner_text("body")
+                if body_text and len(body_text.strip()) > 50:
+                    return body_text.strip()
+                return None
+            finally:
+                await browser.close()
     except Exception as e:
         log.debug(f"Playwright fetch failed for {url}: {e}")
         return None
@@ -1579,7 +1581,9 @@ async def tool_twitter_search(query: str) -> str:
 async def _twitter_via_bright_data(query: str) -> Optional[str]:
     """Scrape Twitter search results via Bright Data Web Unlocker."""
     try:
-        search_url = f"https://x.com/search?q={query}&src=typed_query&f=live"
+        from urllib.parse import quote
+        encoded_query = quote(query, safe="")
+        search_url = f"https://x.com/search?q={encoded_query}&src=typed_query&f=live"
         proxy_url = (
             f"https://brd-customer-hl_dc044bf4-zone-{BRIGHT_DATA_ZONE}"
             f":{BRIGHT_DATA_API_KEY}@brd.superproxy.io:33335"
@@ -1621,7 +1625,9 @@ async def _twitter_via_oxylabs(query: str) -> Optional[str]:
     if not OXYLABS_USERNAME or not OXYLABS_PASSWORD:
         return None
     try:
-        search_url = f"https://x.com/search?q={query}&src=typed_query&f=live"
+        from urllib.parse import quote
+        encoded_query = quote(query, safe="")
+        search_url = f"https://x.com/search?q={encoded_query}&src=typed_query&f=live"
         async with httpx.AsyncClient(
             proxy=f"https://{OXYLABS_USERNAME}:{OXYLABS_PASSWORD}@unblock.oxylabs.io:60000",
             verify=False,

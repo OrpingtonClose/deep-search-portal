@@ -146,6 +146,7 @@ NOVELTY_STOP_THRESHOLD = 0.05
 
 # --- Enhanced Web Scraping Config ---
 BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
+BRIGHT_DATA_CUSTOMER_ID = os.getenv("BRIGHT_DATA_CUSTOMER_ID", "hl_dc044bf4")
 BRIGHT_DATA_ZONE = os.getenv("BRIGHT_DATA_ZONE", "web_unlocker1")
 OXYLABS_USERNAME = os.getenv("OXYLABS_USERNAME", "")
 OXYLABS_PASSWORD = os.getenv("OXYLABS_PASSWORD", "")
@@ -1044,8 +1045,8 @@ def _strip_html(raw_html: str) -> str:
     text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'<[^>]+>', ' ', text)
     text = html.unescape(text)
-    text = re.sub(r'\s+', ' ', text).strip()
     text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'[^\S\n]+', ' ', text).strip()
     return text
 
 
@@ -1166,7 +1167,7 @@ async def _fetch_via_bright_data(url: str) -> Optional[str]:
         return None
     try:
         proxy_url = (
-            f"https://brd-customer-hl_dc044bf4-zone-{BRIGHT_DATA_ZONE}"
+            f"https://brd-customer-{BRIGHT_DATA_CUSTOMER_ID}-zone-{BRIGHT_DATA_ZONE}"
             f":{BRIGHT_DATA_API_KEY}@brd.superproxy.io:33335"
         )
         async with httpx.AsyncClient(
@@ -1592,7 +1593,7 @@ async def _twitter_via_bright_data(query: str) -> Optional[str]:
         encoded_query = quote(query, safe="")
         search_url = f"https://x.com/search?q={encoded_query}&src=typed_query&f=live"
         proxy_url = (
-            f"https://brd-customer-hl_dc044bf4-zone-{BRIGHT_DATA_ZONE}"
+            f"https://brd-customer-{BRIGHT_DATA_CUSTOMER_ID}-zone-{BRIGHT_DATA_ZONE}"
             f":{BRIGHT_DATA_API_KEY}@brd.superproxy.io:33335"
         )
         async with httpx.AsyncClient(

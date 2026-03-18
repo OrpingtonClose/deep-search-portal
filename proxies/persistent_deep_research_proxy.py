@@ -971,15 +971,18 @@ async def _fetch_via_bright_data(url: str) -> Optional[str]:
         return None
     try:
         import html as html_mod
-        client = http_client()
-        # Route through Bright Data proxy
+        # Create a dedicated client with the proxy configured at client level.
+        # httpx does not support per-request proxy via extensions; it must be
+        # set on the AsyncClient constructor.
         proxy_url = f"http://{BRIGHT_DATA_API_KEY}@{BRIGHT_DATA_HOST}"
-        resp = await client.get(
-            url,
+        async with httpx.AsyncClient(
+            proxy=proxy_url,
             timeout=httpx.Timeout(45.0, connect=15.0),
-            headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
-            extensions={"proxy": proxy_url},
-        )
+        ) as proxy_client:
+            resp = await proxy_client.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
+            )
         if resp.status_code == 200:
             raw = resp.text
             text = re.sub(r'<script[^>]*>.*?</script>', '', raw, flags=re.DOTALL | re.IGNORECASE)
@@ -2589,6 +2592,7 @@ async def tree_research_reactor(
                 )
 
                 async with lock:
+                    actually_queued = 0
                     for child in children:
                         if total_queued >= TREE_MAX_NODES:
                             break
@@ -2596,12 +2600,13 @@ async def tree_research_reactor(
                         all_questions.append(child.question)
                         await pending.put(child)
                         total_queued += 1
+                        actually_queued += 1
 
-                if children:
+                if actually_queued > 0:
                     await curated_queue.put({
                         "type": "branch",
                         "parent_question": node.question[:80],
-                        "children_count": len(children),
+                        "children_count": actually_queued,
                         "top_child": children[0].question[:100] if children else "",
                         "depth": node.depth + 1,
                     })

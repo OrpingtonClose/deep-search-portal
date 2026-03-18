@@ -1400,7 +1400,7 @@ async def tool_4plebs_search(query: str, board: str = "pol") -> str:
         for i, post in enumerate(list(posts.values())[:10] if isinstance(posts, dict) else posts[:10], 1):
             thread_num = post.get("thread_num", "")
             num = post.get("num", "")
-            comment = post.get("comment", "")
+            comment = post.get("comment") or ""
             # Strip HTML from comment
             comment = re.sub(r'<[^>]+>', ' ', comment)
             comment = html.unescape(comment).strip()
@@ -1454,7 +1454,7 @@ async def tool_b4k_search(query: str) -> str:
         for i, post in enumerate(list(posts.values())[:10] if isinstance(posts, dict) else posts[:10], 1):
             thread_num = post.get("thread_num", "")
             num = post.get("num", "")
-            comment = post.get("comment", "")
+            comment = post.get("comment") or ""
             comment = re.sub(r'<[^>]+>', ' ', comment)
             comment = html.unescape(comment).strip()
             if len(comment) > 500:

@@ -1305,18 +1305,24 @@ async def enhanced_web_fetch(url: str, extract_info: str = "") -> str:
         direct = f"Fetch error: {str(e)}"
 
     is_error = direct.startswith(_ERROR_PREFIXES)
-    is_http_dead = any(
-        direct.startswith(f"Fetch error: HTTP {c}") for c in (403, 404, 410, 451)
+    # 404/410 = content truly gone (skip JS rendering AND proxies)
+    is_url_gone = any(
+        direct.startswith(f"Fetch error: HTTP {c}") for c in (404, 410)
+    )
+    # 403/451 = access blocked (skip JS rendering but TRY proxies)
+    is_access_blocked = any(
+        direct.startswith(f"Fetch error: HTTP {c}") for c in (403, 451)
     )
 
-    # If fast path got good content, use it
-    if not is_error and not _is_censored_response(direct):
+    # If fast path got good, non-empty content, use it
+    if not is_error and not _is_censored_response(direct) and len(direct.strip()) > 50:
         text = direct
     else:
         text = None
 
         # Tier 1: JS rendering (Playwright → Selenium fallback)
-        if text is None and not is_http_dead:
+        # Skip for server-side blocks (403/451) and dead URLs — JS rendering won't help
+        if text is None and not is_url_gone and not is_access_blocked:
             rendered = await _fetch_via_playwright(url)
             if rendered is None:
                 rendered = await _fetch_via_selenium(url)
@@ -1324,7 +1330,8 @@ async def enhanced_web_fetch(url: str, extract_info: str = "") -> str:
                 text = rendered
 
         # Tier 2: Commercial proxies (Bright Data → Oxylabs)
-        if text is None and not is_http_dead:
+        # Skip only for truly dead URLs — proxies CAN bypass 403/451
+        if text is None and not is_url_gone:
             proxied = await _fetch_via_bright_data(url)
             if proxied is None:
                 proxied = await _fetch_via_oxylabs(url)

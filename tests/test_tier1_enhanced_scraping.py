@@ -349,21 +349,64 @@ class TestEnhancedWebFetch:
             assert "ARCHIVED" in result
 
     @pytest.mark.asyncio
-    async def test_skips_js_rendering_on_http_dead(self):
-        """When httpx gets a 404, we should skip Playwright/Selenium (won't help) and go to archive."""
+    async def test_skips_all_tiers_on_404(self):
+        """When httpx gets a 404, skip JS rendering AND proxies (content is gone)."""
         error_404 = "Fetch error: HTTP 404 for https://example.com/gone"
         pw_mock = AsyncMock(return_value=None)
         sel_mock = AsyncMock(return_value=None)
+        bd_mock = AsyncMock(return_value=None)
+        ox_mock = AsyncMock(return_value=None)
 
         with patch.object(proxy, "_fetch_via_httpx", AsyncMock(return_value=error_404)), \
              patch.object(proxy, "_fetch_via_playwright", pw_mock), \
              patch.object(proxy, "_fetch_via_selenium", sel_mock), \
-             patch.object(proxy, "_fetch_via_bright_data", AsyncMock(return_value=None)), \
-             patch.object(proxy, "_fetch_via_oxylabs", AsyncMock(return_value=None)), \
+             patch.object(proxy, "_fetch_via_bright_data", bd_mock), \
+             patch.object(proxy, "_fetch_via_oxylabs", ox_mock), \
              patch.object(proxy, "_fetch_via_wayback_cdx", AsyncMock(return_value=None)):
             await proxy.enhanced_web_fetch("https://example.com/gone")
             pw_mock.assert_not_awaited()
             sel_mock.assert_not_awaited()
+            bd_mock.assert_not_awaited()
+            ox_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_403_skips_js_but_tries_proxies(self):
+        """When httpx gets a 403, skip JS rendering but TRY commercial proxies."""
+        error_403 = "Fetch error: HTTP 403 for https://example.com/blocked"
+        pw_mock = AsyncMock(return_value=None)
+        sel_mock = AsyncMock(return_value=None)
+        proxy_content = "Unblocked content via commercial proxy. " * 10
+        bd_mock = AsyncMock(return_value=proxy_content)
+
+        with patch.object(proxy, "_fetch_via_httpx", AsyncMock(return_value=error_403)), \
+             patch.object(proxy, "_fetch_via_playwright", pw_mock), \
+             patch.object(proxy, "_fetch_via_selenium", sel_mock), \
+             patch.object(proxy, "_fetch_via_bright_data", bd_mock), \
+             patch.object(proxy, "_fetch_via_oxylabs", AsyncMock(return_value=None)), \
+             patch.object(proxy, "_fetch_via_wayback_cdx", AsyncMock(return_value=None)):
+            result = await proxy.enhanced_web_fetch("https://example.com/blocked")
+            # JS rendering should be skipped for server-side blocks
+            pw_mock.assert_not_awaited()
+            sel_mock.assert_not_awaited()
+            # But commercial proxy should be tried and succeed
+            bd_mock.assert_awaited_once()
+            assert "Unblocked content" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_spa_content_triggers_playwright(self):
+        """Empty content from JS SPA pages should trigger Playwright fallback."""
+        pw_content = "Full rendered SPA content with lots of useful text. " * 10
+        pw_mock = AsyncMock(return_value=pw_content)
+
+        with patch.object(proxy, "_fetch_via_httpx", AsyncMock(return_value="")), \
+             patch.object(proxy, "_fetch_via_playwright", pw_mock), \
+             patch.object(proxy, "_fetch_via_selenium", AsyncMock(return_value=None)), \
+             patch.object(proxy, "_fetch_via_bright_data", AsyncMock(return_value=None)), \
+             patch.object(proxy, "_fetch_via_oxylabs", AsyncMock(return_value=None)), \
+             patch.object(proxy, "_fetch_via_wayback_cdx", AsyncMock(return_value=None)):
+            result = await proxy.enhanced_web_fetch("https://example.com/spa")
+            pw_mock.assert_awaited_once()
+            assert "Full rendered SPA content" in result
 
     @pytest.mark.asyncio
     async def test_extract_info_prepended(self):

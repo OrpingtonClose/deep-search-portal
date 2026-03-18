@@ -97,7 +97,6 @@ from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from shared import (
-    INGEST_DB_PATH,
     ConcurrencyLimiter,
     RequestTracker,
     create_app,
@@ -105,10 +104,8 @@ from shared import (
     http_client,
     is_utility_request,
     make_sse_chunk,
-    register_ingest_routes,
     register_standard_routes,
     require_env,
-    search_ingested_text,
     setup_logging,
     stream_passthrough,
 )
@@ -135,7 +132,6 @@ WEBPAGE_MAX_CHARS = 15000
 PYTHON_TIMEOUT = 30
 PYTHON_OUTPUT_MAX = 5000
 MAX_PRIOR_CONDITIONS = 20
-INGEST_DB = os.getenv("INGEST_DB", INGEST_DB_PATH)
 # Saturation detection thresholds
 NOVELTY_EXPAND_THRESHOLD = 0.3
 NOVELTY_STOP_THRESHOLD = 0.05
@@ -716,26 +712,72 @@ NATIVE_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "knowledge_search",
+            "name": "knowledge_graph_search",
             "description": (
-                "Search through previously ingested text documents (books, papers, reports, etc.) "
-                "that have been uploaded to the knowledge base. Returns the most relevant text "
-                "chunks matching the query. Use this FIRST when the user's question may relate "
-                "to documents they have provided."
+                "Search the Neo4j knowledge graph for relevant concepts, claims, evidence, "
+                "anomalies, and text chunks. Supports hybrid search (keyword + graph traversal "
+                "with reciprocal rank fusion). Use this FIRST when the user's question may relate "
+                "to documents or knowledge that has been ingested into the knowledge engine."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The search query to find relevant text in ingested documents",
+                        "description": "The search query",
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "The conversation/context namespace to search within (default: 'default')",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["hybrid", "keyword", "graph"],
+                        "description": "Search mode (default: 'hybrid')",
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of text chunks to return (default 5, max 20)",
+                        "description": "Maximum results to return (default 10, max 50)",
                     },
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "knowledge_discover",
+            "description": (
+                "Run graph discovery algorithms on the knowledge graph to find hidden "
+                "connections and serendipitous links. Supports: spreading_activation (multi-hop "
+                "activation propagation from seed concepts), swanson_abc (find concepts connected "
+                "through intermediaries but not directly \u2014 bisociation discovery), and "
+                "information_gaps (find under-connected but important concepts)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "algorithm": {
+                        "type": "string",
+                        "enum": ["spreading_activation", "swanson_abc", "information_gaps"],
+                        "description": "The discovery algorithm to run",
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "The conversation/context namespace",
+                    },
+                    "seed_concepts": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Starting concept names (required for spreading_activation and swanson_abc)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results (default 15)",
+                    },
+                },
+                "required": ["algorithm", "namespace"],
             },
         },
     },
@@ -1010,29 +1052,6 @@ async def tool_wikidata_query(entity: str) -> str:
         return f"Wikidata query error: {str(e)}"
 
 
-def tool_knowledge_search(query: str, limit: int = 5) -> str:
-    """Search through ingested text documents."""
-    limit = min(max(limit, 1), 20)
-    results = search_ingested_text(INGEST_DB, query, limit)
-    if not results:
-        return "No matching content found in ingested documents."
-
-    formatted = []
-    for i, r in enumerate(results, 1):
-        doc_title = r.get("doc_title", "Unknown")
-        chunk_idx = r.get("chunk_index", 0)
-        content = r.get("content", "")
-        source = r.get("source", "")
-        header = f"{i}. **{doc_title}** (chunk {chunk_idx + 1})"
-        if source:
-            header += f" [source: {source}]"
-        if len(content) > 3000:
-            content = content[:3000] + "\n[... chunk truncated ...]"
-        formatted.append(f"{header}\n{content}")
-
-    return "\n\n---\n\n".join(formatted)
-
-
 async def execute_tool(tool_name: str, arguments: dict) -> str:
     """Route and execute a tool call."""
     if tool_name == "searxng_search":
@@ -1054,15 +1073,122 @@ async def execute_tool(tool_name: str, arguments: dict) -> str:
         return await tool_wayback_fetch(arguments.get("url", ""))
     elif tool_name == "wikidata_query":
         return await tool_wikidata_query(arguments.get("entity", ""))
-    elif tool_name == "knowledge_search":
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None, tool_knowledge_search,
-            arguments.get("query", ""),
-            arguments.get("limit", 5),
-        )
+    elif tool_name == "knowledge_graph_search":
+        return await tool_knowledge_graph_search(arguments)
+    elif tool_name == "knowledge_discover":
+        return await tool_knowledge_discover(arguments)
     else:
         return f"Unknown tool: {tool_name}"
+
+
+async def tool_knowledge_graph_search(arguments: dict) -> str:
+    """Search the knowledge graph via the knowledge engine microservice."""
+    try:
+        import knowledge_client
+        result = await knowledge_client.search(
+            namespace=arguments.get("namespace", "default"),
+            query=arguments.get("query", ""),
+            mode=arguments.get("mode", "hybrid"),
+            limit=min(arguments.get("limit", 10), 50),
+        )
+        results = result.get("results", [])
+        if not results:
+            return "No matching knowledge found in the graph."
+
+        formatted = []
+        for i, r in enumerate(results, 1):
+            node_type = r.get("node_type", "")
+            name = r.get("name", "")
+            content = r.get("content", "")
+            score = r.get("score", 0)
+            props = r.get("properties", {})
+            source_doc = r.get("source_doc", "")
+
+            header = f"{i}. [{node_type}]"
+            if name:
+                header += f" **{name}**"
+            if source_doc:
+                header += f" (from: {source_doc})"
+            header += f" [score: {score:.3f}]"
+
+            body = content[:2000] if content else ""
+            if props:
+                prop_strs = []
+                for k, v in props.items():
+                    if k not in ("id",) and v is not None:
+                        prop_strs.append(f"{k}: {v}")
+                if prop_strs:
+                    body += "\n  Properties: " + ", ".join(prop_strs[:5])
+
+            formatted.append(f"{header}\n{body}" if body else header)
+
+        return "\n\n---\n\n".join(formatted)
+
+    except Exception as e:
+        return f"Knowledge graph search error: {e}"
+
+
+async def tool_knowledge_discover(arguments: dict) -> str:
+    """Run graph discovery algorithms via the knowledge engine microservice."""
+    try:
+        import knowledge_client
+        algorithm = arguments.get("algorithm", "")
+        namespace = arguments.get("namespace", "default")
+        seed_concepts = arguments.get("seed_concepts", [])
+        limit = arguments.get("limit", 15)
+
+        if algorithm == "spreading_activation":
+            if not seed_concepts:
+                return "Error: seed_concepts required for spreading_activation"
+            result = await knowledge_client.spreading_activation(
+                namespace=namespace,
+                seed_concepts=seed_concepts,
+                limit=limit,
+            )
+        elif algorithm == "swanson_abc":
+            if not seed_concepts:
+                return "Error: seed_concepts required for swanson_abc"
+            result = await knowledge_client.swanson_abc(
+                namespace=namespace,
+                seed_concept=seed_concepts[0],
+                limit=limit,
+            )
+        elif algorithm == "information_gaps":
+            result = await knowledge_client.information_gaps(
+                namespace=namespace,
+                limit=limit,
+            )
+        else:
+            return f"Unknown algorithm: {algorithm}. Use: spreading_activation, swanson_abc, information_gaps"
+
+        discoveries = result.get("results", [])
+        if not discoveries:
+            return f"No discoveries from {algorithm}."
+
+        formatted = [f"**{algorithm.replace('_', ' ').title()} Results:**\n"]
+        for i, d in enumerate(discoveries, 1):
+            parts = [f"{i}."]
+            if "name" in d:
+                parts.append(f"**{d['name']}**")
+            elif "target_concept" in d:
+                parts.append(f"**{d['target_concept']}**")
+            if "activation" in d:
+                parts.append(f"(activation: {d['activation']:.3f})")
+            if "discovery_score" in d:
+                parts.append(f"(discovery score: {d['discovery_score']:.3f})")
+            if "gap_score" in d:
+                parts.append(f"(gap score: {d['gap_score']:.3f})")
+            if "bridge_count" in d:
+                parts.append(f"via {d['bridge_count']} bridge concepts")
+            if "top_bridges" in d:
+                bridge_names = [b.get("name", "?") for b in d["top_bridges"][:3]]
+                parts.append(f"[bridges: {', '.join(bridge_names)}]")
+            formatted.append(" ".join(parts))
+
+        return "\n".join(formatted)
+
+    except Exception as e:
+        return f"Knowledge discovery error: {e}"
 
 
 async def execute_tools_parallel(
@@ -1505,7 +1631,6 @@ Initial search query: {angle_query}
 5. Be thorough but focused on your assigned angle.
 6. Use arxiv_search for academic papers, wikidata_query for structured facts.
 7. Use wayback_fetch if a link is dead or unavailable.
-8. Use knowledge_search to search through any ingested text documents in the knowledge base.
 
 {serendipity_instruction}
 
@@ -1523,7 +1648,7 @@ When you are done researching, output your findings in this exact JSON format:
 - You MUST use tools. Never answer from training data alone.
 - Do NOT repeat the same search query or fetch the same URL twice.
 - If a tool call fails, try a different approach.
-- Use different tools for different needs (web search, arxiv for papers, wikidata for facts, knowledge_search for ingested documents).
+- Use different tools for different needs (web search, arxiv for papers, wikidata for facts).
 
 **WHEN TO STOP:**
 - You have found 3-10 distinct facts about your angle
@@ -2474,8 +2599,6 @@ register_standard_routes(
         "tools": [t["function"]["name"] for t in NATIVE_TOOLS],
     },
 )
-
-register_ingest_routes(app, INGEST_DB, log)
 
 
 @app.get("/v1/models")

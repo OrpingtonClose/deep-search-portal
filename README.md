@@ -13,6 +13,9 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
                 │                                    │         │         │
           Mistral AI API                      Mistral AI   SearXNG   Python exec
                                                           (8888)
+                                    Persistent Research (9300)
+                                         │         │
+                                    Knowledge Engine (9400) ←── Neo4j
 ```
 
 ## Components
@@ -21,7 +24,9 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 |---|---|---|
 | **Open WebUI** | ChatGPT-like web interface with multi-provider support | 3000 |
 | **MiroFlow** (`deep_research_proxy.py`) | Agentic deep research — up to 15 rounds of search/read/analyze | 9200 |
+| **Persistent Research** (`persistent_deep_research_proxy.py`) | Multi-session research with knowledge accumulation | 9300 |
 | **Thinking Proxy** (`thinking_proxy.py`) | Wraps Mistral for `<think>` tag streaming support | 9100 |
+| **Knowledge Engine** (`services/knowledge-engine/`) | Neo4j-centric knowledge corpus ETL microservice | 9400 |
 | **SearXNG** | Self-hosted meta-search engine (Brave, Bing, Wikipedia) | 8888 |
 | **Cloudflare Tunnel** | HTTPS + domain routing to the VM | — |
 
@@ -40,23 +45,41 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 - **`searxng_search`** — Web search via local SearXNG (returns top 10 results with snippets)
 - **`fetch_webpage`** — Fetches and extracts text from web pages (15K char limit)
 - **`python_exec`** — Sandboxed Python execution for calculations/analysis (30s timeout)
-- **`knowledge_search`** — Search through ingested text documents (books, papers, reports)
+- **`knowledge_graph_search`** — Search the Neo4j knowledge graph (hybrid, keyword, or graph traversal)
+- **`knowledge_discover`** — Run graph discovery algorithms (spreading activation, Swanson ABC, information gaps)
 
 ## Repo Structure
 
 ```
 ├── proxies/
-│   ├── deep_research_proxy.py    # MiroFlow deep research agent
-│   └── thinking_proxy.py         # Thinking tag proxy
+│   ├── deep_research_proxy.py          # MiroFlow deep research agent
+│   ├── persistent_deep_research_proxy.py # Multi-session persistent research
+│   ├── thinking_proxy.py               # Thinking tag proxy
+│   └── knowledge_client.py             # Lightweight async client for knowledge engine
+├── services/
+│   └── knowledge-engine/
+│       ├── knowledge_engine/
+│       │   ├── main.py                 # FastAPI application
+│       │   ├── config.py               # Configuration & logging
+│       │   ├── models.py               # Pydantic request/response models
+│       │   ├── neo4j_client.py         # Neo4j connection & schema management
+│       │   ├── ontology.py             # Epistemic ontology (node/relationship creation)
+│       │   ├── chunker.py              # Text chunking with sentence boundaries
+│       │   ├── extractor.py            # Multi-pass LLM entity/relationship extraction
+│       │   ├── entity_resolver.py      # Entity resolution & deduplication
+│       │   ├── pipeline.py             # ETL pipeline orchestrator
+│       │   ├── algorithms.py           # Graph algorithms (spreading activation, Swanson ABC, etc.)
+│       │   └── search.py               # Unified search (keyword, graph, hybrid)
+│       └── requirements.txt
 ├── scripts/
-│   ├── startup.sh                # Master startup (all services)
-│   └── start_openwebui.sh        # Open WebUI with provider config
+│   ├── startup.sh                      # Master startup (all services)
+│   └── start_openwebui.sh              # Open WebUI with provider config
 ├── config/
-│   ├── searxng_settings_patch.yml  # Key SearXNG overrides
-│   └── searxng_settings_full.yml   # Full SearXNG settings reference
+│   ├── searxng_settings_patch.yml      # Key SearXNG overrides
+│   └── searxng_settings_full.yml       # Full SearXNG settings reference
 ├── docs/
-│   └── architecture.md           # Detailed architecture document
-├── .env.example                  # Environment variables template
+│   └── architecture.md                 # Detailed architecture document
+├── .env.example                        # Environment variables template
 └── README.md
 ```
 
@@ -89,9 +112,6 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 | `/v1/chat/completions` | Main OpenAI-compatible endpoint (on each proxy) |
 | `/health` | Health check with active request details |
 | `/logs?lines=100` | Last N lines from the debug log |
-| `POST /v1/ingest` | Ingest a large text document into the knowledge base |
-| `GET /v1/documents` | List all ingested documents |
-| `DELETE /v1/documents/{doc_id}` | Remove an ingested document |
 
 ## Provider Configuration
 
@@ -108,45 +128,98 @@ Open WebUI connects to 8 providers (configured in `start_openwebui.sh`):
 | 6 | Deep Research | `miroflow` |
 | 7 | Mistral Direct | `mistral-large-latest`, `mistral-medium-latest` |
 
-## Text Ingestion
+## Knowledge Engine
 
-All three proxies support ingesting large text documents (books, papers, reports) that agents can search during research.
+A standalone Neo4j-centric microservice for ingesting large text corpora, extracting knowledge with multi-pass LLM extraction, and performing graph-based discovery.
 
-### Ingest a document
-
-```bash
-curl -X POST http://localhost:9200/v1/ingest \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "title": "My Research Paper",
-    "text": "Full text content here...",
-    "source": "https://example.com/paper.pdf"
-  }'
-```
-
-The text is automatically chunked (~2000 chars with 200 char overlap) and indexed with SQLite FTS5 for fast full-text search.
-
-### List / delete documents
+### Quick Start
 
 ```bash
-# List all ingested documents
-curl http://localhost:9200/v1/documents
+# Install dependencies
+cd services/knowledge-engine
+pip install -r requirements.txt
 
-# Delete a document
-curl -X DELETE http://localhost:9200/v1/documents/doc-abc123
+# Set environment variables
+export NEO4J_URI=bolt://localhost:7687
+export NEO4J_USER=neo4j
+export NEO4J_PASSWORD=your-password
+export UPSTREAM_KEY=your-mistral-api-key
+
+# Run the service
+python -m uvicorn knowledge_engine.main:app --host 0.0.0.0 --port 9400
 ```
 
-### Agent usage
+### ETL Pipeline
 
-The `knowledge_search` tool is available to the MiroFlow and Persistent Research agents. When ingested documents exist, agents will search them first before querying the web.
+When a corpus is ingested via `POST /v1/ingest`, the engine runs a full ETL pipeline:
+
+1. **Chunk** — Split text into ~2000 char chunks with 200 char overlap at sentence boundaries
+2. **Extract (Pass 1)** — Direct extraction: concepts, claims, evidence, methods
+3. **Extract (Pass 2)** — Implicit extraction: hypotheses, anomalies, analogies, implicit relationships
+4. **Extract (Pass 3)** — Cross-chunk relationship inference
+5. **Entity Resolution** — Exact-match MERGE + fuzzy deduplication of near-duplicate concepts
+6. **Load** — Write epistemic ontology nodes into Neo4j (Concept, Claim, Hypothesis, Anomaly, Evidence, Method)
+7. **Graph Metrics** — Compute Louvain community detection, betweenness centrality, RNS serendipity scores
+
+### Epistemic Ontology
+
+| Node Type | Description |
+|---|---|
+| `Document` | Source document metadata |
+| `Chunk` | Text chunk (~2K chars) with reading order |
+| `Concept` | Named concept/entity with domains and abstraction level |
+| `Claim` | Factual assertion with confidence and polarity |
+| `Hypothesis` | Speculative statement with status and abductive origin |
+| `Anomaly` | Surprising finding with surprise score |
+| `Evidence` | Supporting evidence with strength |
+| `Method` | Research method with domain and transferability |
+
+Relationship types: `ANALOGOUS_TO`, `CONTRADICTS`, `EXPLAINS`, `SUPPORTED_BY`, `TRANSFERABLE_TO`, `INSTANCE_OF`, `REQUIRES`, `UPDATES`, `DERIVED_FROM`, `PART_OF`, `EXTRACTED_BY`, `OBSERVED_IN`
+
+### Graph Algorithms
+
+- **Spreading Activation** — Multi-hop activation propagation from seed concepts with configurable decay
+- **Swanson ABC** — Literature-based bisociation discovery (A→B→C where A and C are not directly connected)
+- **Information Gaps** — Find under-connected but frequently mentioned concepts
+- **Serendipity Beam Search** — RNS-guided beam search (Relevance × Novelty × Surprise)
+- **Community Detection** — Louvain algorithm via networkx (no GDS dependency)
+
+### REST API
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/v1/ingest` | POST | Ingest text corpus (triggers full ETL pipeline) |
+| `/v1/ingest/{job_id}` | GET | Check ingestion job status |
+| `/v1/search` | POST | Unified search (hybrid, keyword, graph) |
+| `/v1/algorithms/spreading-activation` | POST | Run spreading activation |
+| `/v1/algorithms/swanson-abc` | POST | Run Swanson ABC discovery |
+| `/v1/algorithms/information-gaps/{ns}` | GET | Find information gaps |
+| `/v1/algorithms/serendipity-beam` | POST | Serendipity beam search |
+| `/v1/graph/neighborhood/{ns}/{concept}` | GET | Get concept neighborhood |
+| `/v1/namespaces` | GET | List all namespaces with stats |
+| `/v1/namespaces/{name}` | DELETE | Delete namespace and all data |
+| `/v1/graph/stats/{namespace}` | GET | Get graph statistics |
 
 ### Configuration
 
 | Variable | Default | Description |
 |---|---|---|
-| `INGEST_DB` | `/opt/ingested_texts/ingest.db` | Path to the ingestion SQLite database |
-| `INGEST_CHUNK_SIZE` | `2000` | Characters per chunk |
-| `INGEST_CHUNK_OVERLAP` | `200` | Overlap between consecutive chunks |
+| `NEO4J_URI` | `bolt://localhost:7687` | Neo4j connection URI |
+| `NEO4J_USER` | `neo4j` | Neo4j username |
+| `NEO4J_PASSWORD` | `neo4j` | Neo4j password |
+| `UPSTREAM_BASE` | `https://api.mistral.ai/v1` | LLM API base URL |
+| `UPSTREAM_KEY` | — | Mistral API key |
+| `EXTRACTION_MODEL` | `mistral-small-latest` | Model for entity/relationship extraction |
+| `EMBEDDING_MODEL` | `mistral-embed` | Model for embeddings |
+| `RAW_FILES_DIR` | `/opt/knowledge_corpus/files` | Raw file storage directory |
+| `CHUNK_SIZE` | `2000` | Characters per chunk |
+| `CHUNK_OVERLAP` | `200` | Overlap between chunks |
+| `MAX_EXTRACTION_CONCURRENCY` | `5` | Max parallel LLM extraction calls |
+| `KNOWLEDGE_ENGINE_URL` | `http://localhost:9400` | URL for proxy client |
+
+### Namespace Isolation
+
+All data is namespaced by conversation/context. Every node gets a `namespace` property. Queries filter by namespace. Use `DELETE /v1/namespaces/{name}` to remove all data for a context. Set `rebuild=true` on ingest to clear the namespace before loading new data.
 
 ## Design Philosophy
 
@@ -155,6 +228,7 @@ The `knowledge_search` tool is available to the MiroFlow and Persistent Research
 - **Full transparency** — all reasoning visible in thinking traces; all errors surfaced to the user
 - **Self-hosted search** — SearXNG means no dependence on commercial search APIs
 - **API-provider architecture** — uses Mistral cloud API, not local model hosting
+- **Neo4j-centric knowledge** — graph database as single source of truth for extracted knowledge; enables graph algorithms for serendipitous discovery
 
 ## License
 

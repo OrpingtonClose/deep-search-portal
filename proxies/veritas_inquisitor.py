@@ -487,28 +487,33 @@ async def tool_browse_page(url: str, instructions: str = "") -> str:
 
 
 async def tool_code_execution(code: str) -> str:
-    """Execute Python code in a sandboxed subprocess."""
+    """Execute Python code in a sandboxed subprocess (non-blocking)."""
     import subprocess
     import sys
     import tempfile
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True, text=True, timeout=30,
-            cwd=tempfile.gettempdir(),
-        )
-        output = ""
-        if result.stdout:
-            output += result.stdout
-        if result.stderr:
-            output += f"\n[stderr]: {result.stderr}"
-        if not output.strip():
-            output = "(no output)"
-        return output[:5000]
-    except subprocess.TimeoutExpired:
-        return "Code execution timed out (30s)"
-    except Exception as e:
-        return f"Execution error: {e}"
+
+    def _run_sync() -> str:
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                capture_output=True, text=True, timeout=30,
+                cwd=tempfile.gettempdir(),
+            )
+            output = ""
+            if result.stdout:
+                output += result.stdout
+            if result.stderr:
+                output += f"\n[stderr]: {result.stderr}"
+            if not output.strip():
+                output = "(no output)"
+            return output[:5000]
+        except subprocess.TimeoutExpired:
+            return "Code execution timed out (30s)"
+        except Exception as e:
+            return f"Execution error: {e}"
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _run_sync)
 
 
 async def execute_tool(tool_name: str, arguments: dict) -> dict:

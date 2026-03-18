@@ -391,23 +391,32 @@ def _parse_json_from_llm(text: str) -> Optional[dict | list]:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # Try to find JSON object/array in the text
-        for start_char, end_char in [("{", "}"), ("[", "]")]:
-            start = text.find(start_char)
-            if start == -1:
-                continue
-            # Find matching close brace, scanning from end
-            depth = 0
-            for i in range(len(text) - 1, start - 1, -1):
-                if text[i] == end_char:
-                    depth += 1
-                elif text[i] == start_char:
-                    depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(text[start:i + len(end_char)])
-                    except json.JSONDecodeError:
+        # Try to find JSON object/array in the text using forward scan with
+        # proper nesting depth tracking. Continue past failed candidates.
+        for start_char, end_char in [("{" , "}"), ("[", "]")]:
+            search_from = 0
+            while True:
+                start = text.find(start_char, search_from)
+                if start == -1:
+                    break
+                # Forward scan to find matching close brace
+                depth = 0
+                end = -1
+                for i in range(start, len(text)):
+                    if text[i] == start_char:
+                        depth += 1
+                    elif text[i] == end_char:
+                        depth -= 1
+                    if depth == 0:
+                        end = i
                         break
+                if end == -1:
+                    break  # no matching close brace found at all
+                try:
+                    return json.loads(text[start:end + 1])
+                except json.JSONDecodeError:
+                    # This candidate failed; try the next occurrence
+                    search_from = start + 1
         return None
 
 
@@ -972,10 +981,15 @@ async def run_reactor(
     ))
 
     # Step 3: Reactor loop
-    max_iterations = 50  # safety cap
+    # Scale the iteration cap with the number of needs posted so that large
+    # claim sets (many VERIFY_CLAIM needs) can still reach FINAL_JUDGEMENT.
+    # Base: 20 fixed overhead + 3× the total needs posted so far.
+    # Re-evaluated each iteration so dynamically-posted needs are included.
     iteration = 0
+    reactor_start = time.monotonic()
+    MAX_REACTOR_SECONDS = 1800  # 30-minute hard wall-clock timeout
 
-    while queue.has_open() and iteration < max_iterations:
+    while queue.has_open() and (time.monotonic() - reactor_start) < MAX_REACTOR_SECONDS:
         iteration += 1
         open_needs = queue.open_needs()
 

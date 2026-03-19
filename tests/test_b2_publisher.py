@@ -67,16 +67,27 @@ class TestGetBucket:
         b2_publisher.B2_KEY_ID = "test-key-id"
         b2_publisher.B2_APP_KEY = "test-app-key"
 
+        # Create a mock NonExistentBucket exception class
+        class MockNonExistentBucket(Exception):
+            pass
+
         mock_api = MagicMock()
         mock_bucket = MagicMock()
-        mock_api.get_bucket_by_name.side_effect = Exception("not found")
+        mock_api.get_bucket_by_name.side_effect = MockNonExistentBucket("not found")
         mock_api.create_bucket.return_value = mock_bucket
 
         mock_b2sdk_v2 = ModuleType("b2sdk.v2")
         mock_b2sdk_v2.B2Api = MagicMock(return_value=mock_api)
         mock_b2sdk_v2.InMemoryAccountInfo = MagicMock()
 
-        with patch.dict("sys.modules", {"b2sdk": MagicMock(), "b2sdk.v2": mock_b2sdk_v2}):
+        mock_b2sdk_v2_exc = ModuleType("b2sdk.v2.exception")
+        mock_b2sdk_v2_exc.NonExistentBucket = MockNonExistentBucket
+
+        with patch.dict("sys.modules", {
+            "b2sdk": MagicMock(),
+            "b2sdk.v2": mock_b2sdk_v2,
+            "b2sdk.v2.exception": mock_b2sdk_v2_exc,
+        }):
             bucket = b2_publisher._get_b2_bucket()
 
         assert bucket is mock_bucket
@@ -95,7 +106,14 @@ class TestGetBucket:
         mock_b2sdk_v2.B2Api = MagicMock(return_value=mock_api)
         mock_b2sdk_v2.InMemoryAccountInfo = MagicMock()
 
-        with patch.dict("sys.modules", {"b2sdk": MagicMock(), "b2sdk.v2": mock_b2sdk_v2}):
+        mock_b2sdk_v2_exc = ModuleType("b2sdk.v2.exception")
+        mock_b2sdk_v2_exc.NonExistentBucket = type("NonExistentBucket", (Exception,), {})
+
+        with patch.dict("sys.modules", {
+            "b2sdk": MagicMock(),
+            "b2sdk.v2": mock_b2sdk_v2,
+            "b2sdk.v2.exception": mock_b2sdk_v2_exc,
+        }):
             bucket = b2_publisher._get_b2_bucket()
 
         assert bucket is mock_bucket

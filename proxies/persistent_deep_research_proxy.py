@@ -2964,9 +2964,9 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
             # Publish to B2 if configured
             if b2_publisher.is_configured():
                 try:
-                    report_url = b2_publisher.publish_report(req_id, html_report)
+                    report_url = await asyncio.to_thread(b2_publisher.publish_report, req_id, html_report)
                     metrics_json = json.dumps(metrics_dict, indent=2, default=str)
-                    metrics_url = b2_publisher.publish_metrics(req_id, metrics_json)
+                    metrics_url = await asyncio.to_thread(b2_publisher.publish_metrics, req_id, metrics_json)
                     log.info(f"[{req_id}] Published report to B2: {report_url}")
                 except Exception as e:
                     log.error(f"[{req_id}] Failed to publish to B2: {e}")
@@ -3277,12 +3277,18 @@ async def get_research_reports():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+_SAFE_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
 @app.get("/research/report/{session_id}")
 async def get_research_report(session_id: str):
     """Serve the HTML report for a research session.
 
     First checks B2, then falls back to local file.
     """
+    if not _SAFE_SESSION_ID_RE.match(session_id):
+        return JSONResponse({"error": "Invalid session_id"}, status_code=400)
+
     from fastapi.responses import HTMLResponse
 
     # Try local file first
@@ -3309,6 +3315,9 @@ async def get_research_metrics(session_id: str):
 
     Designed for LLM consumption — structured data for performance analysis.
     """
+    if not _SAFE_SESSION_ID_RE.match(session_id):
+        return JSONResponse({"error": "Invalid session_id"}, status_code=400)
+
     metrics = load_metrics(session_id)
     if metrics is None:
         return JSONResponse(

@@ -53,6 +53,7 @@ def _get_b2_bucket():
             )
 
         from b2sdk.v2 import B2Api, InMemoryAccountInfo
+        from b2sdk.v2.exception import NonExistentBucket
 
         info = InMemoryAccountInfo()
         api = B2Api(info)
@@ -62,7 +63,7 @@ def _get_b2_bucket():
         try:
             bucket = api.get_bucket_by_name(B2_BUCKET_NAME)
             log.info(f"Using existing B2 bucket: {B2_BUCKET_NAME}")
-        except Exception:
+        except NonExistentBucket:
             # Bucket doesn't exist — create it as allPublic
             bucket = api.create_bucket(
                 B2_BUCKET_NAME,

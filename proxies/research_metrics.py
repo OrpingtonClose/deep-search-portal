@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -828,8 +829,14 @@ def save_metrics(metrics: ResearchMetrics) -> str:
     return path
 
 
+_SAFE_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
 def load_metrics(session_id: str) -> Optional[dict]:
     """Load metrics JSON from disk. Returns None if not found."""
+    if not _SAFE_SESSION_ID_RE.match(session_id):
+        log.warning(f"Invalid session_id rejected: {session_id!r}")
+        return None
     path = os.path.join(METRICS_DIR, f"{session_id}.json")
     try:
         with open(path, "r", encoding="utf-8") as f:

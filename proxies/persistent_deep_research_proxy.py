@@ -1451,6 +1451,8 @@ async def tool_web_search(query: str) -> str:
         next_idx += 1
 
     if extra_formatted:
+        if searxng_result in ("No results found.", ""):
+            return "\n\n".join(extra_formatted)
         return searxng_result + "\n\n" + "\n\n".join(extra_formatted)
     return searxng_result
 

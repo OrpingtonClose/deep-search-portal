@@ -1674,6 +1674,12 @@ async def enhanced_web_fetch(url: str, extract_info: str = "") -> str:
     if not text.strip():
         return "Page returned no readable text content."
 
+    # If all tiers failed and we're returning the original error from httpx,
+    # return it bare (without "Content from" wrapper) to preserve the tool
+    # output contract that the LLM relies on to detect fetch failures.
+    if is_error and text is direct:
+        return text
+
     result = f"**Content from {url}:**\n\n{text}"
     if extract_info:
         result = f"**Looking for: {extract_info}**\n\n{result}"

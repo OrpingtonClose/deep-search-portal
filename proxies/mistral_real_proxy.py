@@ -55,6 +55,7 @@ from shared import (
     setup_logging,
     stream_passthrough,
 )
+from research_metrics import MetricsCollector, ResearchMetricsCallback
 
 # ---------------------------------------------------------------------------
 # Logging & Configuration
@@ -788,7 +789,14 @@ async def run_mistral_real(
     yield chunk("**[Phase 1: Draft Generation]**\n")
     yield chunk(f"Using {UPSTREAM_MODEL} to generate a reasoned draft...\n\n")
 
-    config = {"configurable": {"thread_id": req_id}}
+    # Wire LangChain callbacks so metrics fire for every LLM/tool call
+    metrics_collector = MetricsCollector(session_id=req_id, query=user_query)
+    metrics_callback = ResearchMetricsCallback(metrics_collector)
+    config = {
+        "configurable": {"thread_id": req_id},
+        "callbacks": [metrics_callback],
+    }
+    _real_request_configs[req_id] = config
 
     pipeline_task = asyncio.create_task(
         _pipeline_producer(initial_state, config, output_queue, chunk, req_id)
@@ -819,6 +827,7 @@ async def run_mistral_real(
                 await pipeline_task
             except asyncio.CancelledError:
                 pass
+        _real_request_configs.pop(req_id, None)
         tracker.finish(req_id)
 
 

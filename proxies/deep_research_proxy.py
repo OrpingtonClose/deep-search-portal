@@ -51,6 +51,7 @@ from shared import (
     setup_logging,
     stream_passthrough,
 )
+from research_metrics import MetricsCollector, ResearchMetricsCallback
 
 # --- Logging ---
 LOG_DIR = os.getenv("DEEP_RESEARCH_LOG_DIR", "/opt/deep_research_logs")
@@ -1095,7 +1096,14 @@ async def run_deep_research(
 
     yield chunk("<think>\n")
 
-    config = {"configurable": {"thread_id": req_id}}
+    # Wire LangChain callbacks so metrics fire for every LLM/tool call
+    metrics_collector = MetricsCollector(session_id=req_id, query=str(user_messages[-1].get("content", "") if user_messages else ""))
+    metrics_callback = ResearchMetricsCallback(metrics_collector)
+    config = {
+        "configurable": {"thread_id": req_id},
+        "callbacks": [metrics_callback],
+    }
+    _deep_request_configs[req_id] = config
     last_progress_idx = 0
     final_state = initial_state
 
@@ -1147,6 +1155,7 @@ async def run_deep_research(
         yield "data: [DONE]\n\n"
 
     finally:
+        _deep_request_configs.pop(req_id, None)
         tracker.finish(req_id)
 
 

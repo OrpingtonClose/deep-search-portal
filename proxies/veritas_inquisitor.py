@@ -61,6 +61,7 @@ from shared import (
     require_env,
     setup_logging,
 )
+from research_metrics import MetricsCollector, ResearchMetricsCallback
 
 # ---------------------------------------------------------------------------
 # Logging & Configuration
@@ -1494,51 +1495,61 @@ async def run_reactor(
         "report": {},
     }
 
-    config = {"configurable": {"thread_id": req_id}}
+    # Wire LangChain callbacks so metrics fire for every LLM/tool call
+    metrics_collector = MetricsCollector(session_id=req_id, query=original_query)
+    metrics_callback = ResearchMetricsCallback(metrics_collector)
+    config = {
+        "configurable": {"thread_id": req_id},
+        "callbacks": [metrics_callback],
+    }
+    _veritas_request_configs[req_id] = config
     last_progress_idx = 0
 
     # Stream execution step-by-step for progress callbacks
     final_state = initial_state
-    async for state_update in _reactor_graph.astream(
-        initial_state, config=config, stream_mode="values",
-    ):
-        final_state = state_update
-        # Emit new progress messages
-        if progress_callback and "progress" in state_update:
-            progress_list = state_update["progress"]
-            for msg in progress_list[last_progress_idx:]:
-                await progress_callback(msg)
-            last_progress_idx = len(progress_list)
+    try:
+        async for state_update in _reactor_graph.astream(
+            initial_state, config=config, stream_mode="values",
+        ):
+            final_state = state_update
+            # Emit new progress messages
+            if progress_callback and "progress" in state_update:
+                progress_list = state_update["progress"]
+                for msg in progress_list[last_progress_idx:]:
+                    await progress_callback(msg)
+                last_progress_idx = len(progress_list)
 
-    # Extract final report
-    report = final_state.get("report", {})
-    artifacts = final_state.get("artifacts", [])
-    iteration = final_state.get("iteration", 0)
+        # Extract final report
+        report = final_state.get("report", {})
+        artifacts = final_state.get("artifacts", [])
+        iteration = final_state.get("iteration", 0)
 
-    if report:
+        if report:
+            return {
+                "report": report,
+                "artifact_count": len(artifacts),
+                "dag": artifacts,
+                "iterations": iteration,
+            }
+
+        # Fallback: no report produced
+        if progress_callback:
+            await progress_callback("WARNING: Reactor terminated without producing a report")
+        log.warning(f"[{req_id}] Reactor terminated without producing a report")
         return {
-            "report": report,
+            "report": {
+                "claims": [],
+                "overall_hallucination_probability": -1,
+                "overall_score": -1,
+                "revised_output": target_text,
+                "error": "Reactor terminated without producing a report",
+            },
             "artifact_count": len(artifacts),
             "dag": artifacts,
             "iterations": iteration,
         }
-
-    # Fallback: no report produced
-    if progress_callback:
-        await progress_callback("WARNING: Reactor terminated without producing a report")
-    log.warning(f"[{req_id}] Reactor terminated without producing a report")
-    return {
-        "report": {
-            "claims": [],
-            "overall_hallucination_probability": -1,
-            "overall_score": -1,
-            "revised_output": target_text,
-            "error": "Reactor terminated without producing a report",
-        },
-        "artifact_count": len(artifacts),
-        "dag": artifacts,
-        "iterations": iteration,
-    }
+    finally:
+        _veritas_request_configs.pop(req_id, None)
 
 
 # ============================================================================

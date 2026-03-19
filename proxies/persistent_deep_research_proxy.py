@@ -4439,28 +4439,47 @@ async def _heartbeat_loop(
         return
 
 
+def _truncate_at_word(text: str, max_len: int) -> str:
+    """Truncate text at a word boundary, never mid-word."""
+    if len(text) <= max_len:
+        return text
+    truncated = text[:max_len]
+    # Find the last space before the limit
+    last_space = truncated.rfind(" ")
+    if last_space > max_len * 0.4:  # only use word boundary if reasonable
+        truncated = truncated[:last_space]
+    return truncated.rstrip(".,;:—- ") + "…"
+
+
 def _format_curated_event(event: dict) -> str:
     """Format a tree reactor curated event into a user-facing message.
 
     Returns an empty string for events that should be silently consumed.
+    All messages are capped at ~180 chars and truncated at word boundaries.
     """
     evt_type = event.get("type", "")
 
     if evt_type == "start":
-        return f"Investigating: {event.get('question', '')[:120]}"
+        q = _truncate_at_word(event.get("question", ""), 140)
+        return f"Investigating: {q}"
 
     elif evt_type == "finding":
         finding = event.get("finding", "")
         depth = event.get("depth", 0)
         count = event.get("conditions_count", 0)
-        q = event.get("question", "")[:80]
-        if depth > 0:
-            return f"[depth {depth}] {q} — {count} findings. Key: {finding}"
-        return f"{q} — {count} findings. Key: {finding}"
+        q = _truncate_at_word(event.get("question", ""), 60)
+        # Cap the finding to keep total message under ~180 chars
+        prefix = f"[depth {depth}] " if depth > 0 else ""
+        header = f"{prefix}{q} — {count} findings"
+        remaining = 180 - len(header) - 7  # 7 for ". Key: "
+        if remaining > 30:
+            finding_text = _truncate_at_word(finding, remaining)
+            return f"{header}. Key: {finding_text}"
+        return header
 
     elif evt_type == "branch":
         n = event.get("children_count", 0)
-        child = event.get("top_child", "")
+        child = _truncate_at_word(event.get("top_child", ""), 100)
         return f"Spawning {n} follow-up question{'s' if n != 1 else ''} — highest priority: {child}"
 
     elif evt_type == "summary":

@@ -2938,7 +2938,7 @@ async def call_llm(
             err_str = str(e)
             # Detect retryable HTTP status codes from the error message
             retryable = any(
-                f" {code}" in err_str or f"status_code: {code}" in err_str
+                re.search(rf"\b{code}\b", err_str)
                 for code in RETRYABLE_STATUS_CODES
             ) or isinstance(e, (httpx.ReadTimeout, httpx.ConnectTimeout))
 

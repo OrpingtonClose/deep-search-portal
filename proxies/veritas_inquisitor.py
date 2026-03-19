@@ -36,6 +36,7 @@ import json
 import logging
 import operator
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -382,9 +383,9 @@ async def call_llm(
 
         except Exception as e:
             err_str = str(e)
-            retryable = any(
-                f" {code}" in err_str or f"status_code: {code}" in err_str
-                for code in RETRYABLE_STATUS_CODES
+            _codes_pattern = "|".join(str(c) for c in RETRYABLE_STATUS_CODES)
+            retryable = bool(
+                re.search(rf"\b({_codes_pattern})\b", err_str)
             ) or isinstance(e, (httpx.ReadTimeout, httpx.ConnectTimeout))
 
             last_error = f"{err_str[:500]}"

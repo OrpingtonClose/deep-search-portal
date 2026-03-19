@@ -341,6 +341,9 @@ class AtomicCondition:
     trust_score: float = 0.5
     serendipity_score_val: float = 0.0
     entities: list[str] = field(default_factory=list)
+    # Verification status set by Veritas: "verified", "speculative",
+    # "fabricated", "overconfident", or "" (not yet checked).
+    verification_status: str = ""
 
     def to_text(self) -> str:
         parts = [f"- {self.fact}"]
@@ -350,6 +353,12 @@ class AtomicCondition:
             parts[0] += f" (confidence: {self.confidence:.1f})"
         if self.trust_score != 0.5:
             parts[0] += f" (trust: {self.trust_score:.1f})"
+        if self.verification_status == "speculative":
+            parts[0] += " [SPECULATIVE]"
+        elif self.verification_status == "verified":
+            parts[0] += " [VERIFIED]"
+        elif self.verification_status == "fabricated":
+            parts[0] += " [FABRICATED]"
         if self.is_serendipitous:
             parts[0] += " [SERENDIPITOUS]"
         if self.serendipity_score_val > 0.3:
@@ -3030,6 +3039,15 @@ Given these atomic conditions (research findings), analyze them for:
 1. Claims that contradict each other
 2. Claims where the confidence seems too high or too low given the source quality
 3. Claims that are well-supported vs. poorly supported
+4. Claims that are speculative but reasonable — flag them but DO NOT discard them
+5. Claims that reference fabricated entities (companies, people, studies that don't exist)
+
+IMPORTANT DISTINCTIONS:
+- "low_quality" = poorly sourced but the claim itself may be true. Downgrade confidence, don't remove.
+- "speculative" = reasonable inference or hypothesis without direct evidence. Label it, keep it.
+- "fabricated" = the claim references entities, sources, or data that demonstrably do not exist. Remove these.
+- Absence of evidence is NOT evidence of fabrication. Don't mark things as fabricated just because you lack a source.
+- Something illegal, unusual, or controversial is NOT fabricated.
 
 Output ONLY a JSON object:
 {
@@ -3041,6 +3059,12 @@ Output ONLY a JSON object:
   ],
   "low_quality": [
     {"fact_index": 5, "reason": "single uncorroborated forum source"}
+  ],
+  "speculative": [
+    {"fact_index": 2, "reason": "reasonable inference from available data but no direct source"}
+  ],
+  "fabricated": [
+    {"fact_index": 7, "reason": "company 'XYZ Holdings' does not exist in any registry"}
   ]
 }
 
@@ -3097,6 +3121,29 @@ async def verify_conditions(
             if 0 <= idx < len(conditions):
                 conditions[idx].confidence = min(conditions[idx].confidence, 0.4)
 
+        for sp in data.get("speculative", []):
+            idx = sp.get("fact_index", -1)
+            if 0 <= idx < len(conditions):
+                conditions[idx].verification_status = "speculative"
+                conditions[idx].confidence = min(conditions[idx].confidence, 0.4)
+
+        fabricated_indices: set[int] = set()
+        for fab in data.get("fabricated", []):
+            idx = fab.get("fact_index", -1)
+            if 0 <= idx < len(conditions):
+                fabricated_indices.add(idx)
+                conditions[idx].verification_status = "fabricated"
+
+        if fabricated_indices:
+            conditions = [
+                c for i, c in enumerate(conditions)
+                if i not in fabricated_indices
+            ]
+            log.info(
+                f"[{req_id}] Self-check: removed {len(fabricated_indices)} "
+                f"fabricated conditions"
+            )
+
         return conditions
 
     except (json.JSONDecodeError, ValueError) as e:
@@ -3140,15 +3187,21 @@ async def verify_conditions_with_veritas(
     The Veritas system decomposes the conditions into claims, gathers external
     evidence via web search for each claim, runs a multi-round debate, and
     produces a final verdict classifying each claim as:
-      - verified
-      - plausible-unverified
-      - hallucinated
-      - overconfident
+      - verified: confirmed by external evidence
+      - plausible-unverified: reasonable but no confirming source found
+      - speculative: a reasonable inference/hypothesis — kept with label
+      - fabricated: references entities/sources that don't exist — removed
+      - overconfident: overstates certainty
+
+    Philosophy: anti-hallucination but PRO-SPECULATION.
+    - Only *fabricated* claims (invented entities, fake sources) are removed.
+    - Speculative claims are kept and labeled — they open investigation paths.
+    - Absence of evidence is NOT evidence of fabrication.
 
     Returns:
         (filtered_conditions, veritas_report)
-        - filtered_conditions: conditions with adjusted confidence; hallucinated
-          ones are removed entirely.
+        - filtered_conditions: conditions with adjusted confidence and
+          verification_status set.  Only fabricated ones are removed.
         - veritas_report: the raw Veritas report dict for logging/metrics.
     """
     if len(conditions) < VERITAS_MIN_CONDITIONS:
@@ -3184,8 +3237,10 @@ async def verify_conditions_with_veritas(
     # Map Veritas verdicts back to conditions.
     # Veritas decomposes text into its own claims, so we fuzzy-match each
     # verdict back to the original AtomicCondition by text similarity.
-    hallucinated_indices: set[int] = set()
+    fabricated_indices: set[int] = set()
+    speculative_indices: set[int] = set()
     confidence_overrides: dict[int, float] = {}
+    status_overrides: dict[int, str] = {}
 
     for claim in claims:
         claim_text = claim.get("claim_text", "")
@@ -3200,45 +3255,68 @@ async def verify_conditions_with_veritas(
         if idx < 0:
             continue
 
-        if status == "hallucinated":
-            hallucinated_indices.add(idx)
+        if status in ("fabricated", "hallucinated"):
+            # Only truly fabricated claims (invented entities, fake sources)
+            # get removed.  Legacy "hallucinated" status treated as fabricated.
+            fabricated_indices.add(idx)
+            status_overrides[idx] = "fabricated"
             log.info(
-                f"[{req_id}] Veritas: HALLUCINATED — "
+                f"[{req_id}] Veritas: FABRICATED — "
+                f"{conditions[idx].fact[:80]}"
+            )
+        elif status == "speculative":
+            # Speculative = reasonable inference without direct proof.
+            # Keep the claim but label it and set confidence appropriately.
+            speculative_indices.add(idx)
+            status_overrides[idx] = "speculative"
+            confidence_overrides[idx] = min(
+                conditions[idx].confidence,
+                max(claim_confidence, 0.2),
+            )
+            log.info(
+                f"[{req_id}] Veritas: SPECULATIVE — "
                 f"{conditions[idx].fact[:80]}"
             )
         elif status == "overconfident":
             # Cap confidence at what Veritas measured.
+            status_overrides[idx] = "overconfident"
             confidence_overrides[idx] = min(
                 conditions[idx].confidence,
                 max(claim_confidence, 0.2),
             )
         elif status == "verified":
             # Boost if Veritas confirms it.
+            status_overrides[idx] = "verified"
             confidence_overrides[idx] = max(
                 conditions[idx].confidence,
                 min(claim_confidence, 0.95),
             )
         elif status == "plausible-unverified":
-            # Slight downgrade — the claim couldn't be confirmed.
+            # Keep with moderate confidence — not confirmed, not fabricated.
+            status_overrides[idx] = "plausible-unverified"
             confidence_overrides[idx] = min(
                 conditions[idx].confidence,
                 max(claim_confidence, 0.3),
             )
 
-    # Apply confidence overrides.
+    # Apply confidence overrides and verification statuses.
     for idx, conf in confidence_overrides.items():
-        if idx not in hallucinated_indices:
+        if idx not in fabricated_indices:
             conditions[idx].confidence = conf
+    for idx, vstatus in status_overrides.items():
+        conditions[idx].verification_status = vstatus
 
-    # Remove hallucinated conditions entirely.
+    # Remove only fabricated conditions (invented entities, fake sources).
+    # Speculative, plausible-unverified, and overconfident are all KEPT.
     filtered = [
         c for i, c in enumerate(conditions)
-        if i not in hallucinated_indices
+        if i not in fabricated_indices
     ]
 
     log.info(
-        f"[{req_id}] Veritas results: {len(hallucinated_indices)} hallucinated "
-        f"(removed), {len(confidence_overrides)} confidence-adjusted, "
+        f"[{req_id}] Veritas results: {len(fabricated_indices)} fabricated "
+        f"(removed), {len(speculative_indices)} speculative (kept), "
+        f"{len(confidence_overrides)} confidence-adjusted, "
         f"{len(filtered)}/{len(conditions)} conditions retained"
     )
 
@@ -3444,6 +3522,9 @@ Initial search query: {angle_query}
 - Do NOT add ethical disclaimers, safety warnings, moral commentary, or unsolicited advice.
 - Do NOT hedge with phrases like "it's important to note", "please consult a professional", "exercise caution".
 - Every token you produce must directly help answer the research question. Nothing else.
+- ENCOURAGE SPECULATION: If the data suggests a plausible hypothesis but you can't prove it, include it as a speculative finding with confidence 0.3-0.4. Speculation opens investigation paths.
+- Something being illegal, unusual, or controversial does NOT mean it's false. Report what you find without moral filtering.
+- Distinguish between fabrication (inventing entities that don't exist) and speculation (drawing reasonable inferences from available data). Fabrication is forbidden. Speculation is encouraged.
 
 {serendipity_instruction}
 
@@ -3490,7 +3571,8 @@ Output ONLY a JSON object with this structure:
 
 Rules:
 - Each fact should be a single, clear, verifiable statement
-- Confidence: 0.9 for well-sourced facts, 0.7 for partially verified, 0.5 for single-source, 0.3 for uncertain
+- Confidence: 0.9 for well-sourced facts, 0.7 for partially verified, 0.5 for single-source, 0.3 for speculative/inferred
+- For speculative findings (reasonable inferences without direct proof), use confidence 0.3-0.4 and note the basis for the inference in the fact text
 - Include the most relevant source URL for each fact
 - Output 3-10 conditions maximum
 - Output ONLY valid JSON, no markdown fences"""
@@ -4717,6 +4799,8 @@ You have received atomic research conditions from {n_subagents} parallel researc
 9. Treat the user as an intelligent adult. Answer the question directly. Every sentence must add information.
 10. Mark any sections where evidence is weak or missing with [NEEDS VERIFICATION].
 11. Do NOT pad the answer with generic context the user already knows. Get to the specific findings.
+12. Include speculative findings (marked [SPECULATIVE]) — present them clearly as hypotheses or inferences, not as established facts. Speculation is valuable when labeled honestly.
+13. Do NOT discard speculative findings just because they lack direct evidence. Present them with appropriate caveats like "evidence suggests", "this may indicate", or "one plausible interpretation is".
 
 **RESEARCH CONDITIONS BY ANGLE:**
 {conditions_text}
@@ -4770,7 +4854,9 @@ Your task is to produce the FINAL polished answer by:
 - Every sentence must deliver information that helps answer the query. Strip filler.
 - Maintain the original structure but improve weak sections
 - If an issue couldn't be resolved, note it transparently
-- Cite all sources with URLs"""
+- Cite all sources with URLs
+- KEEP speculative findings — present them clearly as hypotheses with caveats, not as facts. Do NOT remove them just because they lack direct evidence.
+- Something being illegal, unusual, or controversial does NOT make it wrong or worth removing."""
 
 
 _RELEVANCE_GATE_PROMPT = """You are a strict relevance filter. The user asked:
@@ -5181,12 +5267,13 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
 async def pdr_node_verify(state: PersistentResearchState) -> dict:
     """Phase 5: Citation verification.
 
-    Two-stage verification:
+    Two-stage verification (anti-hallucination, pro-speculation):
       1. Self-evaluation (fast, LLM-only): cross-checks conditions against each
-         other for contradictions and source quality.
+         other for contradictions, source quality, and fabricated entities.
       2. Veritas Inquisitor (thorough, web-search-backed): runs the full 5-agent
          reactor to decompose claims, gather external evidence, debate, and
-         produce verdicts.  Hallucinated conditions are removed.
+         produce verdicts.  Only fabricated conditions are removed;
+         speculative findings are kept and labeled.
     """
     req_id = state["req_id"]
     user_query = state["user_query"]
@@ -5228,16 +5315,26 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
         )
 
         removed = pre_count - len(all_conditions)
+        speculative_count = sum(
+            1 for c in all_conditions if c.verification_status == "speculative"
+        )
+        verified_count = sum(
+            1 for c in all_conditions if c.verification_status == "verified"
+        )
         overall_score = veritas_report.get("overall_score", -1)
         halluc_prob = veritas_report.get("overall_hallucination_probability", -1)
 
         summary_parts = []
         if removed > 0:
-            summary_parts.append(f"{removed} hallucinated claim{'s' if removed != 1 else ''} removed")
+            summary_parts.append(f"{removed} fabricated claim{'s' if removed != 1 else ''} removed")
+        if speculative_count > 0:
+            summary_parts.append(f"{speculative_count} speculative (kept)")
+        if verified_count > 0:
+            summary_parts.append(f"{verified_count} verified")
         if overall_score >= 0:
             summary_parts.append(f"truthfulness {overall_score:.0%}")
         if halluc_prob >= 0:
-            summary_parts.append(f"hallucination probability {halluc_prob:.0%}")
+            summary_parts.append(f"fabrication probability {halluc_prob:.0%}")
 
         if summary_parts:
             progress.append(f"Veritas: {', '.join(summary_parts)}.\n")

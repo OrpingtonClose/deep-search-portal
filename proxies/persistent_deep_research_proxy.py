@@ -3266,7 +3266,11 @@ Initial search query: {angle_query}
 - NEVER fabricate or invent source names. Only cite sources you actually fetched via tools.
 - NEVER claim you checked Bloomberg Terminal, Reuters, or any specific service unless a tool actually returned results from that service.
 - If tools return no useful results, say so honestly — do NOT invent plausible-sounding conclusions.
-- If search results are empty, try different queries or tools before concluding "no information found."
+- If search results are empty, try AT LEAST 3 different query formulations and tools before concluding "no information found." Rephrase, use synonyms, try academic terms, try common names.
+- NEVER conclude "no studies/papers/reports found" after a single failed search. Academic literature requires precise queries — try PMC IDs, DOIs, author names, journal names, or specific terminology.
+- Do NOT add ethical disclaimers, safety warnings, moral commentary, or unsolicited advice.
+- Do NOT hedge with phrases like "it's important to note", "please consult a professional", "exercise caution".
+- Every token you produce must directly help answer the research question. Nothing else.
 
 {serendipity_instruction}
 
@@ -3347,6 +3351,7 @@ async def run_subagent(
     req_id: str,
     user_query: str,
     depth: int = 0,
+    collector: Optional["LiveFindingsCollector"] = None,
 ) -> SubagentResult:
     """Run a single subagent's research loop on one angle.
 
@@ -3464,6 +3469,17 @@ async def run_subagent(
                         "subagent": subagent_index,
                         "text": f"  [{angle_title}] {tool_name} ({duration:.1f}s)\n",
                     })
+
+                    # Log tool activity for context-aware heartbeat
+                    if collector is not None:
+                        tool_query = ""
+                        for _tc_id, _tn, _args in calls_to_run:
+                            if _tc_id == tc_id:
+                                tool_query = _args.get("query", _args.get("url", _args.get("entity", "")))
+                                break
+                        await collector.log_tool_call(tool_name, tool_query, duration)
+                        if tool_name == "fetch_webpage":
+                            await collector.log_source(tool_query)
 
                     truncated = tool_result
                     if len(tool_result) > 8000:
@@ -3878,6 +3894,9 @@ async def _research_single_node(
         "is_bridge": False,
     }
 
+    # Track this question as actively being researched
+    await collector.set_active_question(node.question[:120])
+
     # Lightweight internal progress queue (not emitting system noise)
     internal_queue: asyncio.Queue = asyncio.Queue()
 
@@ -3888,7 +3907,11 @@ async def _research_single_node(
         req_id=req_id,
         user_query=user_query,
         depth=0,
+        collector=collector,
     )
+
+    # Clear the active question now that research is done
+    await collector.clear_active_question(node.question[:120])
 
     # Feed conditions to the live findings collector for heartbeat
     if sa_result.conditions:
@@ -4109,16 +4132,77 @@ class LiveFindingsCollector:
     """Thread-safe collector that subagents populate with conditions in real-time.
 
     The heartbeat task reads from this to surface interesting findings.
+    Also tracks live tool-call activity so heartbeat messages can reference
+    actual sources, tools, and queries instead of generic filler.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, user_query: str = "") -> None:
         self._conditions: list[AtomicCondition] = []
         self._lock = asyncio.Lock()
         self._shared_facts: set[str] = set()  # facts already sent to the user
+        self.user_query: str = user_query  # the original prompt for relevance checks
+        # Activity tracking for context-aware heartbeat
+        self._recent_tool_calls: list[dict] = []  # {tool, query, duration, ts}
+        self._active_questions: list[str] = []  # questions currently being researched
+        self._sources_checked: list[str] = []  # URLs/sources that were fetched
+        self._current_phase: str = ""  # current pipeline phase
 
     async def add_conditions(self, conditions: list[AtomicCondition]) -> None:
         async with self._lock:
             self._conditions.extend(conditions)
+
+    async def log_tool_call(self, tool_name: str, query: str, duration: float) -> None:
+        """Record a tool invocation for heartbeat context."""
+        async with self._lock:
+            self._recent_tool_calls.append({
+                "tool": tool_name, "query": query[:120],
+                "duration": duration, "ts": time.monotonic(),
+            })
+            # Keep only last 20 entries
+            if len(self._recent_tool_calls) > 20:
+                self._recent_tool_calls = self._recent_tool_calls[-20:]
+
+    async def set_active_question(self, question: str) -> None:
+        """Record a question currently under investigation."""
+        async with self._lock:
+            if question not in self._active_questions:
+                self._active_questions.append(question)
+                if len(self._active_questions) > 10:
+                    self._active_questions = self._active_questions[-10:]
+
+    async def clear_active_question(self, question: str) -> None:
+        """Remove a question that's done being investigated."""
+        async with self._lock:
+            self._active_questions = [
+                q for q in self._active_questions if q != question
+            ]
+
+    async def log_source(self, url: str) -> None:
+        """Record a source URL that was checked."""
+        async with self._lock:
+            if url not in self._sources_checked:
+                self._sources_checked.append(url)
+                if len(self._sources_checked) > 30:
+                    self._sources_checked = self._sources_checked[-30:]
+
+    async def set_phase(self, phase: str) -> None:
+        """Update current pipeline phase."""
+        async with self._lock:
+            self._current_phase = phase
+
+    async def get_activity_context(self) -> dict:
+        """Return a snapshot of current activity for heartbeat generation."""
+        async with self._lock:
+            now = time.monotonic()
+            recent = [t for t in self._recent_tool_calls if now - t["ts"] < 30]
+            return {
+                "recent_tools": recent[-5:],
+                "active_questions": list(self._active_questions),
+                "sources_count": len(self._sources_checked),
+                "recent_sources": self._sources_checked[-5:],
+                "phase": self._current_phase,
+                "total_tool_calls": len(self._recent_tool_calls),
+            }
 
     async def get_new_findings(self) -> list[AtomicCondition]:
         """Return conditions not yet shared via heartbeat."""
@@ -4155,6 +4239,8 @@ Rules:
 - NO commentary, NO excitement, NO exclamation marks, NO "I found", NO "It turns out", NO "Oh my gosh"
 - NO hedging like "how cool is that" or "imagine" — just the facts
 - Professional, dry, factual — like a Reuters wire report
+- The finding MUST directly help answer the user's query: "{user_query}"
+- If the finding is tangential or doesn't help answer the query, output SKIP
 - If nothing is genuinely new vs the "Already shared" list, reply with exactly: SKIP
 
 New findings:
@@ -4164,16 +4250,70 @@ Already shared (do NOT repeat or rephrase — if a finding covers the same topic
 {already_shared}"""
 
 
-_HEARTBEAT_STATUS_PHRASES = [
-    "Searching for additional sources...",
-    "Cross-referencing across databases...",
-    "Verifying claims against primary sources...",
-    "Checking for corroborating evidence...",
-    "Scanning recent publications...",
-    "Reviewing archived records...",
-    "Comparing data across sources...",
-    "Evaluating source reliability...",
-]
+_TOOL_DISPLAY_NAMES = {
+    "searxng_search": "SearXNG",
+    "news_search": "news engines (Google News, Bing News)",
+    "fetch_webpage": "web page",
+    "arxiv_search": "arXiv",
+    "wayback_fetch": "Wayback Machine",
+    "wikidata_query": "Wikidata",
+    "knowledge_graph_search": "Neo4j knowledge graph",
+    "knowledge_discover": "knowledge graph discovery",
+    "chan_4plebs_search": "4plebs /pol/ archive",
+    "chan_b4k_search": "b4k /biz/ archive",
+    "chan_warosu_search": "warosu archive",
+    "twitter_search": "Twitter/X",
+    "python_exec": "Python sandbox",
+    "web_search": "commercial SERP APIs",
+}
+
+
+def _build_context_aware_status(activity: dict) -> str:
+    """Build a specific heartbeat status from actual activity context."""
+    phase = activity.get("phase", "")
+    recent_tools = activity.get("recent_tools", [])
+    active_qs = activity.get("active_questions", [])
+    sources_count = activity.get("sources_count", 0)
+    recent_sources = activity.get("recent_sources", [])
+
+    # Phase-specific messages
+    if phase == "verify":
+        return f"Cross-checking {sources_count} sources for contradictions via Veritas fact-check swarm"
+    if phase == "entities":
+        return f"Extracting entities and relationships into Neo4j knowledge graph from {sources_count} sources"
+    if phase == "reflect":
+        return "Running AoT reflection — checking for gaps, overlaps, and non-atomic claims"
+    if phase == "synthesize":
+        return "Drafting synthesis from verified conditions"
+
+    # Tool-based messages
+    if recent_tools:
+        last = recent_tools[-1]
+        tool_name = _TOOL_DISPLAY_NAMES.get(last["tool"], last["tool"])
+        query = last["query"]
+        if last["tool"] in ("fetch_webpage",):
+            # Show domain, not full URL
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(query).netloc or query[:60]
+                return f"Reading {domain} ({last['duration']:.1f}s)"
+            except Exception:
+                pass
+            return f"Fetching page content ({last['duration']:.1f}s)"
+        if query:
+            return f"Querying {tool_name}: \"{query[:80]}\" ({last['duration']:.1f}s)"
+        return f"Calling {tool_name} ({last['duration']:.1f}s)"
+
+    # Active question messages
+    if active_qs:
+        q = active_qs[-1][:100]
+        return f"Investigating: {q}"
+
+    # Source count fallback (still specific)
+    if sources_count > 0:
+        return f"Checked {sources_count} sources so far, searching for more"
+
+    return "Initialising research tree"
 
 
 async def _generate_heartbeat_message(
@@ -4181,18 +4321,17 @@ async def _generate_heartbeat_message(
     req_id: str,
     _phrase_idx: list[int],
 ) -> str:
-    """Generate an engaging heartbeat message using Mistral Small.
+    """Generate a heartbeat message using Mistral Small.
 
-    Falls back to a static status phrase if the LLM call fails or
-    there are no new findings.
+    Falls back to a context-aware status message built from actual
+    tool calls, active questions, and sources — never generic filler.
     """
     new_findings = await collector.get_new_findings()
 
     if not new_findings:
-        # Nothing new — pick a rotating status phrase
-        idx = _phrase_idx[0] % len(_HEARTBEAT_STATUS_PHRASES)
-        _phrase_idx[0] += 1
-        return _HEARTBEAT_STATUS_PHRASES[idx]
+        # Nothing new — build a context-aware status from actual activity
+        activity = await collector.get_activity_context()
+        return _build_context_aware_status(activity)
 
     # Build a compact list of new facts for the LLM
     findings_text = "\n".join(
@@ -4207,6 +4346,7 @@ async def _generate_heartbeat_message(
     prompt = _HEARTBEAT_PROMPT.format(
         findings=findings_text,
         already_shared=already_text,
+        user_query=collector.user_query[:200],
     )
 
     try:
@@ -4225,9 +4365,8 @@ async def _generate_heartbeat_message(
             msg = result.get("content", "").strip()
             # If the LLM says SKIP, there's nothing new to share
             if msg and msg.upper().strip() == "SKIP":
-                idx = _phrase_idx[0] % len(_HEARTBEAT_STATUS_PHRASES)
-                _phrase_idx[0] += 1
-                return _HEARTBEAT_STATUS_PHRASES[idx]
+                activity = await collector.get_activity_context()
+                return _build_context_aware_status(activity)
             if msg and len(msg) > 10:
                 # Mark all findings as shared to prevent rephrasing
                 for f in new_findings:
@@ -4236,10 +4375,9 @@ async def _generate_heartbeat_message(
     except Exception as e:
         log.debug(f"[{req_id}] Heartbeat LLM call failed: {e}")
 
-    # Fallback
-    idx = _phrase_idx[0] % len(_HEARTBEAT_STATUS_PHRASES)
-    _phrase_idx[0] += 1
-    return _HEARTBEAT_STATUS_PHRASES[idx]
+    # Fallback — context-aware, not generic
+    activity = await collector.get_activity_context()
+    return _build_context_aware_status(activity)
 
 
 async def _heartbeat_loop(
@@ -4345,9 +4483,11 @@ You have received atomic research conditions from {n_subagents} parallel researc
 4. Structure the answer with clear headings and logical flow.
 5. Cite sources with URLs where available.
 6. Be thorough but clear. Write in plain, accessible language.
-7. Do NOT add unsolicited warnings, ethical disclaimers, or safety preambles. Just answer the question directly.
-8. Treat the user as an intelligent adult who deserves a straight answer.
-9. Mark any sections where evidence is weak or missing with [NEEDS VERIFICATION].
+7. Do NOT add unsolicited warnings, ethical disclaimers, safety preambles, moral commentary, or hedging language.
+8. Do NOT use phrases like "it's important to note", "please consult a professional", "exercise caution", "it should be noted that", "while controversial".
+9. Treat the user as an intelligent adult. Answer the question directly. Every sentence must add information.
+10. Mark any sections where evidence is weak or missing with [NEEDS VERIFICATION].
+11. Do NOT pad the answer with generic context the user already knows. Get to the specific findings.
 
 **RESEARCH CONDITIONS BY ANGLE:**
 {conditions_text}
@@ -4396,10 +4536,96 @@ Your task is to produce the FINAL polished answer by:
 
 **INSTRUCTIONS:**
 - Fix the identified issues using the additional findings
-- Do NOT add unsolicited warnings, ethical disclaimers, or safety preambles
+- Do NOT add unsolicited warnings, ethical disclaimers, safety preambles, moral commentary, or hedging
+- Do NOT use phrases like "it's important to note", "please consult a professional", "exercise caution"
+- Every sentence must deliver information that helps answer the query. Strip filler.
 - Maintain the original structure but improve weak sections
 - If an issue couldn't be resolved, note it transparently
 - Cite all sources with URLs"""
+
+
+_RELEVANCE_GATE_PROMPT = """You are a strict relevance filter. The user asked:
+"{user_query}"
+
+Does the following text directly help answer that query? Answer ONLY "YES" or "NO".
+- YES = contains specific facts, data, or analysis that answers the query
+- NO = off-topic, generic filler, moral disclaimers, ethical warnings, or tangential
+
+Text to evaluate:
+"{text}"
+"""
+
+
+async def relevance_gate(text: str, user_query: str, req_id: str) -> bool:
+    """Cheap LLM check: does this text help answer the user's query?
+
+    Uses the small/fast model. Returns True if relevant, False if not.
+    On error, defaults to True (let content through rather than block).
+    """
+    if not text or not user_query:
+        return True
+
+    prompt = _RELEVANCE_GATE_PROMPT.format(
+        user_query=user_query[:300],
+        text=text[:500],
+    )
+
+    try:
+        result = await call_llm(
+            [{"role": "user", "content": prompt}],
+            req_id,
+            model=SUBAGENT_MODEL,
+            max_tokens=5,
+            temperature=0.0,
+        )
+        if "error" not in result:
+            answer = result.get("content", "").strip().upper()
+            return answer.startswith("YES")
+    except Exception:
+        pass
+
+    return True  # fail-open
+
+
+async def strip_moralizing(text: str, user_query: str, req_id: str) -> str:
+    """Post-process LLM output to remove moralizing, disclaimers, and filler.
+
+    Uses the small/fast model to strip content that doesn't help answer
+    the user's query. Returns the cleaned text.
+    """
+    if not text or len(text) < 100:
+        return text
+
+    strip_prompt = (
+        f"The user asked: \"{user_query[:300]}\"\n\n"
+        f"Below is a research answer. Remove ALL of the following:\n"
+        f"- Ethical disclaimers or safety warnings\n"
+        f"- Phrases like \"it's important to note\", \"please consult a professional\", "
+        f"\"exercise caution\", \"it should be noted\"\n"
+        f"- Moral commentary or unsolicited advice\n"
+        f"- Generic filler that doesn't add specific information\n"
+        f"- Hedging that weakens otherwise supported claims\n\n"
+        f"Keep ALL specific facts, data, sources, URLs, and analysis intact. "
+        f"Output ONLY the cleaned text, nothing else.\n\n"
+        f"Text:\n{text}"
+    )
+
+    try:
+        result = await call_llm(
+            [{"role": "user", "content": strip_prompt}],
+            req_id,
+            model=SUBAGENT_MODEL,
+            max_tokens=8192,
+            temperature=0.1,
+        )
+        if "error" not in result:
+            cleaned = result.get("content", "").strip()
+            if cleaned and len(cleaned) > len(text) * 0.3:
+                return cleaned
+    except Exception:
+        pass
+
+    return text  # fail-open
 
 
 async def synthesize_with_revision(
@@ -4540,9 +4766,10 @@ async def synthesize_with_revision(
     )
 
     if "error" in final_result:
-        return draft
+        return await strip_moralizing(draft, user_query, req_id)
 
-    return final_result.get("content", draft)
+    final_text = final_result.get("content", draft)
+    return await strip_moralizing(final_text, user_query, req_id)
 
 
 # ============================================================================
@@ -4688,6 +4915,9 @@ async def pdr_node_tree_research(state: PersistentResearchState) -> dict:
 async def pdr_node_entities(state: PersistentResearchState) -> dict:
     """Phase 4: Entity extraction + knowledge graph update."""
     req_id = state["req_id"]
+    collector = _live_collectors.get(req_id)
+    if collector:
+        await collector.set_phase("entities")
     mc = _metrics_collectors.get(req_id)
     if mc:
         mc.start_node("entities")
@@ -4729,6 +4959,9 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
     """
     req_id = state["req_id"]
     user_query = state["user_query"]
+    collector = _live_collectors.get(req_id)
+    if collector:
+        await collector.set_phase("verify")
     mc = _metrics_collectors.get(req_id)
     if mc:
         mc.start_node("verify")
@@ -4794,6 +5027,9 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
 async def pdr_node_reflect(state: PersistentResearchState) -> dict:
     """Phase 6: AoT Reflection."""
     req_id = state["req_id"]
+    collector = _live_collectors.get(req_id)
+    if collector:
+        await collector.set_phase("reflect")
     mc = _metrics_collectors.get(req_id)
     if mc:
         mc.start_node("reflect")
@@ -4867,6 +5103,9 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
 async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
     """Final phase: Draft-Synthesis-Revision loop."""
     req_id = state["req_id"]
+    collector = _live_collectors.get(req_id)
+    if collector:
+        await collector.set_phase("synthesize")
     mc = _metrics_collectors.get(req_id)
     if mc:
         mc.start_node("synthesize")
@@ -5121,7 +5360,7 @@ async def run_persistent_research(
 
     # Create the shared output queue, live findings collector, and curated queue
     output_queue: asyncio.Queue = asyncio.Queue()
-    collector = LiveFindingsCollector()
+    collector = LiveFindingsCollector(user_query=user_query)
     _live_collectors[req_id] = collector
     curated_queue: asyncio.Queue = asyncio.Queue()
     _curated_queues[req_id] = curated_queue

@@ -319,6 +319,7 @@ def detect_curated_events(capture):
                 curated.append({
                     "type": evt_type,
                     "text": match.group(0)[:300],
+                    "original_text": content.strip(),
                     "elapsed": evt.get("elapsed", 0),
                     "wall_ts": evt.get("wall_ts", ""),
                 })
@@ -330,24 +331,50 @@ def detect_curated_events(capture):
 # Server-side Data Fetch
 # ---------------------------------------------------------------------------
 
-def extract_session_id(capture):
-    """Extract req-XXXXXXXX session ID from the response ID.
+def extract_session_id(capture, ssh_host=None, ssh_port=None):
+    """Find the actual server-side session ID (req-XXXXXXXX).
 
-    Response ID format: chatcmpl-pdr-XXXXXXXXXXXX
-    Session ID format: req-XXXXXXXX (first 8 chars of the hash)
+    The proxy generates req_id and request_id as INDEPENDENT UUIDs,
+    so we cannot derive one from the other.  Instead we list JSONL
+    files on the VM sorted by mtime and pick the one created during
+    our test window.
     """
+    start_ts = capture.get("start_time", "")
+    end_ts = capture.get("end_time", "")
+    host = ssh_host or VAST_SSH_HOST
+    port = ssh_port or VAST_SSH_PORT
+
+    # Strategy 1: find JSONL file created during our test window via SSH
+    if host and port:
+        try:
+            cmd = [
+                "ssh", f"root@{host}",
+                "-p", str(port),
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "ConnectTimeout=15",
+                "ls -lt /opt/persistent_research_logs/jsonl/ | head -5",
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            # Parse: -rw-r--r-- 1 root root 284676 Mar 19 17:43 req-202490e3.jsonl
+            for line in result.stdout.strip().split("\n"):
+                m = re.search(r"(req-[a-f0-9]+)\.jsonl", line)
+                if m:
+                    sid = m.group(1)
+                    print(f"[session] Found most-recent JSONL: {sid}")
+                    return sid
+        except Exception as e:
+            print(f"[session] SSH listing failed: {e}")
+
+    # Strategy 2: fallback — derive from response ID (may not match)
     resp_id = capture.get("response_id", "")
-    if not resp_id:
-        return ""
+    if resp_id:
+        match = re.search(r"chatcmpl-pdr-([a-f0-9]+)", resp_id)
+        if match:
+            hash_part = match.group(1)[:8]
+            return f"req-{hash_part}"
 
-    # Try extracting from chatcmpl-pdr-XXXX format
-    match = re.search(r"chatcmpl-pdr-([a-f0-9]+)", resp_id)
-    if match:
-        hash_part = match.group(1)[:8]
-        return f"req-{hash_part}"
-
-    # Fallback: use the full ID
-    return resp_id
+    return ""
 
 
 def fetch_server_metrics(base_url, session_id):
@@ -476,9 +503,15 @@ def analyse_stream(capture, phases, curated):
         curated_by_type[t] = curated_by_type.get(t, 0) + 1
         text = c.get("text", "")
         curated_lengths.append(len(text))
-        # Detect mid-word truncation
-        if text and text[-1] not in ".!?)]}\"' " and len(text) > 100:
-            truncated_events.append(text[-30:])
+        # Detect mid-word truncation — use the original content delta
+        # (not the regex-matched substring which greedily captures fragments)
+        orig = c.get("original_text", text).rstrip()
+        if orig and len(orig) > 100:
+            last_char = orig[-1]
+            if last_char not in '.!?)]}"\'\n0123456789 ':
+                # Skip tool-output patterns like "(10.7s)" or URLs
+                if not re.search(r'\(\d+\.\d+s\)$', orig) and not re.search(r'https?://\S+$', orig):
+                    truncated_events.append(orig[-30:])
 
     # Quality signals
     issues = []

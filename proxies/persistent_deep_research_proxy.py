@@ -1591,7 +1591,10 @@ async def _fetch_via_httpx(url: str) -> str:
         return f"Fetch error: HTTP {resp.status_code}"
 
     content_type = resp.headers.get("content-type", "")
-    if "text/html" not in content_type and "text/plain" not in content_type:
+    if "pdf" in content_type.lower():
+        return f"PDF document at {url} (binary content, cannot extract text directly)"
+    if ("text/html" not in content_type and "text/plain" not in content_type
+            and "text/xml" not in content_type and "application/json" not in content_type):
         return f"Non-text content type: {content_type}"
 
     return _strip_html(resp.text)

@@ -147,8 +147,9 @@ class TestComputePressure:
 # ============================================================================
 
 class TestCensorshipDetection:
-    def test_empty_text_is_censored(self):
-        assert pdr._is_censored_response("") is True
+    def test_empty_text_not_censored(self):
+        # Empty/None text is an error, not censorship — returns False
+        assert pdr._is_censored_response("") is False
 
     def test_short_text_is_censored(self):
         assert pdr._is_censored_response("Access denied") is True
@@ -157,20 +158,23 @@ class TestCensorshipDetection:
         text = "This is a normal webpage with enough content to pass the length check " * 3
         assert pdr._is_censored_response(text) is False
 
-    def test_access_denied_detected(self):
-        text = "403 Forbidden - Access denied to this resource. Please contact admin." + " " * 50
+    def test_multiple_keywords_detected(self):
+        # PR #9's version requires >= 2 keyword matches for long text
+        text = "403 Forbidden - Access denied to this resource. Verify you are human." + " " * 50
         assert pdr._is_censored_response(text) is True
 
-    def test_captcha_detected(self):
-        text = "Please complete the CAPTCHA required to continue browsing." + " " * 50
-        assert pdr._is_censored_response(text) is True
+    def test_single_keyword_not_censored(self):
+        # Single keyword in long text is not enough
+        text = "This page mentions captcha but is otherwise normal content with enough text." + " " * 50
+        assert pdr._is_censored_response(text) is False
 
-    def test_blocked_by_robots_detected(self):
-        text = "This page is blocked by robots.txt and cannot be accessed." + " " * 50
-        assert pdr._is_censored_response(text) is True
+    def test_error_prefix_not_censored(self):
+        text = "Fetch error: HTTP 403 for https://example.com"
+        assert pdr._is_censored_response(text) is False
 
-    def test_none_text_is_censored(self):
-        assert pdr._is_censored_response(None) is True
+    def test_none_text_not_censored(self):
+        # None is an error, not censorship — returns False
+        assert pdr._is_censored_response(None) is False
 
     def test_whitespace_only_is_censored(self):
         assert pdr._is_censored_response("   \n\t  ") is True
@@ -182,63 +186,50 @@ class TestCensorshipDetection:
 
 class TestEnhancedWebFetch:
     @pytest.mark.asyncio
-    async def test_falls_back_to_direct_when_no_api_keys(self):
-        """Without API keys, should use direct fetch only."""
-        with patch.object(pdr, "APIFY_API_KEY", ""), \
+    async def test_tier0_httpx_used_first(self):
+        """Tier 0 (httpx) is the first fetch attempt."""
+        good_text = "This is real page content with enough text to pass checks. " * 5
+        with patch.object(pdr, "_fetch_via_httpx", new_callable=AsyncMock,
+                          return_value=good_text):
+            result = await pdr.enhanced_web_fetch("https://example.com")
+            assert "Content from" in result
+            pdr._fetch_via_httpx.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_falls_through_tiers_on_failure(self):
+        """If httpx returns censored content, should try Playwright next."""
+        # Use censored content (not a 403/451 error) so Tier 1 is attempted
+        censored = "Access denied. Verify you are human. Please try again later."
+        good_text = "Real content from Playwright with enough text to pass. " * 5
+        with patch.object(pdr, "_fetch_via_httpx", new_callable=AsyncMock,
+                          return_value=censored), \
+             patch.object(pdr, "_fetch_via_playwright", new_callable=AsyncMock,
+                          return_value=good_text), \
+             patch.object(pdr, "_PLAYWRIGHT_AVAILABLE", True):
+            result = await pdr.enhanced_web_fetch("https://example.com")
+            assert "Content from" in result
+
+    @pytest.mark.asyncio
+    async def test_error_returned_bare_when_all_tiers_fail(self):
+        """When all tiers fail, the error is returned without Content wrapper."""
+        error_text = "Fetch error: HTTP 500 for https://example.com"
+        with patch.object(pdr, "_fetch_via_httpx", new_callable=AsyncMock,
+                          return_value=error_text), \
+             patch.object(pdr, "_PLAYWRIGHT_AVAILABLE", False), \
+             patch.object(pdr, "_SELENIUM_AVAILABLE", False), \
              patch.object(pdr, "BRIGHT_DATA_API_KEY", ""), \
-             patch.object(pdr, "_tool_fetch_webpage_direct", new_callable=AsyncMock,
-                          return_value="Content from https://example.com:\nHello world with enough text " * 5):
+             patch.object(pdr, "OXYLABS_USERNAME", ""):
             result = await pdr.enhanced_web_fetch("https://example.com")
-            assert "Hello world" in result
-            pdr._tool_fetch_webpage_direct.assert_called_once()
+            assert result == error_text
 
     @pytest.mark.asyncio
-    async def test_apify_success_skips_others(self):
-        """If Apify returns good content, Bright Data and direct are not called."""
-        with patch.object(pdr, "APIFY_API_KEY", "test-key"), \
-             patch.object(pdr, "_fetch_via_apify", new_callable=AsyncMock,
-                          return_value="Apify content here"), \
-             patch.object(pdr, "_fetch_via_bright_data", new_callable=AsyncMock) as mock_bd, \
-             patch.object(pdr, "_tool_fetch_webpage_direct", new_callable=AsyncMock) as mock_direct:
-            result = await pdr.enhanced_web_fetch("https://example.com")
-            assert "Apify" in result
-            mock_bd.assert_not_called()
-            mock_direct.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_apify_fail_tries_bright_data(self):
-        """If Apify fails, should try Bright Data next."""
-        with patch.object(pdr, "APIFY_API_KEY", "test-key"), \
-             patch.object(pdr, "BRIGHT_DATA_API_KEY", "test-key"), \
-             patch.object(pdr, "BRIGHT_DATA_HOST", "proxy.example.com"), \
-             patch.object(pdr, "_fetch_via_apify", new_callable=AsyncMock, return_value=None), \
-             patch.object(pdr, "_fetch_via_bright_data", new_callable=AsyncMock,
-                          return_value="Bright Data content"), \
-             patch.object(pdr, "_tool_fetch_webpage_direct", new_callable=AsyncMock) as mock_direct:
-            result = await pdr.enhanced_web_fetch("https://example.com")
-            assert "Bright Data" in result
-            mock_direct.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_all_fail_appends_warning(self):
-        """If all backends return censored content, should append warning."""
-        censored = "Access denied"
-        with patch.object(pdr, "APIFY_API_KEY", ""), \
-             patch.object(pdr, "BRIGHT_DATA_API_KEY", ""), \
-             patch.object(pdr, "_tool_fetch_webpage_direct", new_callable=AsyncMock,
-                          return_value=censored):
-            result = await pdr.enhanced_web_fetch("https://blocked.com")
-            assert "[WARNING:" in result
-            assert "incomplete or blocked" in result
-
-    @pytest.mark.asyncio
-    async def test_extract_info_forwarded(self):
-        """The extract_info instruction should be included in Apify results."""
-        with patch.object(pdr, "APIFY_API_KEY", "test-key"), \
-             patch.object(pdr, "_fetch_via_apify", new_callable=AsyncMock,
-                          return_value="Some content"):
+    async def test_extract_info_in_result(self):
+        """The extract_info instruction should be included in results."""
+        good_text = "Real content here with enough length. " * 5
+        with patch.object(pdr, "_fetch_via_httpx", new_callable=AsyncMock,
+                          return_value=good_text):
             result = await pdr.enhanced_web_fetch("https://example.com", extract_info="Find prices")
-            assert "Instructions: Find prices" in result
+            assert "Find prices" in result
 
 
 # ============================================================================

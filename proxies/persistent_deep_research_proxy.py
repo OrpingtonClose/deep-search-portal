@@ -165,6 +165,28 @@ APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
 BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
 BRIGHT_DATA_HOST = os.getenv("BRIGHT_DATA_HOST", "")  # e.g. brd.superproxy.io:33335
 
+# --- Enhanced Web Scraping Config ---
+BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
+BRIGHT_DATA_CUSTOMER_ID = os.getenv("BRIGHT_DATA_CUSTOMER_ID", "hl_dc044bf4")
+BRIGHT_DATA_ZONE = os.getenv("BRIGHT_DATA_ZONE", "web_unlocker1")
+OXYLABS_USERNAME = os.getenv("OXYLABS_USERNAME", "")
+OXYLABS_PASSWORD = os.getenv("OXYLABS_PASSWORD", "")
+# Playwright JS rendering: auto-detected at import time
+try:
+    from playwright.async_api import async_playwright
+    _PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    _PLAYWRIGHT_AVAILABLE = False
+
+# Selenium fallback for JS rendering when Playwright is unavailable
+try:
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options as ChromeOptions
+    from selenium.webdriver.chrome.service import Service as ChromeService
+    _SELENIUM_AVAILABLE = True
+except ImportError:
+    _SELENIUM_AVAILABLE = False
+
 # Veritas integration: run the full 5-agent fact-checking reactor
 # on research conditions before synthesis.
 VERITAS_VERIFY_ENABLED = os.getenv("VERITAS_VERIFY_ENABLED", "true").lower() in ("1", "true", "yes")
@@ -174,12 +196,8 @@ VERITAS_HALLUCINATION_THRESHOLD = float(os.getenv("VERITAS_HALLUCINATION_THRESHO
 # Commercial search APIs — gated by Mistral moderation to avoid sending
 # immoral/dangerous queries to censored commercial services.
 COMMERCIAL_SEARCH_ENABLED = os.getenv("COMMERCIAL_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes")
-BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
 BRIGHT_DATA_SERP_ZONE = os.getenv("BRIGHT_DATA_SERP_ZONE", "serp")
-OXYLABS_USERNAME = os.getenv("OXYLABS_USERNAME", "")
-OXYLABS_PASSWORD = os.getenv("OXYLABS_PASSWORD", "")
 MODERATION_MODEL = os.getenv("MODERATION_MODEL", "mistral-moderation-latest")
-
 log.info(
     f"Config: synthesis_model={UPSTREAM_MODEL}, subagent_model={SUBAGENT_MODEL}, "
     f"upstream={UPSTREAM_BASE}, searxng={SEARXNG_URL}, port={LISTEN_PORT}, "
@@ -187,7 +205,10 @@ log.info(
     f"tree_nodes={TREE_MAX_NODES}, subagent_turns={MAX_SUBAGENT_TURNS}, "
     f"research_ns={RESEARCH_NAMESPACE}, "
     f"apify={'yes' if APIFY_API_KEY else 'no'}, "
-    f"bright_data={'yes' if BRIGHT_DATA_API_KEY else 'no'}"
+    f"bright_data={'yes' if BRIGHT_DATA_API_KEY else 'no'}, "
+    f"oxylabs={'yes' if OXYLABS_USERNAME else 'no'}, "
+    f"playwright={'yes' if _PLAYWRIGHT_AVAILABLE else 'no'}, "
+    f"selenium={'yes' if _SELENIUM_AVAILABLE else 'no'}"
 )
 
 # --- Shared state ---
@@ -712,8 +733,11 @@ NATIVE_TOOLS = [
         "function": {
             "name": "fetch_webpage",
             "description": (
-                "Fetch a webpage and extract its readable text content. Use this "
-                "to read articles, documentation, or any web page found via search."
+                "Fetch a webpage and extract its readable text content. Uses a "
+                "multi-tier fallback chain: fast HTTP fetch → headless browser "
+                "(JS rendering) → Bright Data/Oxylabs proxy → Wayback Machine "
+                "archive. Automatically retries with escalating methods if the "
+                "page is blocked, requires JavaScript, or returns a 404."
             ),
             "parameters": {
                 "type": "object",
@@ -880,6 +904,97 @@ NATIVE_TOOLS = [
                     },
                 },
                 "required": ["algorithm", "namespace"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "chan_4plebs_search",
+            "description": (
+                "Search 4chan archives via 4plebs. Covers boards: /pol/, /sp/, /int/, "
+                "/tv/, /k/, /vg/, and others. Returns archived posts with full text, "
+                "timestamps, and thread links. Use for researching political discourse, "
+                "anonymous intelligence, cultural signals, and early meme/narrative tracking."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "board": {
+                        "type": "string",
+                        "description": "Board to search (default: 'pol'). Options: pol, sp, int, tv, k, vg, etc.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "chan_b4k_search",
+            "description": (
+                "Search the arch.b4k.co archive for /biz/ (4chan's business & finance "
+                "board). The only reliable /biz/ archive covering 2017-present. Use for "
+                "cryptocurrency discussions, financial alpha, DeFi analysis, 'link marines', "
+                "and early-stage project sentiment."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query for /biz/"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "chan_warosu_search",
+            "description": (
+                "Search warosu.org archives for /g/ (technology), /sci/ (science), "
+                "/lit/ (literature), /jp/, /vr/, /fa/. Use for technical discussions, "
+                "scientific discourse, and niche hobbyist knowledge not found on mainstream "
+                "search engines."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "board": {
+                        "type": "string",
+                        "description": "Board to search (default: 'g'). Options: g, sci, lit, jp, vr, fa.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "twitter_search",
+            "description": (
+                "Search Twitter/X for tweets and discussions. Supports Twitter search "
+                "operators: from:handle, since:YYYY-MM-DD, until:YYYY-MM-DD, \"exact phrase\". "
+                "Use for real-time signals, financial market sentiment, geopolitical breaking "
+                "news, expert commentary, and public discourse analysis. Results are routed "
+                "through commercial proxies (Bright Data/Oxylabs) for reliable access."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Twitter search query. Supports operators like "
+                            "'from:elonmusk since:2024-01-01 \"AI safety\"'"
+                        ),
+                    },
+                },
+                "required": ["query"],
             },
         },
     },
@@ -1212,145 +1327,6 @@ async def tool_news_search(query: str, time_range: str = "week") -> str:
     return _format_search_results(news_results, source_label="news") or "No recent news found."
 
 
-# ============================================================================
-# Enhanced Web Scraping Abstraction
-# ============================================================================
-
-_CENSORSHIP_INDICATORS = [
-    "access denied",
-    "403 forbidden",
-    "blocked by robots",
-    "captcha required",
-    "content not available in your region",
-    "this content is restricted",
-    "verify you are human",
-    "automated access",
-]
-
-
-def _is_censored_response(text: str) -> bool:
-    """Detect if a scraping response was likely censored or blocked."""
-    if not text or len(text.strip()) < 50:
-        return True
-    lower = text.lower()
-    return any(indicator in lower for indicator in _CENSORSHIP_INDICATORS)
-
-
-async def _fetch_via_apify(url: str) -> Optional[str]:
-    """Fetch webpage content via Apify Web Scraper actor.
-
-    Returns extracted text or None on failure.
-    """
-    if not APIFY_API_KEY:
-        return None
-    try:
-        client = http_client()
-        # Use Apify's web-scraper actor via the REST API
-        resp = await client.post(
-            "https://api.apify.com/v2/acts/apify~web-scraper/run-sync-get-dataset-items",
-            params={"token": APIFY_API_KEY},
-            json={
-                "startUrls": [{"url": url}],
-                "pageFunction": "async function pageFunction(context) { "
-                    "const $ = context.jQuery; "
-                    "const text = $('body').text().replace(/\\s+/g, ' ').trim(); "
-                    "return { url: context.request.url, text: text.substring(0, 50000) }; "
-                    "}",
-                "maxRequestsPerCrawl": 1,
-            },
-            timeout=httpx.Timeout(60.0, connect=15.0),
-        )
-        if resp.status_code == 200:
-            items = resp.json()
-            if items and isinstance(items, list) and items[0].get("text"):
-                text = items[0]["text"]
-                if not _is_censored_response(text):
-                    return text[:WEBPAGE_MAX_CHARS]
-                log.debug(f"Apify: censored response for {url}")
-        else:
-            log.debug(f"Apify: HTTP {resp.status_code} for {url}")
-    except Exception as e:
-        log.debug(f"Apify fetch error for {url}: {e}")
-    return None
-
-
-async def _fetch_via_bright_data(url: str) -> Optional[str]:
-    """Fetch webpage content via Bright Data proxy.
-
-    Returns extracted text or None on failure.
-    """
-    if not BRIGHT_DATA_API_KEY or not BRIGHT_DATA_HOST:
-        return None
-    try:
-        import html as html_mod
-        # Create a dedicated client with the proxy configured at client level.
-        # httpx does not support per-request proxy via extensions; it must be
-        # set on the AsyncClient constructor.
-        proxy_url = f"http://{BRIGHT_DATA_API_KEY}@{BRIGHT_DATA_HOST}"
-        async with httpx.AsyncClient(
-            proxy=proxy_url,
-            timeout=httpx.Timeout(45.0, connect=15.0),
-        ) as proxy_client:
-            resp = await proxy_client.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
-            )
-        if resp.status_code == 200:
-            raw = resp.text
-            text = re.sub(r'<script[^>]*>.*?</script>', '', raw, flags=re.DOTALL | re.IGNORECASE)
-            text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
-            text = re.sub(r'<[^>]+>', ' ', text)
-            text = html_mod.unescape(text)
-            text = re.sub(r'\s+', ' ', text).strip()
-            if not _is_censored_response(text):
-                return text[:WEBPAGE_MAX_CHARS]
-            log.debug(f"Bright Data: censored response for {url}")
-        else:
-            log.debug(f"Bright Data: HTTP {resp.status_code} for {url}")
-    except Exception as e:
-        log.debug(f"Bright Data fetch error for {url}: {e}")
-    return None
-
-
-async def enhanced_web_fetch(url: str, extract_info: str = "") -> str:
-    """Fetch webpage with fallback chain: Apify -> Bright Data -> direct.
-
-    Detects censored/blocked responses and falls back to the next
-    backend.  Appends a warning when all enhanced backends fail and
-    the direct fetch is also suspect.
-    """
-    # Try Apify first (best at JS rendering)
-    result = await _fetch_via_apify(url)
-    if result:
-        if extract_info:
-            return f"Instructions: {extract_info}\n\nContent from {url} (via Apify):\n{result}"
-        return f"Content from {url} (via Apify):\n{result}"
-
-    # Try Bright Data proxy (best at bypassing geo-blocks)
-    result = await _fetch_via_bright_data(url)
-    if result:
-        if extract_info:
-            return f"Instructions: {extract_info}\n\nContent from {url} (via Bright Data):\n{result}"
-        return f"Content from {url} (via Bright Data):\n{result}"
-
-    # Fallback to direct fetch
-    direct = await _tool_fetch_webpage_direct(url, extract_info)
-
-    # If direct fetch looks censored, append a warning
-    # Only append censorship warning for actual page content, not for
-    # error messages from _tool_fetch_webpage_direct (which are short
-    # strings like "Fetch error: HTTP 404..." that would falsely trigger
-    # the <50 char check in _is_censored_response).
-    _error_prefixes = ("Fetch error", "Non-text content", "PDF document", "No readable text")
-    if _is_censored_response(direct) and not direct.startswith(_error_prefixes):
-        direct += (
-            "\n\n[WARNING: This result may be incomplete or blocked. "
-            "The page may require JavaScript rendering, authentication, "
-            "or be geo-restricted. Treat 'no results found' with skepticism "
-            "and try alternative sources.]"
-        )
-
-    return direct
 
 
 async def _tool_fetch_webpage_direct(url: str, extract_info: str = "") -> str:
@@ -1399,6 +1375,718 @@ async def _tool_fetch_webpage_direct(url: str, extract_info: str = "") -> str:
 async def tool_fetch_webpage(url: str, extract_info: str = "") -> str:
     """Fetch a webpage with enhanced scraping fallback chain."""
     return await enhanced_web_fetch(url, extract_info)
+
+
+# ============================================================================
+# Enhanced Web Fetch — multi-tier fallback chain
+# ============================================================================
+
+_CENSORSHIP_KEYWORDS = [
+    "access denied", "403 forbidden", "blocked", "not available in your",
+    "enable javascript", "captcha", "verify you are human", "cf-browser",
+    "just a moment", "checking your browser", "ray id",
+]
+
+_ERROR_PREFIXES = (
+    "Fetch error", "Non-text content", "PDF document", "No readable text",
+    "Search error", "Page returned no readable",
+)
+
+
+def _strip_html(raw_html: str) -> str:
+    """Extract readable text from HTML, stripping scripts/styles/tags."""
+    text = re.sub(r'<script[^>]*>.*?</script>', '', raw_html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = html.unescape(text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'[^\S\n]+', ' ', text).strip()
+    return text
+
+
+def _is_censored_response(text: str) -> bool:
+    """Detect if a response looks censored/blocked rather than real content."""
+    if not text or text.startswith(_ERROR_PREFIXES):
+        return False
+    stripped = text.strip()
+    if len(stripped) < 50:
+        return True
+    lower = stripped.lower()
+    matches = sum(1 for kw in _CENSORSHIP_KEYWORDS if kw in lower)
+    return matches >= 2
+
+
+async def _fetch_via_httpx(url: str) -> str:
+    """Tier 0: Fast HTTP fetch via httpx (no JS rendering)."""
+    client = http_client()
+    resp = await client.get(
+        url,
+        timeout=20.0,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    )
+    if resp.status_code in (403, 404, 410, 451):
+        return f"Fetch error: HTTP {resp.status_code} for {url}"
+    if resp.status_code != 200:
+        return f"Fetch error: HTTP {resp.status_code}"
+
+    content_type = resp.headers.get("content-type", "")
+    if "text/html" not in content_type and "text/plain" not in content_type:
+        return f"Non-text content type: {content_type}"
+
+    return _strip_html(resp.text)
+
+
+async def _fetch_via_playwright(url: str) -> Optional[str]:
+    """Tier 1: Headless Playwright for JS-rendered pages.
+
+    Returns None if Playwright is not available.
+    """
+    if not _PLAYWRIGHT_AVAILABLE:
+        return None
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
+            try:
+                ctx = await browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1280, "height": 720},
+                )
+                page = await ctx.new_page()
+                await page.goto(url, wait_until="networkidle", timeout=30000)
+                body_text = await page.inner_text("body")
+                if body_text and len(body_text.strip()) > 50:
+                    return body_text.strip()
+                return None
+            finally:
+                await browser.close()
+    except Exception as e:
+        log.debug(f"Playwright fetch failed for {url}: {e}")
+        return None
+
+
+async def _fetch_via_selenium(url: str) -> Optional[str]:
+    """Tier 1 fallback: Headless Selenium/ChromeDriver for JS-rendered pages.
+
+    Returns None if Selenium is not available.
+    """
+    if not _SELENIUM_AVAILABLE:
+        return None
+    try:
+        loop = asyncio.get_running_loop()
+
+        def _sync_fetch():
+            opts = ChromeOptions()
+            opts.add_argument("--headless=new")
+            opts.add_argument("--no-sandbox")
+            opts.add_argument("--disable-dev-shm-usage")
+            opts.add_argument("--disable-gpu")
+            opts.add_argument(
+                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            driver = webdriver.Chrome(options=opts)
+            try:
+                driver.set_page_load_timeout(30)
+                driver.get(url)
+                body = driver.find_element("tag name", "body")
+                return body.text.strip() if body else None
+            finally:
+                driver.quit()
+
+        result = await loop.run_in_executor(None, _sync_fetch)
+        if result and len(result) > 50:
+            return result
+        return None
+    except Exception as e:
+        log.debug(f"Selenium fetch failed for {url}: {e}")
+        return None
+
+
+async def _fetch_via_bright_data(url: str) -> Optional[str]:
+    """Tier 2: Bright Data Web Unlocker for geo-blocked/protected pages.
+
+    Returns None if Bright Data is not configured or the request fails.
+    """
+    if not BRIGHT_DATA_API_KEY:
+        return None
+    try:
+        proxy_url = (
+            f"https://brd-customer-{BRIGHT_DATA_CUSTOMER_ID}-zone-{BRIGHT_DATA_ZONE}"
+            f":{BRIGHT_DATA_API_KEY}@brd.superproxy.io:33335"
+        )
+        async with httpx.AsyncClient(
+            proxy=proxy_url,
+            verify=False,
+            timeout=httpx.Timeout(45.0, connect=15.0),
+            follow_redirects=True,
+        ) as client:
+            resp = await client.get(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                },
+            )
+            if resp.status_code != 200:
+                return None
+            content_type = resp.headers.get("content-type", "")
+            if "text/html" not in content_type and "text/plain" not in content_type:
+                return None
+            text = _strip_html(resp.text)
+            return text if text and len(text.strip()) > 50 else None
+    except Exception as e:
+        log.debug(f"Bright Data fetch failed for {url}: {e}")
+        return None
+
+
+async def _fetch_via_oxylabs(url: str) -> Optional[str]:
+    """Tier 2 fallback: Oxylabs Web Scraper for protected pages.
+
+    Returns None if Oxylabs is not configured or the request fails.
+    """
+    if not OXYLABS_USERNAME or not OXYLABS_PASSWORD:
+        return None
+    try:
+        async with httpx.AsyncClient(
+            proxy=f"https://{OXYLABS_USERNAME}:{OXYLABS_PASSWORD}@unblock.oxylabs.io:60000",
+            verify=False,
+            timeout=httpx.Timeout(45.0, connect=15.0),
+            follow_redirects=True,
+        ) as client:
+            resp = await client.get(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                },
+            )
+            if resp.status_code != 200:
+                return None
+            content_type = resp.headers.get("content-type", "")
+            if "text/html" not in content_type and "text/plain" not in content_type:
+                return None
+            text = _strip_html(resp.text)
+            return text if text and len(text.strip()) > 50 else None
+    except Exception as e:
+        log.debug(f"Oxylabs fetch failed for {url}: {e}")
+        return None
+
+
+async def _fetch_via_wayback_cdx(url: str) -> Optional[str]:
+    """Archive cascade: Wayback Machine CDX lookup for dead/blocked URLs.
+
+    Checks the Wayback Machine for the most recent snapshot and fetches it.
+    Returns None if no archive is found.
+    """
+    try:
+        client = http_client()
+        # CDX API returns the most recent successful capture
+        cdx_resp = await client.get(
+            "https://web.archive.org/cdx/search/cdx",
+            params={
+                "url": url,
+                "output": "json",
+                "limit": 1,
+                "fl": "timestamp,statuscode",
+                "filter": "statuscode:200",
+                "sort": "reverse",
+            },
+            timeout=15.0,
+        )
+        if cdx_resp.status_code != 200:
+            return None
+
+        rows = cdx_resp.json()
+        # First row is header, second is data
+        if len(rows) < 2:
+            return None
+
+        timestamp = rows[1][0]
+        archive_url = f"https://web.archive.org/web/{timestamp}id_/{url}"
+
+        archive_resp = await client.get(
+            archive_url,
+            timeout=20.0,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+            },
+        )
+        if archive_resp.status_code != 200:
+            return None
+
+        text = _strip_html(archive_resp.text)
+        if text and len(text.strip()) > 50:
+            return f"[ARCHIVED — Wayback Machine snapshot from {timestamp}]\n\n{text}"
+        return None
+    except Exception as e:
+        log.debug(f"Wayback CDX fetch failed for {url}: {e}")
+        return None
+
+
+async def enhanced_web_fetch(url: str, extract_info: str = "") -> str:
+    """Multi-tier web fetch with JS rendering, proxy fallback, and archive cascade.
+
+    Fallback chain:
+      Tier 0: httpx fast path (plain HTML)
+      Tier 1: Playwright headless (JS rendering) or Selenium fallback
+      Tier 2: Bright Data Web Unlocker / Oxylabs (geo-blocks, anti-bot)
+      Tier 3: Wayback CDX archive (dead URLs, 404/403)
+
+    Censorship detection: if any tier returns content that looks
+    censored/blocked, the next tier is tried.  If all tiers fail,
+    we return whatever we got with a censorship warning.
+    """
+    # Tier 0: httpx fast path
+    try:
+        direct = await _fetch_via_httpx(url)
+    except Exception as e:
+        direct = f"Fetch error: {str(e)}"
+
+    is_error = direct.startswith(_ERROR_PREFIXES)
+    # 404/410 = content truly gone (skip JS rendering AND proxies)
+    is_url_gone = any(
+        direct.startswith(f"Fetch error: HTTP {c}") for c in (404, 410)
+    )
+    # 403/451 = access blocked (skip JS rendering but TRY proxies)
+    is_access_blocked = any(
+        direct.startswith(f"Fetch error: HTTP {c}") for c in (403, 451)
+    )
+
+    # If fast path got good, non-empty content, use it
+    if not is_error and not _is_censored_response(direct) and len(direct.strip()) > 50:
+        text = direct
+    else:
+        text = None
+
+        # Tier 1: JS rendering (Playwright → Selenium fallback)
+        # Skip for server-side blocks (403/451) and dead URLs — JS rendering won't help
+        if text is None and not is_url_gone and not is_access_blocked:
+            rendered = await _fetch_via_playwright(url)
+            if rendered is None:
+                rendered = await _fetch_via_selenium(url)
+            if rendered and not _is_censored_response(rendered):
+                text = rendered
+
+        # Tier 2: Commercial proxies (Bright Data → Oxylabs)
+        # Skip only for truly dead URLs — proxies CAN bypass 403/451
+        if text is None and not is_url_gone:
+            proxied = await _fetch_via_bright_data(url)
+            if proxied is None:
+                proxied = await _fetch_via_oxylabs(url)
+            if proxied and not _is_censored_response(proxied):
+                text = proxied
+
+        # Tier 3: Archive cascade for dead URLs or total failure
+        if text is None:
+            archived = await _fetch_via_wayback_cdx(url)
+            if archived:
+                text = archived
+
+        # Final fallback: return whatever we got
+        if text is None:
+            text = direct
+            # Append censorship warning only for actual page content,
+            # not for error messages from _fetch_via_httpx
+            if _is_censored_response(direct):
+                text += (
+                    "\n\n[WARNING: This result may be incomplete or blocked. "
+                    "The page may require JavaScript rendering, authentication, "
+                    "or be geo-restricted. Treat 'no results found' with skepticism "
+                    "and try alternative sources.]"
+                )
+
+    # Truncate
+    if len(text) > WEBPAGE_MAX_CHARS:
+        text = text[:WEBPAGE_MAX_CHARS] + "\n\n[... content truncated ...]"
+
+    if not text.strip():
+        return "Page returned no readable text content."
+
+    # If all tiers failed and we're returning the original error from httpx,
+    # return it bare (without "Content from" wrapper) to preserve the tool
+    # output contract that the LLM relies on to detect fetch failures.
+    if is_error and text is direct:
+        return text
+
+    result = f"**Content from {url}:**\n\n{text}"
+    if extract_info:
+        result = f"**Looking for: {extract_info}**\n\n{result}"
+    return result
+
+
+# ============================================================================
+# 4chan Archive Tools (Board-Specific)
+# ============================================================================
+
+async def tool_4plebs_search(query: str, board: str = "pol") -> str:
+    """Search 4plebs archive (covers /pol/, /sp/, /int/, /tv/, /k/, /vg/, etc.).
+
+    Returns formatted search results from the 4plebs full-text search API.
+    """
+    board = board.strip("/").lower()
+    try:
+        client = http_client()
+        resp = await client.get(
+            f"https://archive.4plebs.org/_/api/chan/search/",
+            params={"boards": board, "text": query},
+            timeout=20.0,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
+        )
+        if resp.status_code != 200:
+            return f"4plebs search error: HTTP {resp.status_code}"
+
+        data = resp.json()
+        posts = data.get("0", {}).get("posts", [])
+        if not posts:
+            return f"No results found on /{board}/ for: {query}"
+
+        formatted = []
+        for i, post in enumerate(list(posts.values())[:10] if isinstance(posts, dict) else posts[:10], 1):
+            thread_num = post.get("thread_num", "")
+            num = post.get("num", "")
+            comment = post.get("comment") or ""
+            # Strip HTML from comment
+            comment = re.sub(r'<[^>]+>', ' ', comment)
+            comment = html.unescape(comment).strip()
+            if len(comment) > 500:
+                comment = comment[:500] + "..."
+            timestamp = post.get("timestamp", 0)
+            date_str = ""
+            if timestamp:
+                try:
+                    date_str = datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%d")
+                except (ValueError, OSError):
+                    pass
+
+            url = f"https://archive.4plebs.org/{board}/thread/{thread_num}/#p{num}"
+            formatted.append(
+                f"{i}. **/{board}/** [{date_str}] (thread #{thread_num})\n"
+                f"   URL: {url}\n"
+                f"   {comment}"
+            )
+
+        return "\n\n".join(formatted)
+
+    except httpx.TimeoutException:
+        return "4plebs search error: request timed out"
+    except Exception as e:
+        return f"4plebs search error: {str(e)}"
+
+
+async def tool_b4k_search(query: str) -> str:
+    """Search arch.b4k.co archive for /biz/ (crypto/financial discussions).
+
+    This is the only reliable /biz/ archive, covering 2017–present.
+    """
+    try:
+        client = http_client()
+        resp = await client.get(
+            f"https://arch.b4k.co/_/api/chan/search/",
+            params={"boards": "biz", "text": query},
+            timeout=20.0,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
+        )
+        if resp.status_code != 200:
+            return f"b4k search error: HTTP {resp.status_code}"
+
+        data = resp.json()
+        posts = data.get("0", {}).get("posts", [])
+        if not posts:
+            return f"No results found on /biz/ for: {query}"
+
+        formatted = []
+        for i, post in enumerate(list(posts.values())[:10] if isinstance(posts, dict) else posts[:10], 1):
+            thread_num = post.get("thread_num", "")
+            num = post.get("num", "")
+            comment = post.get("comment") or ""
+            comment = re.sub(r'<[^>]+>', ' ', comment)
+            comment = html.unescape(comment).strip()
+            if len(comment) > 500:
+                comment = comment[:500] + "..."
+            timestamp = post.get("timestamp", 0)
+            date_str = ""
+            if timestamp:
+                try:
+                    date_str = datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%d")
+                except (ValueError, OSError):
+                    pass
+
+            url = f"https://arch.b4k.co/biz/thread/{thread_num}/#p{num}"
+            formatted.append(
+                f"{i}. **/biz/** [{date_str}] (thread #{thread_num})\n"
+                f"   URL: {url}\n"
+                f"   {comment}"
+            )
+
+        return "\n\n".join(formatted)
+
+    except httpx.TimeoutException:
+        return "b4k search error: request timed out"
+    except Exception as e:
+        return f"b4k search error: {str(e)}"
+
+
+async def tool_warosu_search(query: str, board: str = "g") -> str:
+    """Search warosu.org archive (covers /g/, /sci/, /lit/, /jp/, /vr/, /fa/).
+
+    Warosu archives technology, science, and literature boards.
+    """
+    board = board.strip("/").lower()
+    try:
+        client = http_client()
+        # Warosu uses a GET search endpoint
+        resp = await client.get(
+            f"https://warosu.org/{board}/",
+            params={"task": "search2", "search_text": query, "offset": 0},
+            timeout=20.0,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+            },
+        )
+        if resp.status_code != 200:
+            return f"Warosu search error: HTTP {resp.status_code}"
+
+        # Warosu returns HTML, not JSON — parse results from HTML
+        raw = resp.text
+        # Extract post blocks: <td class="reply" id="pNNNNN">
+        post_blocks = re.findall(
+            r'<td[^>]*class="reply"[^>]*id="p(\d+)"[^>]*>(.*?)</td>',
+            raw, re.DOTALL,
+        )
+        if not post_blocks:
+            return f"No results found on /{board}/ for: {query}"
+
+        formatted = []
+        for i, (post_id, block) in enumerate(post_blocks[:10], 1):
+            # Extract comment text
+            comment_m = re.search(r'<blockquote>(.*?)</blockquote>', block, re.DOTALL)
+            comment = ""
+            if comment_m:
+                comment = re.sub(r'<[^>]+>', ' ', comment_m.group(1))
+                comment = html.unescape(comment).strip()
+                if len(comment) > 500:
+                    comment = comment[:500] + "..."
+
+            # Extract thread number from reply link
+            thread_m = re.search(r'href="/\w+/thread/(\d+)', block)
+            thread_num = thread_m.group(1) if thread_m else post_id
+
+            url = f"https://warosu.org/{board}/thread/{thread_num}#p{post_id}"
+            formatted.append(
+                f"{i}. **/{board}/** (post #{post_id})\n"
+                f"   URL: {url}\n"
+                f"   {comment}"
+            )
+
+        return "\n\n".join(formatted)
+
+    except httpx.TimeoutException:
+        return "Warosu search error: request timed out"
+    except Exception as e:
+        return f"Warosu search error: {str(e)}"
+
+
+# ============================================================================
+# Twitter/X Search Tool
+# ============================================================================
+
+async def tool_twitter_search(query: str) -> str:
+    """Search Twitter/X for tweets matching the query.
+
+    Uses a tiered approach:
+      1. Bright Data Twitter Scraper (if configured) — most reliable
+      2. Oxylabs Web Scraper (if configured) — fallback
+      3. Nitter instances (degraded, sporadic) — last resort
+
+    Accepts Twitter search operators: from:handle, since:YYYY-MM-DD,
+    until:YYYY-MM-DD, "exact phrase", etc.
+    """
+    # Tier 1: Bright Data Web Unlocker for Twitter search
+    if BRIGHT_DATA_API_KEY:
+        result = await _twitter_via_bright_data(query)
+        if result:
+            return result
+
+    # Tier 2: Oxylabs for Twitter search
+    if OXYLABS_USERNAME:
+        result = await _twitter_via_oxylabs(query)
+        if result:
+            return result
+
+    # Tier 3: Nitter instances (degraded fallback)
+    result = await _twitter_via_nitter(query)
+    if result:
+        return result
+
+    return (
+        f"Twitter search failed for: {query}\n\n"
+        "All access tiers exhausted. Twitter requires commercial proxy access "
+        "(Bright Data or Oxylabs) for reliable results. Nitter instances are "
+        "frequently blocked by X Corp."
+    )
+
+
+async def _twitter_via_bright_data(query: str) -> Optional[str]:
+    """Scrape Twitter search results via Bright Data Web Unlocker."""
+    try:
+        from urllib.parse import quote
+        encoded_query = quote(query, safe="")
+        search_url = f"https://x.com/search?q={encoded_query}&src=typed_query&f=live"
+        proxy_url = (
+            f"https://brd-customer-{BRIGHT_DATA_CUSTOMER_ID}-zone-{BRIGHT_DATA_ZONE}"
+            f":{BRIGHT_DATA_API_KEY}@brd.superproxy.io:33335"
+        )
+        async with httpx.AsyncClient(
+            proxy=proxy_url,
+            verify=False,
+            timeout=httpx.Timeout(45.0, connect=15.0),
+            follow_redirects=True,
+        ) as client:
+            resp = await client.get(
+                search_url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            )
+            if resp.status_code != 200:
+                return None
+
+            text = _strip_html(resp.text)
+            if not text or len(text.strip()) < 100:
+                return None
+            if _is_censored_response(text):
+                return None
+
+            return f"**Twitter/X search results for: {query}**\n\n{text[:WEBPAGE_MAX_CHARS]}"
+    except Exception as e:
+        log.debug(f"Bright Data Twitter fetch failed: {e}")
+        return None
+
+
+async def _twitter_via_oxylabs(query: str) -> Optional[str]:
+    """Scrape Twitter search results via Oxylabs Web Scraper."""
+    if not OXYLABS_USERNAME or not OXYLABS_PASSWORD:
+        return None
+    try:
+        from urllib.parse import quote
+        encoded_query = quote(query, safe="")
+        search_url = f"https://x.com/search?q={encoded_query}&src=typed_query&f=live"
+        async with httpx.AsyncClient(
+            proxy=f"https://{OXYLABS_USERNAME}:{OXYLABS_PASSWORD}@unblock.oxylabs.io:60000",
+            verify=False,
+            timeout=httpx.Timeout(45.0, connect=15.0),
+            follow_redirects=True,
+        ) as client:
+            resp = await client.get(
+                search_url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                },
+            )
+            if resp.status_code != 200:
+                return None
+
+            text = _strip_html(resp.text)
+            if not text or len(text.strip()) < 100:
+                return None
+            if _is_censored_response(text):
+                return None
+
+            return f"**Twitter/X search results for: {query}**\n\n{text[:WEBPAGE_MAX_CHARS]}"
+    except Exception as e:
+        log.debug(f"Oxylabs Twitter fetch failed: {e}")
+        return None
+
+
+_NITTER_INSTANCES = [
+    "https://nitter.privacydev.net",
+    "https://nitter.poast.org",
+    "https://nitter.woodland.cafe",
+]
+
+
+async def _twitter_via_nitter(query: str) -> Optional[str]:
+    """Search Twitter via Nitter instances (degraded, sporadic availability)."""
+    client = http_client()
+    for instance in _NITTER_INSTANCES:
+        try:
+            resp = await client.get(
+                f"{instance}/search",
+                params={"f": "tweets", "q": query},
+                timeout=15.0,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                },
+            )
+            if resp.status_code != 200:
+                continue
+
+            raw = resp.text
+
+            # Parse Nitter HTML for tweet content
+            tweet_blocks = re.findall(
+                r'<div class="tweet-content[^"]*"[^>]*>(.*?)</div>',
+                raw, re.DOTALL,
+            )
+            if not tweet_blocks:
+                continue
+
+            # Extract usernames
+            usernames = re.findall(
+                r'<a class="username"[^>]*>@([^<]+)</a>',
+                raw,
+            )
+
+            formatted = []
+            for i, block in enumerate(tweet_blocks[:10], 1):
+                text = re.sub(r'<[^>]+>', ' ', block)
+                text = html.unescape(text).strip()
+                if len(text) > 400:
+                    text = text[:400] + "..."
+                user = f"@{usernames[i-1]}" if i <= len(usernames) else "@unknown"
+                formatted.append(f"{i}. **{user}**: {text}")
+
+            if formatted:
+                return (
+                    f"**Twitter/X search results for: {query}**\n"
+                    f"(via Nitter — may be incomplete)\n\n"
+                    + "\n\n".join(formatted)
+                )
+        except Exception:
+            continue
+
+    return None
 
 
 def tool_python_exec(code: str) -> str:
@@ -1655,7 +2343,8 @@ async def execute_tool(tool_name: str, arguments: dict) -> str:
             arguments.get("time_range", "week"),
         )
     elif tool_name == "fetch_webpage":
-        return await tool_fetch_webpage(
+        # Use enhanced_web_fetch for the full fallback chain
+        return await enhanced_web_fetch(
             arguments.get("url", ""),
             arguments.get("extract_info", ""),
         )
@@ -1675,6 +2364,20 @@ async def execute_tool(tool_name: str, arguments: dict) -> str:
         return await tool_knowledge_graph_search(arguments)
     elif tool_name == "knowledge_discover":
         return await tool_knowledge_discover(arguments)
+    elif tool_name == "chan_4plebs_search":
+        return await tool_4plebs_search(
+            arguments.get("query", ""),
+            arguments.get("board", "pol"),
+        )
+    elif tool_name == "chan_b4k_search":
+        return await tool_b4k_search(arguments.get("query", ""))
+    elif tool_name == "chan_warosu_search":
+        return await tool_warosu_search(
+            arguments.get("query", ""),
+            arguments.get("board", "g"),
+        )
+    elif tool_name == "twitter_search":
+        return await tool_twitter_search(arguments.get("query", ""))
     else:
         return f"Unknown tool: {tool_name}"
 

@@ -2552,7 +2552,7 @@ async def tree_research_reactor(
     neighbor_text = ""
     if graph_neighbors:
         neighbor_text = " | Graph context: " + "; ".join(
-            f"{n.get('name', '')}: {n.get('description', '')[:60]}"
+            f"{n.get('fact', '')[:80]} (via {n.get('via_entity', '?')})"
             for n in graph_neighbors[:5]
         )
 

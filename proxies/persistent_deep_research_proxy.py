@@ -1604,8 +1604,8 @@ async def _fetch_via_selenium(url: str) -> Optional[str]:
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
             driver = webdriver.Chrome(options=opts)
-            driver.set_page_load_timeout(30)
             try:
+                driver.set_page_load_timeout(30)
                 driver.get(url)
                 body = driver.find_element("tag name", "body")
                 return body.text.strip() if body else None
@@ -1827,6 +1827,12 @@ async def enhanced_web_fetch(url: str, extract_info: str = "") -> str:
 
     if not text.strip():
         return "Page returned no readable text content."
+
+    # If all tiers failed and we're returning the original error from httpx,
+    # return it bare (without "Content from" wrapper) to preserve the tool
+    # output contract that the LLM relies on to detect fetch failures.
+    if is_error and text is direct:
+        return text
 
     result = f"**Content from {url}:**\n\n{text}"
     if extract_info:

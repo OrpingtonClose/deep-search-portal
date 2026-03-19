@@ -837,3 +837,129 @@ class TestToolWebSearch:
 
         mock_ws.assert_called_once_with("test")
         assert result == "search results"
+
+
+# ============================================================================
+# Test: News Intent Detection
+# ============================================================================
+
+class TestNewsIntentDetection:
+    def test_detects_news_keywords(self):
+        assert pdr._has_news_intent("blockchain news today") is True
+        assert pdr._has_news_intent("latest market movements") is True
+        assert pdr._has_news_intent("breaking crypto developments") is True
+        assert pdr._has_news_intent("stocks today performance") is True
+        assert pdr._has_news_intent("what was announced yesterday") is True
+
+    def test_detects_date_references(self):
+        assert pdr._has_news_intent("events march 2026") is True
+        assert pdr._has_news_intent("financial update this week") is True
+        assert pdr._has_news_intent("bitcoin today price") is True
+
+    def test_no_news_intent_for_general_queries(self):
+        assert pdr._has_news_intent("how does photosynthesis work") is False
+        assert pdr._has_news_intent("python programming tutorial") is False
+        assert pdr._has_news_intent("best pizza recipe") is False
+
+
+# ============================================================================
+# Test: News Search Tool
+# ============================================================================
+
+class TestToolNewsSearch:
+    @pytest.mark.asyncio
+    async def test_queries_news_category(self):
+        """news_search should query SearXNG with categories=news."""
+        news_results = [
+            {"title": "Blockchain Rally", "url": "https://news.example.com/1", "content": "BTC hits new highs"},
+        ]
+
+        with patch.object(pdr, "_searxng_query", new_callable=AsyncMock, side_effect=[news_results, []]):
+            result = await pdr.tool_news_search("blockchain news", time_range="day")
+
+        assert "Blockchain Rally" in result
+        assert "(news)" in result
+
+    @pytest.mark.asyncio
+    async def test_merges_general_fallback(self):
+        """news_search should merge general results with news results."""
+        news_results = [
+            {"title": "News Article", "url": "https://news.example.com/1", "content": "News content"},
+        ]
+        general_results = [
+            {"title": "Blog Post", "url": "https://blog.example.com/1", "content": "Blog content"},
+        ]
+
+        with patch.object(pdr, "_searxng_query", new_callable=AsyncMock, side_effect=[news_results, general_results]):
+            result = await pdr.tool_news_search("blockchain", time_range="week")
+
+        assert "News Article" in result
+        assert "Blog Post" in result
+
+    @pytest.mark.asyncio
+    async def test_deduplicates_across_categories(self):
+        """Same URL in both news and general should appear only once."""
+        shared_url = "https://news.example.com/shared"
+        news_results = [
+            {"title": "Same Article", "url": shared_url, "content": "Content"},
+        ]
+        general_results = [
+            {"title": "Same Article Duplicate", "url": shared_url, "content": "Content"},
+        ]
+
+        with patch.object(pdr, "_searxng_query", new_callable=AsyncMock, side_effect=[news_results, general_results]):
+            result = await pdr.tool_news_search("test", time_range="week")
+
+        assert result.count(shared_url) == 1
+
+    @pytest.mark.asyncio
+    async def test_invalid_time_range_defaults_to_week(self):
+        """Invalid time_range should default to 'week'."""
+        with patch.object(pdr, "_searxng_query", new_callable=AsyncMock, return_value=[]) as mock_q:
+            await pdr.tool_news_search("test", time_range="invalid")
+
+        # Both calls should use "week"
+        for call in mock_q.call_args_list:
+            assert call.kwargs.get("time_range", call.args[2] if len(call.args) > 2 else "") == "week"
+
+    @pytest.mark.asyncio
+    async def test_routes_through_execute_tool(self):
+        """execute_tool('news_search', ...) should call tool_news_search."""
+        with patch.object(pdr, "tool_news_search", new_callable=AsyncMock, return_value="news results") as mock_ns:
+            result = await pdr.execute_tool("news_search", {"query": "blockchain", "time_range": "day"})
+
+        mock_ns.assert_called_once_with("blockchain", "day")
+        assert result == "news results"
+
+
+class TestSearxngSearchNewsAutoDetect:
+    @pytest.mark.asyncio
+    async def test_auto_queries_news_for_news_intent(self):
+        """searxng_search should auto-query news category for news-like queries."""
+        general_results = [
+            {"title": "General Result", "url": "https://example.com/1", "content": "General"},
+        ]
+        news_results = [
+            {"title": "News Result", "url": "https://news.example.com/1", "content": "Fresh news"},
+        ]
+
+        with patch.object(pdr, "_searxng_query", new_callable=AsyncMock, side_effect=[general_results, news_results]), \
+             patch.object(pdr, "COMMERCIAL_SEARCH_ENABLED", False):
+            result = await pdr.tool_web_search("blockchain news today")
+
+        assert "General Result" in result
+        assert "News Result" in result
+
+    @pytest.mark.asyncio
+    async def test_skips_news_for_general_queries(self):
+        """searxng_search should NOT auto-query news for non-news queries."""
+        general_results = [
+            {"title": "General Result", "url": "https://example.com/1", "content": "General"},
+        ]
+
+        with patch.object(pdr, "_searxng_query", new_callable=AsyncMock, return_value=general_results) as mock_q, \
+             patch.object(pdr, "COMMERCIAL_SEARCH_ENABLED", False):
+            result = await pdr.tool_web_search("how does photosynthesis work")
+
+        # Should only call _searxng_query once (general), not twice
+        assert mock_q.call_count == 1

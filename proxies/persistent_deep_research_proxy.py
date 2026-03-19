@@ -845,6 +845,31 @@ NATIVE_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "news_search",
+            "description": (
+                "Search for recent news articles using news-specific search engines "
+                "(Google News, Bing News, etc.). Use this for any query about current "
+                "events, recent developments, breaking news, market movements, or "
+                "anything that happened within the last days/weeks/months. Supports "
+                "time_range filtering."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The news search query"},
+                    "time_range": {
+                        "type": "string",
+                        "enum": ["day", "week", "month", "year"],
+                        "description": "Filter results to this time range (default: week)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -1020,41 +1045,130 @@ async def _commercial_search(query: str) -> list[dict]:
 # ============================================================================
 
 
-async def tool_searxng_search(query: str) -> str:
-    """Execute a SearXNG search and return formatted results."""
+def _format_search_results(results: list[dict], source_label: str = "") -> str:
+    """Format search results into a readable string."""
+    if not results:
+        return "No results found."
+
+    formatted = []
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "No title")
+        url = r.get("url", "")
+        snippet = r.get("content", r.get("snippet", ""))[:300]
+        trust = trust_score_url(url)
+        tag = f" ({source_label})" if source_label else ""
+        formatted.append(
+            f"{i}. **{title}** [trust: {trust:.1f}]{tag}\n"
+            f"   URL: {url}\n   {snippet}"
+        )
+
+    return "\n\n".join(formatted)
+
+
+async def _searxng_query(
+    query: str,
+    categories: str = "general",
+    time_range: str = "",
+) -> list[dict]:
+    """Low-level SearXNG query.  Returns raw result dicts."""
     try:
         client = http_client()
+        params: dict[str, str] = {
+            "q": query,
+            "format": "json",
+            "categories": categories,
+        }
+        if time_range:
+            params["time_range"] = time_range
+
         resp = await client.get(
             f"{SEARXNG_URL}/search",
-            params={"q": query, "format": "json", "categories": "general"},
+            params=params,
             timeout=20.0,
         )
         if resp.status_code != 200:
-            return f"Search error: HTTP {resp.status_code}"
+            return []
 
         data = resp.json()
-        results = data.get("results", [])[:10]
+        return data.get("results", [])[:10]
 
-        if not results:
-            return "No results found."
+    except Exception:
+        return []
 
-        formatted = []
-        for i, r in enumerate(results, 1):
-            title = r.get("title", "No title")
-            url = r.get("url", "")
-            snippet = r.get("content", "")[:300]
-            trust = trust_score_url(url)
-            formatted.append(
-                f"{i}. **{title}** [trust: {trust:.1f}]\n"
-                f"   URL: {url}\n   {snippet}"
-            )
 
-        return "\n\n".join(formatted)
+# News-intent keywords: if a search query contains any of these, it likely
+# wants recent news rather than evergreen web pages.
+_NEWS_INTENT_KEYWORDS = re.compile(
+    r"\b(news|latest|today|yesterday|this week|this month|breaking|recent|update|announced|announces"
+    r"|just released|market|stock market|stocks today|crypto today|bitcoin today|headlines"
+    r"|march 2026|april 2026|2026)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_news_intent(query: str) -> bool:
+    """Detect whether a search query is looking for recent news."""
+    return bool(_NEWS_INTENT_KEYWORDS.search(query))
+
+
+async def tool_searxng_search(query: str) -> str:
+    """Execute a SearXNG search and return formatted results.
+
+    If the query has news-intent (mentions dates, 'news', 'today', etc.),
+    automatically queries both the general AND news categories and merges
+    results.
+    """
+    try:
+        general_results = await _searxng_query(query, categories="general")
+
+        # Auto-detect news intent and merge news-category results.
+        if _has_news_intent(query):
+            news_results = await _searxng_query(query, categories="news", time_range="week")
+            # Dedup by URL.
+            seen_urls = {r.get("url", "") for r in general_results}
+            for r in news_results:
+                if r.get("url", "") not in seen_urls:
+                    general_results.append(r)
+                    seen_urls.add(r.get("url", ""))
+
+        return _format_search_results(general_results) or "No results found."
 
     except httpx.TimeoutException:
         return "Search error: request timed out after 20s"
     except Exception as e:
         return f"Search error: {str(e)}"
+
+
+async def tool_news_search(query: str, time_range: str = "week") -> str:
+    """Search for recent news using SearXNG's news category.
+
+    Always queries news-specific search engines (Google News, Bing News, etc.)
+    with an explicit time_range filter.
+    """
+    valid_ranges = {"day", "week", "month", "year"}
+    if time_range not in valid_ranges:
+        time_range = "week"
+
+    try:
+        # Query news category with time filter.
+        news_results = await _searxng_query(query, categories="news", time_range=time_range)
+
+        # Also query general as fallback — some news sites are indexed there.
+        general_results = await _searxng_query(query, categories="general", time_range=time_range)
+
+        # Merge, news first.
+        seen_urls = {r.get("url", "") for r in news_results}
+        for r in general_results:
+            if r.get("url", "") not in seen_urls:
+                news_results.append(r)
+                seen_urls.add(r.get("url", ""))
+
+        return _format_search_results(news_results, source_label="news") or "No recent news found."
+
+    except httpx.TimeoutException:
+        return "News search error: request timed out after 20s"
+    except Exception as e:
+        return f"News search error: {str(e)}"
 
 
 async def tool_fetch_webpage(url: str, extract_info: str = "") -> str:
@@ -1345,6 +1459,11 @@ async def execute_tool(tool_name: str, arguments: dict) -> str:
     """Route and execute a tool call."""
     if tool_name == "searxng_search":
         return await tool_web_search(arguments.get("query", ""))
+    elif tool_name == "news_search":
+        return await tool_news_search(
+            arguments.get("query", ""),
+            arguments.get("time_range", "week"),
+        )
     elif tool_name == "fetch_webpage":
         return await tool_fetch_webpage(
             arguments.get("url", ""),
@@ -2061,6 +2180,13 @@ Initial search query: {angle_query}
 5. Be thorough but focused on your assigned angle.
 6. Use arxiv_search for academic papers, wikidata_query for structured facts.
 7. Use wayback_fetch if a link is dead or unavailable.
+8. Use news_search (not searxng_search) for anything about current events, recent news, market movements, or time-sensitive topics.
+
+**CRITICAL RULES:**
+- NEVER fabricate or invent source names. Only cite sources you actually fetched via tools.
+- NEVER claim you checked Bloomberg Terminal, Reuters, or any specific service unless a tool actually returned results from that service.
+- If tools return no useful results, say so honestly — do NOT invent plausible-sounding conclusions.
+- If search results are empty, try different queries or tools before concluding "no information found."
 
 {serendipity_instruction}
 

@@ -4030,14 +4030,14 @@ async def _research_single_node(
     and feeds findings into the collector and curated queue.
     """
     angle = {
-        "title": node.question[:80],
+        "title": node.question,
         "query": node.question,
         "description": node.context,
         "is_bridge": False,
     }
 
     # Track this question as actively being researched
-    await collector.set_active_question(node.question[:120])
+    await collector.set_active_question(node.question)
 
     # Lightweight internal progress queue (not emitting system noise)
     internal_queue: asyncio.Queue = asyncio.Queue()
@@ -4053,7 +4053,7 @@ async def _research_single_node(
     )
 
     # Clear the active question now that research is done
-    await collector.clear_active_question(node.question[:120])
+    await collector.clear_active_question(node.question)
 
     # Feed conditions to the live findings collector for heartbeat
     if sa_result.conditions:
@@ -4066,7 +4066,7 @@ async def _research_single_node(
             "type": "finding",
             "node_id": node.id,
             "question": node.question,
-            "finding": top_finding.fact[:200],
+            "finding": top_finding.fact,
             "conditions_count": len(sa_result.conditions),
             "depth": node.depth,
         })
@@ -4113,13 +4113,13 @@ async def tree_research_reactor(
     prior_text = ""
     if prior_conditions:
         prior_text = " | Prior knowledge: " + "; ".join(
-            pc["fact"][:80] for pc in prior_conditions[:5]
+            pc["fact"] for pc in prior_conditions[:5]
         )
 
     neighbor_text = ""
     if graph_neighbors:
         neighbor_text = " | Graph context: " + "; ".join(
-            f"{n.get('fact', '')[:80]} (via {n.get('via_entity', '?')})"
+            f"{n.get('fact', '')} (via {n.get('via_entity', '?')})"
             for n in graph_neighbors[:5]
         )
 
@@ -4140,7 +4140,7 @@ async def tree_research_reactor(
         f"depth limit {TREE_MAX_DEPTH}, "
         f"node budget {TREE_MAX_NODES})\n"
     )
-    progress.append(f"Root question: {user_query[:120]}\n")
+    progress.append(f"Root question: {user_query}\n")
 
     await curated_queue.put({
         "type": "start",
@@ -4219,9 +4219,9 @@ async def tree_research_reactor(
                     if actually_queued > 0:
                         await curated_queue.put({
                             "type": "branch",
-                            "parent_question": node.question[:80],
+                            "parent_question": node.question,
                             "children_count": actually_queued,
-                            "top_child": children[0].question[:100] if children else "",
+                            "top_child": children[0].question if children else "",
                             "depth": node.depth + 1,
                         })
             finally:
@@ -4437,19 +4437,18 @@ def _build_context_aware_status(activity: dict) -> str:
             # Show domain, not full URL
             try:
                 from urllib.parse import urlparse
-                domain = urlparse(query).netloc or query[:60]
+                domain = urlparse(query).netloc or query
                 return f"Reading {domain} ({last['duration']:.1f}s)"
             except Exception:
                 pass
             return f"Fetching page content ({last['duration']:.1f}s)"
         if query:
-            return f"Querying {tool_name}: \"{query[:80]}\" ({last['duration']:.1f}s)"
+            return f"Querying {tool_name}: \"{query}\" ({last['duration']:.1f}s)"
         return f"Calling {tool_name} ({last['duration']:.1f}s)"
 
     # Active question messages
     if active_qs:
-        q = active_qs[-1][:100]
-        return f"Investigating: {q}"
+        return f"Investigating: {active_qs[-1]}"
 
     # Source count fallback (still specific)
     if sources_count > 0:
@@ -4560,7 +4559,7 @@ async def _heartbeat_loop(
                     pass
 
             if curated_msg is not None:
-                formatted = _format_curated_event(curated_msg)
+                formatted = await _format_curated_event_llm(curated_msg, req_id)
                 if formatted:
                     await output_queue.put(chunk_fn(f"\n{formatted}\n"))
                     last_heartbeat = time.monotonic()
@@ -4581,21 +4580,75 @@ async def _heartbeat_loop(
         return
 
 
-def _format_curated_event(event: dict) -> str:
-    """Format a tree reactor curated event into a user-facing message.
+_CURATED_EVENT_PROMPT = """You are a research progress formatter. Convert the raw research event below into a single concise, informative status message for the user.
 
-    Returns an empty string for events that should be silently consumed.
+Rules:
+- One sentence, under 40 words
+- Lead with the most specific, useful information (names, numbers, sources, topics)
+- Professional and factual — like a Reuters wire ticker
+- NO excitement, NO commentary, NO hedging
+- Include depth/branch context if relevant
+- If the event has no useful information for the user, output exactly: SKIP
+
+Raw event:
+{event_json}"""
+
+
+async def _format_curated_event_llm(event: dict, req_id: str) -> str:
+    """Format a tree reactor curated event via LLM prompt.
+
+    Uses a fast model to produce a concise, naturally-worded status
+    message instead of programmatic string truncation.
+    Falls back to a simple template if the LLM call fails.
     """
+    evt_type = event.get("type", "")
+    if not evt_type:
+        return ""
+
+    # Summary events are already concise — no LLM needed
+    if evt_type == "summary":
+        nodes = event.get("nodes_explored", 0)
+        conds = event.get("conditions_count", 0)
+        return f"Research complete: {nodes} branches explored, {conds} findings collected"
+
+    # Build the prompt with the full event data (no truncation)
+    event_json = json.dumps(event, default=str, ensure_ascii=False)
+    prompt = _CURATED_EVENT_PROMPT.replace("{event_json}", event_json)
+
+    try:
+        result = await call_llm(
+            [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": "Format this event."},
+            ],
+            req_id,
+            model=SUBAGENT_MODEL,
+            max_tokens=60,
+            temperature=0.2,
+        )
+        if "error" not in result:
+            msg = result.get("content", "").strip()
+            if msg and msg.upper().strip() != "SKIP" and len(msg) > 5:
+                return msg
+    except Exception as e:
+        log.debug(f"[{req_id}] Curated event LLM format failed: {e}")
+
+    # Fallback — simple templates without character truncation
+    return _format_curated_event_fallback(event)
+
+
+def _format_curated_event_fallback(event: dict) -> str:
+    """Fallback template formatter when LLM is unavailable."""
     evt_type = event.get("type", "")
 
     if evt_type == "start":
-        return f"Investigating: {event.get('question', '')[:120]}"
+        return f"Investigating: {event.get('question', '')}"
 
     elif evt_type == "finding":
         finding = event.get("finding", "")
         depth = event.get("depth", 0)
         count = event.get("conditions_count", 0)
-        q = event.get("question", "")[:80]
+        q = event.get("question", "")
         if depth > 0:
             return f"[depth {depth}] {q} — {count} findings. Key: {finding}"
         return f"{q} — {count} findings. Key: {finding}"

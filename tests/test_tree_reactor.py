@@ -238,12 +238,12 @@ class TestEnhancedWebFetch:
 
 class TestFormatCuratedEvent:
     def test_start_event(self):
-        msg = pdr._format_curated_event({"type": "start", "question": "What is X?"})
+        msg = pdr._format_curated_event_fallback({"type": "start", "question": "What is X?"})
         assert "Investigating" in msg
         assert "What is X?" in msg
 
     def test_finding_event(self):
-        msg = pdr._format_curated_event({
+        msg = pdr._format_curated_event_fallback({
             "type": "finding",
             "finding": "Nimesulide is banned in several EU countries",
             "conditions_count": 5,
@@ -256,7 +256,7 @@ class TestFormatCuratedEvent:
         assert "Nimesulide is banned" in msg
 
     def test_finding_event_depth_zero(self):
-        msg = pdr._format_curated_event({
+        msg = pdr._format_curated_event_fallback({
             "type": "finding",
             "finding": "Root finding",
             "conditions_count": 3,
@@ -267,7 +267,7 @@ class TestFormatCuratedEvent:
         assert "depth 0" not in msg  # depth 0 should not show depth label
 
     def test_branch_event(self):
-        msg = pdr._format_curated_event({
+        msg = pdr._format_curated_event_fallback({
             "type": "branch",
             "parent_question": "Is X true?",
             "children_count": 3,
@@ -278,7 +278,7 @@ class TestFormatCuratedEvent:
         assert "What evidence supports X?" in msg
 
     def test_branch_event_single_child(self):
-        msg = pdr._format_curated_event({
+        msg = pdr._format_curated_event_fallback({
             "type": "branch",
             "parent_question": "q",
             "children_count": 1,
@@ -289,7 +289,7 @@ class TestFormatCuratedEvent:
         assert "questions" not in msg  # singular
 
     def test_summary_event(self):
-        msg = pdr._format_curated_event({
+        msg = pdr._format_curated_event_fallback({
             "type": "summary",
             "nodes_explored": 12,
             "conditions_count": 47,
@@ -298,11 +298,11 @@ class TestFormatCuratedEvent:
         assert "47 findings" in msg
 
     def test_unknown_event_returns_empty(self):
-        msg = pdr._format_curated_event({"type": "internal_debug"})
+        msg = pdr._format_curated_event_fallback({"type": "internal_debug"})
         assert msg == ""
 
     def test_empty_event_returns_empty(self):
-        msg = pdr._format_curated_event({})
+        msg = pdr._format_curated_event_fallback({})
         assert msg == ""
 
 

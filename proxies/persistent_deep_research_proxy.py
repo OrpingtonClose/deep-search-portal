@@ -2549,10 +2549,17 @@ async def tree_research_reactor(
             pc["fact"][:80] for pc in prior_conditions[:5]
         )
 
+    neighbor_text = ""
+    if graph_neighbors:
+        neighbor_text = " | Graph context: " + "; ".join(
+            f"{n.get('name', '')}: {n.get('description', '')[:60]}"
+            for n in graph_neighbors[:5]
+        )
+
     root = ResearchNode(
         id=f"{req_id}-root",
         question=user_query,
-        context=f"Original user query{prior_text}",
+        context=f"Original user query{prior_text}{neighbor_text}",
         depth=0,
         pressure=1.0,
     )
@@ -2587,7 +2594,7 @@ async def tree_research_reactor(
                     return
                 try:
                     node = await asyncio.wait_for(
-                        pending.get(), timeout=2.0
+                        pending.get(), timeout=TREE_WORKER_IDLE_TIMEOUT
                     )
                 except asyncio.TimeoutError:
                     # Check if exploration is complete: no items in

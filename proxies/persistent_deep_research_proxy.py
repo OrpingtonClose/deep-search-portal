@@ -162,7 +162,7 @@ TREE_PRESSURE_THRESHOLD = float(os.getenv("TREE_PRESSURE_THRESHOLD", "0.15"))
 TREE_WORKER_IDLE_TIMEOUT = float(os.getenv("TREE_WORKER_IDLE_TIMEOUT", "60.0"))
 
 # --- Enhanced Web Scraping Config ---
-APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
+APIFY_API_KEY = os.getenv("APIFY_API_TOKEN", "")
 BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
 BRIGHT_DATA_HOST = os.getenv("BRIGHT_DATA_HOST", "")  # e.g. brd.superproxy.io:33335
 BRIGHT_DATA_CUSTOMER_ID = os.getenv("BRIGHT_DATA_CUSTOMER_ID", "hl_dc044bf4")
@@ -202,7 +202,7 @@ log.info(
     f"tree_concurrent={TREE_MAX_CONCURRENT}, tree_depth={TREE_MAX_DEPTH}, "
     f"tree_nodes={TREE_MAX_NODES}, subagent_turns={MAX_SUBAGENT_TURNS}, "
     f"research_ns={RESEARCH_NAMESPACE}, "
-    f"apify={'yes' if APIFY_API_KEY else 'no'}, "
+    f"apify={'yes' if APIFY_API_KEY else 'no'}, "  # reads APIFY_API_TOKEN env var
     f"bright_data={'yes' if BRIGHT_DATA_API_KEY else 'no'}, "
     f"oxylabs={'yes' if OXYLABS_USERNAME else 'no'}, "
     f"playwright={'yes' if _PLAYWRIGHT_AVAILABLE else 'no'}, "

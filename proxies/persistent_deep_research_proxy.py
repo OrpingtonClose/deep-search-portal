@@ -4568,9 +4568,11 @@ async def relevance_gate(text: str, user_query: str, req_id: str) -> bool:
     if not text or not user_query:
         return True
 
-    prompt = _RELEVANCE_GATE_PROMPT.format(
-        user_query=user_query[:300],
-        text=text[:500],
+    # Use replace instead of .format() to avoid KeyError if text contains { or }
+    prompt = _RELEVANCE_GATE_PROMPT.replace(
+        "{user_query}", user_query[:300]
+    ).replace(
+        "{text}", text[:500]
     )
 
     try:

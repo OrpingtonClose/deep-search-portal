@@ -1046,9 +1046,9 @@ async def _commercial_search(query: str) -> list[dict]:
 
 
 def _format_search_results(results: list[dict], source_label: str = "") -> str:
-    """Format search results into a readable string."""
+    """Format search results into a readable string.  Returns empty string on empty input."""
     if not results:
-        return "No results found."
+        return ""
 
     formatted = []
     for i, r in enumerate(results, 1):
@@ -1070,30 +1070,31 @@ async def _searxng_query(
     categories: str = "general",
     time_range: str = "",
 ) -> list[dict]:
-    """Low-level SearXNG query.  Returns raw result dicts."""
-    try:
-        client = http_client()
-        params: dict[str, str] = {
-            "q": query,
-            "format": "json",
-            "categories": categories,
-        }
-        if time_range:
-            params["time_range"] = time_range
+    """Low-level SearXNG query.  Returns raw result dicts.
 
-        resp = await client.get(
-            f"{SEARXNG_URL}/search",
-            params=params,
-            timeout=20.0,
-        )
-        if resp.status_code != 200:
-            return []
+    Raises on HTTP errors and timeouts so callers can provide
+    descriptive error messages to the subagent.
+    """
+    client = http_client()
+    params: dict[str, str] = {
+        "q": query,
+        "format": "json",
+        "categories": categories,
+    }
+    if time_range:
+        params["time_range"] = time_range
 
-        data = resp.json()
-        return data.get("results", [])[:10]
+    resp = await client.get(
+        f"{SEARXNG_URL}/search",
+        params=params,
+        timeout=20.0,
+    )
+    if resp.status_code != 200:
+        log.warning(f"SearXNG returned HTTP {resp.status_code} for categories={categories}")
+        raise RuntimeError(f"SearXNG HTTP {resp.status_code}")
 
-    except Exception:
-        return []
+    data = resp.json()
+    return data.get("results", [])[:10]
 
 
 # News-intent keywords: if a search query contains any of these, it likely

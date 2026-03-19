@@ -248,7 +248,7 @@ class TestEnhancedWebFetch:
 class TestFormatCuratedEvent:
     def test_start_event(self):
         msg = pdr._format_curated_event({"type": "start", "question": "What is X?"})
-        assert "Starting research" in msg
+        assert "Investigating" in msg
         assert "What is X?" in msg
 
     def test_finding_event(self):
@@ -260,7 +260,7 @@ class TestFormatCuratedEvent:
             "node_id": "n1",
             "question": "Is Nimesulide available?",
         })
-        assert "5 insights" in msg
+        assert "5 findings" in msg
         assert "depth 1" in msg
         assert "Nimesulide is banned" in msg
 
@@ -283,8 +283,7 @@ class TestFormatCuratedEvent:
             "top_child": "What evidence supports X?",
             "depth": 2,
         })
-        assert "3 new questions" in msg
-        assert "depth 2" in msg
+        assert "3 follow-up questions" in msg
         assert "What evidence supports X?" in msg
 
     def test_branch_event_single_child(self):
@@ -295,7 +294,7 @@ class TestFormatCuratedEvent:
             "top_child": "sub-q",
             "depth": 1,
         })
-        assert "1 new question" in msg
+        assert "1 follow-up question" in msg
         assert "questions" not in msg  # singular
 
     def test_summary_event(self):

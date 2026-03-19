@@ -2745,33 +2745,32 @@ class LiveFindingsCollector:
 # Heartbeat Prompt & Task
 # ============================================================================
 
-_HEARTBEAT_PROMPT = """You are a research assistant giving a brief live update to a curious friend about what you just discovered.
-
-Pick the single most interesting NEW finding from the list below and describe it conversationally in under 40 words.
+_HEARTBEAT_PROMPT = """You are a research analyst. Share ONE noteworthy new finding as a direct factual statement in under 40 words.
 
 Rules:
-- Share a concrete, specific finding — not a vague progress update
-- Write like you're excited to tell a friend what you just learned
-- No technical jargon about subagents, turns, models, or system internals
-- No bullet points or markdown
-- If nothing is genuinely new or interesting, reply with a brief natural status like "Still searching through regulatory databases..." or "Digging into the academic literature on this..."
+- Lead with the specific data: names, numbers, prices, dates, percentages, sources
+- Example: "Technogym Biostrength uses AI-driven resistance adjustment and claims 30% faster strength gains vs conventional machines, per their 2024 whitepaper."
+- NO commentary, NO excitement, NO exclamation marks, NO "I found", NO "It turns out", NO "Oh my gosh"
+- NO hedging like "how cool is that" or "imagine" — just the facts
+- Professional, dry, factual — like a Reuters wire report
+- If nothing is genuinely new vs the "Already shared" list, reply with exactly: SKIP
 
 New findings:
 {findings}
 
-Already shared (do NOT repeat these):
+Already shared (do NOT repeat or rephrase — if a finding covers the same topic as any item below, output SKIP):
 {already_shared}"""
 
 
 _HEARTBEAT_STATUS_PHRASES = [
-    "Still searching through databases for relevant patterns...",
-    "Digging deeper into the academic literature on this...",
-    "Cross-referencing findings across different sources...",
-    "Following a promising trail through regulatory records...",
-    "Scanning through recent publications for fresh insights...",
-    "Checking historical archives for additional context...",
-    "Comparing data across multiple jurisdictions...",
+    "Searching for additional sources...",
+    "Cross-referencing across databases...",
     "Verifying claims against primary sources...",
+    "Checking for corroborating evidence...",
+    "Scanning recent publications...",
+    "Reviewing archived records...",
+    "Comparing data across sources...",
+    "Evaluating source reliability...",
 ]
 
 
@@ -2822,10 +2821,15 @@ async def _generate_heartbeat_message(
 
         if "error" not in result:
             msg = result.get("content", "").strip()
+            # If the LLM says SKIP, there's nothing new to share
+            if msg and msg.upper().strip() == "SKIP":
+                idx = _phrase_idx[0] % len(_HEARTBEAT_STATUS_PHRASES)
+                _phrase_idx[0] += 1
+                return _HEARTBEAT_STATUS_PHRASES[idx]
             if msg and len(msg) > 10:
-                # Mark the finding that was most likely used
-                if new_findings:
-                    await collector.mark_shared(new_findings[0].fact)
+                # Mark all findings as shared to prevent rephrasing
+                for f in new_findings:
+                    await collector.mark_shared(f.fact)
                 return msg
     except Exception as e:
         log.debug(f"[{req_id}] Heartbeat LLM call failed: {e}")
@@ -2900,25 +2904,26 @@ def _format_curated_event(event: dict) -> str:
     evt_type = event.get("type", "")
 
     if evt_type == "start":
-        return f"Starting research: {event.get('question', '')[:120]}"
+        return f"Investigating: {event.get('question', '')[:120]}"
 
     elif evt_type == "finding":
         finding = event.get("finding", "")
         depth = event.get("depth", 0)
         count = event.get("conditions_count", 0)
-        depth_label = f" (depth {depth})" if depth > 0 else ""
-        return f"Found {count} insights{depth_label}: {finding}"
+        q = event.get("question", "")[:80]
+        if depth > 0:
+            return f"[depth {depth}] {q} — {count} findings. Key: {finding}"
+        return f"{q} — {count} findings. Key: {finding}"
 
     elif evt_type == "branch":
         n = event.get("children_count", 0)
         child = event.get("top_child", "")
-        depth = event.get("depth", 1)
-        return f"This opens {n} new question{'s' if n != 1 else ''} at depth {depth} — next up: {child}"
+        return f"Spawning {n} follow-up question{'s' if n != 1 else ''} — highest priority: {child}"
 
     elif evt_type == "summary":
         nodes = event.get("nodes_explored", 0)
         conds = event.get("conditions_count", 0)
-        return f"Tree exploration complete: {nodes} branches explored, {conds} findings gathered"
+        return f"Research complete: {nodes} branches explored, {conds} findings collected"
 
     return ""
 

@@ -90,7 +90,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Annotated, Any, AsyncGenerator, Optional, TypedDict
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 # Sentinel used to signal the SSE output queue that the pipeline is done.
 _STREAM_DONE = object()
@@ -153,6 +153,21 @@ MAX_PRIOR_CONDITIONS = 20
 # Saturation detection thresholds
 NOVELTY_EXPAND_THRESHOLD = 0.3
 NOVELTY_STOP_THRESHOLD = 0.05
+
+# Veritas integration: run the full 5-agent fact-checking reactor
+# on research conditions before synthesis.
+VERITAS_VERIFY_ENABLED = os.getenv("VERITAS_VERIFY_ENABLED", "true").lower() in ("1", "true", "yes")
+VERITAS_MIN_CONDITIONS = env_int("VERITAS_MIN_CONDITIONS", 3, minimum=1)
+VERITAS_HALLUCINATION_THRESHOLD = float(os.getenv("VERITAS_HALLUCINATION_THRESHOLD", "0.3"))
+
+# Commercial search APIs — gated by Mistral moderation to avoid sending
+# immoral/dangerous queries to censored commercial services.
+COMMERCIAL_SEARCH_ENABLED = os.getenv("COMMERCIAL_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes")
+BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
+BRIGHT_DATA_SERP_ZONE = os.getenv("BRIGHT_DATA_SERP_ZONE", "serp")
+OXYLABS_USERNAME = os.getenv("OXYLABS_USERNAME", "")
+OXYLABS_PASSWORD = os.getenv("OXYLABS_PASSWORD", "")
+MODERATION_MODEL = os.getenv("MODERATION_MODEL", "mistral-moderation-latest")
 
 log.info(
     f"Config: synthesis_model={UPSTREAM_MODEL}, subagent_model={SUBAGENT_MODEL}, "
@@ -837,6 +852,174 @@ NATIVE_TOOLS = [
 # Tool Execution
 # ============================================================================
 
+# ============================================================================
+# Mistral Moderation Gate
+# ============================================================================
+
+# Categories that indicate content too risky for commercial APIs.
+_MODERATION_BLOCK_CATEGORIES = frozenset({
+    "sexual",
+    "hate_and_discrimination",
+    "violence_and_threats",
+    "dangerous_and_criminal_content",
+    "selfharm",
+})
+
+
+async def moderate_query(query: str) -> tuple[bool, dict]:
+    """Check a query with Mistral moderation before sending to commercial APIs.
+
+    Returns:
+        (is_safe, details)  —  is_safe=True means commercial APIs can be used.
+        details contains the raw category scores for logging.
+    """
+    if not UPSTREAM_KEY:
+        return False, {"error": "no API key"}
+
+    try:
+        client = http_client()
+        resp = await client.post(
+            f"{UPSTREAM_BASE.rstrip('/').rsplit('/v1', 1)[0]}/v1/moderations",
+            headers={
+                "Authorization": f"Bearer {UPSTREAM_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={"model": MODERATION_MODEL, "input": [query]},
+            timeout=10.0,
+        )
+        if resp.status_code != 200:
+            log.warning(f"Moderation API returned {resp.status_code}")
+            return False, {"error": f"HTTP {resp.status_code}"}
+
+        data = resp.json()
+        results = data.get("results", [])
+        if not results:
+            return False, {"error": "empty results"}
+
+        categories = results[0].get("categories", {})
+        flagged_cats = [
+            cat for cat, flagged in categories.items()
+            if flagged and cat in _MODERATION_BLOCK_CATEGORIES
+        ]
+
+        if flagged_cats:
+            log.info(
+                f"Moderation blocked commercial search: query='{query[:60]}' "
+                f"flagged={flagged_cats}"
+            )
+            return False, {"flagged": flagged_cats}
+
+        return True, {"categories": categories}
+
+    except Exception as e:
+        log.warning(f"Moderation check failed: {e}")
+        # Fail closed — don't use commercial APIs if we can't moderate.
+        return False, {"error": str(e)}
+
+
+# ============================================================================
+# Commercial SERP APIs
+# ============================================================================
+
+
+async def _search_bright_data_serp(query: str) -> list[dict]:
+    """Search via Bright Data SERP API.  Returns list of {title, url, snippet}."""
+    if not BRIGHT_DATA_API_KEY:
+        return []
+    try:
+        client = http_client()
+        search_url = f"https://www.google.com/search?q={quote_plus(query)}&hl=en&gl=us"
+        resp = await client.post(
+            "https://api.brightdata.com/request",
+            headers={
+                "Authorization": f"Bearer {BRIGHT_DATA_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "zone": BRIGHT_DATA_SERP_ZONE,
+                "url": search_url,
+                "format": "json",
+            },
+            timeout=30.0,
+        )
+        if resp.status_code != 200:
+            log.warning(f"Bright Data SERP: HTTP {resp.status_code}")
+            return []
+
+        data = resp.json()
+        # Bright Data SERP returns organic results under "organic" key.
+        organic = data.get("organic", [])
+        results = []
+        for item in organic[:10]:
+            results.append({
+                "title": item.get("title", ""),
+                "url": item.get("link", item.get("url", "")),
+                "snippet": item.get("description", item.get("snippet", ""))[:300],
+                "source": "bright_data",
+            })
+        return results
+
+    except Exception as e:
+        log.warning(f"Bright Data SERP error: {e}")
+        return []
+
+
+async def _search_oxylabs_serp(query: str) -> list[dict]:
+    """Search via Oxylabs Web Scraper SERP API.  Returns list of {title, url, snippet}."""
+    if not OXYLABS_USERNAME or not OXYLABS_PASSWORD:
+        return []
+    try:
+        client = http_client()
+        resp = await client.post(
+            "https://realtime.oxylabs.io/v1/queries",
+            auth=(OXYLABS_USERNAME, OXYLABS_PASSWORD),
+            json={
+                "source": "google_search",
+                "query": query,
+                "parse": True,
+            },
+            timeout=30.0,
+        )
+        if resp.status_code != 200:
+            log.warning(f"Oxylabs SERP: HTTP {resp.status_code}")
+            return []
+
+        data = resp.json()
+        # Oxylabs nests results under results[0].content.results.organic
+        oxy_results = data.get("results", [])
+        if not oxy_results:
+            return []
+
+        content = oxy_results[0].get("content", {})
+        organic = content.get("results", {}).get("organic", [])
+        results = []
+        for item in organic[:10]:
+            results.append({
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "snippet": item.get("desc", item.get("description", ""))[:300],
+                "source": "oxylabs",
+            })
+        return results
+
+    except Exception as e:
+        log.warning(f"Oxylabs SERP error: {e}")
+        return []
+
+
+async def _commercial_search(query: str) -> list[dict]:
+    """Try Bright Data SERP first, fall back to Oxylabs."""
+    results = await _search_bright_data_serp(query)
+    if results:
+        return results
+    return await _search_oxylabs_serp(query)
+
+
+# ============================================================================
+# Tool Implementations
+# ============================================================================
+
+
 async def tool_searxng_search(query: str) -> str:
     """Execute a SearXNG search and return formatted results."""
     try:
@@ -1101,10 +1284,67 @@ async def tool_wikidata_query(entity: str) -> str:
         return f"Wikidata query error: {str(e)}"
 
 
+async def tool_web_search(query: str) -> str:
+    """Unified web search: SearXNG + commercial APIs (if moderation passes).
+
+    Always runs SearXNG.  If COMMERCIAL_SEARCH_ENABLED and the query passes
+    Mistral moderation, also queries Bright Data / Oxylabs SERP and merges
+    results (deduped by URL).
+    """
+    # Always run SearXNG as baseline.
+    searxng_result = await tool_searxng_search(query)
+
+    if not COMMERCIAL_SEARCH_ENABLED:
+        return searxng_result
+
+    # Gate commercial APIs behind Mistral moderation.
+    is_safe, mod_details = await moderate_query(query)
+    if not is_safe:
+        flagged = mod_details.get("flagged", [])
+        if flagged:
+            log.info(
+                f"Commercial search skipped (moderation): {flagged}"
+            )
+        return searxng_result
+
+    # Fetch commercial results.
+    commercial_results = await _commercial_search(query)
+    if not commercial_results:
+        return searxng_result
+
+    # Merge: extract URLs already in SearXNG results to dedup.
+    seen_urls: set[str] = set()
+    for line in searxng_result.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("URL: "):
+            seen_urls.add(stripped[5:].strip())
+
+    extra_formatted = []
+    next_idx = searxng_result.count("**") // 2 + 1  # rough count of existing results
+    for r in commercial_results:
+        url = r.get("url", "")
+        if url in seen_urls or not url:
+            continue
+        seen_urls.add(url)
+        title = r.get("title", "No title")
+        snippet = r.get("snippet", "")[:300]
+        trust = trust_score_url(url)
+        source_tag = r.get("source", "commercial")
+        extra_formatted.append(
+            f"{next_idx}. **{title}** [trust: {trust:.1f}] ({source_tag})\n"
+            f"   URL: {url}\n   {snippet}"
+        )
+        next_idx += 1
+
+    if extra_formatted:
+        return searxng_result + "\n\n" + "\n\n".join(extra_formatted)
+    return searxng_result
+
+
 async def execute_tool(tool_name: str, arguments: dict) -> str:
     """Route and execute a tool call."""
     if tool_name == "searxng_search":
-        return await tool_searxng_search(arguments.get("query", ""))
+        return await tool_web_search(arguments.get("query", ""))
     elif tool_name == "fetch_webpage":
         return await tool_fetch_webpage(
             arguments.get("url", ""),
@@ -1490,6 +1730,147 @@ async def verify_conditions(
     except (json.JSONDecodeError, ValueError) as e:
         log.warning(f"[{req_id}] Verification JSON parse error: {e}")
         return conditions
+
+
+def _fuzzy_match_claim_to_condition(
+    claim_text: str,
+    conditions: list[AtomicCondition],
+) -> int:
+    """Find the best-matching condition index for a Veritas claim.
+
+    Uses token overlap ratio.  Returns -1 if no condition scores above 0.3.
+    """
+    claim_tokens = set(claim_text.lower().split())
+    if not claim_tokens:
+        return -1
+
+    best_idx = -1
+    best_score = 0.3  # minimum threshold
+    for i, cond in enumerate(conditions):
+        cond_tokens = set(cond.fact.lower().split())
+        if not cond_tokens:
+            continue
+        overlap = len(claim_tokens & cond_tokens)
+        score = overlap / max(len(claim_tokens), len(cond_tokens))
+        if score > best_score:
+            best_score = score
+            best_idx = i
+    return best_idx
+
+
+async def verify_conditions_with_veritas(
+    conditions: list[AtomicCondition],
+    user_query: str,
+    req_id: str,
+) -> tuple[list[AtomicCondition], dict]:
+    """Run the full Veritas Inquisitor 5-agent reactor on research conditions.
+
+    The Veritas system decomposes the conditions into claims, gathers external
+    evidence via web search for each claim, runs a multi-round debate, and
+    produces a final verdict classifying each claim as:
+      - verified
+      - plausible-unverified
+      - hallucinated
+      - overconfident
+
+    Returns:
+        (filtered_conditions, veritas_report)
+        - filtered_conditions: conditions with adjusted confidence; hallucinated
+          ones are removed entirely.
+        - veritas_report: the raw Veritas report dict for logging/metrics.
+    """
+    if len(conditions) < VERITAS_MIN_CONDITIONS:
+        return conditions, {}
+
+    # Format conditions as a text block for Veritas to verify.
+    target_text = "\n".join(
+        f"{i+1}. {c.fact} [source: {c.source_url or 'no source'}]"
+        for i, c in enumerate(conditions)
+    )
+
+    log.info(
+        f"[{req_id}] Running Veritas verification on {len(conditions)} conditions"
+    )
+
+    try:
+        result = await veritas_inquisitor.verify_output(
+            target_text=target_text,
+            original_query=user_query,
+            req_id=f"{req_id}-veritas",
+        )
+    except Exception as e:
+        log.error(f"[{req_id}] Veritas reactor error: {e}")
+        return conditions, {"error": str(e)}
+
+    report = result.get("report", {})
+    claims = report.get("claims", [])
+
+    if not claims:
+        log.warning(f"[{req_id}] Veritas produced no claim verdicts")
+        return conditions, report
+
+    # Map Veritas verdicts back to conditions.
+    # Veritas decomposes text into its own claims, so we fuzzy-match each
+    # verdict back to the original AtomicCondition by text similarity.
+    hallucinated_indices: set[int] = set()
+    confidence_overrides: dict[int, float] = {}
+
+    for claim in claims:
+        claim_text = claim.get("claim_text", "")
+        status = claim.get("status", "")
+        claim_confidence = claim.get("confidence", 0.5)
+        try:
+            claim_confidence = float(claim_confidence)
+        except (TypeError, ValueError):
+            claim_confidence = 0.5
+
+        idx = _fuzzy_match_claim_to_condition(claim_text, conditions)
+        if idx < 0:
+            continue
+
+        if status == "hallucinated":
+            hallucinated_indices.add(idx)
+            log.info(
+                f"[{req_id}] Veritas: HALLUCINATED — "
+                f"{conditions[idx].fact[:80]}"
+            )
+        elif status == "overconfident":
+            # Cap confidence at what Veritas measured.
+            confidence_overrides[idx] = min(
+                conditions[idx].confidence,
+                max(claim_confidence, 0.2),
+            )
+        elif status == "verified":
+            # Boost if Veritas confirms it.
+            confidence_overrides[idx] = max(
+                conditions[idx].confidence,
+                min(claim_confidence, 0.95),
+            )
+        elif status == "plausible-unverified":
+            # Slight downgrade — the claim couldn't be confirmed.
+            confidence_overrides[idx] = min(
+                conditions[idx].confidence,
+                max(claim_confidence, 0.3),
+            )
+
+    # Apply confidence overrides.
+    for idx, conf in confidence_overrides.items():
+        if idx not in hallucinated_indices:
+            conditions[idx].confidence = conf
+
+    # Remove hallucinated conditions entirely.
+    filtered = [
+        c for i, c in enumerate(conditions)
+        if i not in hallucinated_indices
+    ]
+
+    log.info(
+        f"[{req_id}] Veritas results: {len(hallucinated_indices)} hallucinated "
+        f"(removed), {len(confidence_overrides)} confidence-adjusted, "
+        f"{len(filtered)}/{len(conditions)} conditions retained"
+    )
+
+    return filtered, report
 
 
 # ============================================================================
@@ -2781,25 +3162,70 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
 
 
 async def pdr_node_verify(state: PersistentResearchState) -> dict:
-    """Phase 5: Citation verification."""
+    """Phase 5: Citation verification.
+
+    Two-stage verification:
+      1. Self-evaluation (fast, LLM-only): cross-checks conditions against each
+         other for contradictions and source quality.
+      2. Veritas Inquisitor (thorough, web-search-backed): runs the full 5-agent
+         reactor to decompose claims, gather external evidence, debate, and
+         produce verdicts.  Hallucinated conditions are removed.
+    """
     req_id = state["req_id"]
+    user_query = state["user_query"]
     mc = _metrics_collectors.get(req_id)
     if mc:
         mc.start_node("verify")
     all_conditions = list(state["all_conditions"])
     progress: list[str] = []
+    pre_count = len(all_conditions)
 
     if all_conditions and len(all_conditions) >= 2:
-        progress.append("\n**[Phase 5: Citation Verification]**\n")
-        progress.append("Verifying claims and detecting contradictions...\n")
+        # Stage 1: fast self-evaluation
+        progress.append("\n**[Phase 5a: Citation Cross-Check]**\n")
+        progress.append("Cross-checking claims for contradictions...\n")
 
         all_conditions = await verify_conditions(all_conditions, req_id)
 
         high_conf = sum(1 for c in all_conditions if c.confidence >= 0.7)
         low_conf = sum(1 for c in all_conditions if c.confidence < 0.4)
         progress.append(
-            f"Verification complete: {high_conf} high-confidence, "
+            f"Cross-check complete: {high_conf} high-confidence, "
             f"{low_conf} low-confidence conditions.\n"
+        )
+
+    # Stage 2: Veritas Inquisitor — external evidence-based verification
+    veritas_report: dict = {}
+    if VERITAS_VERIFY_ENABLED and len(all_conditions) >= VERITAS_MIN_CONDITIONS:
+        progress.append("\n**[Phase 5b: Veritas Fact-Check]**\n")
+        progress.append(
+            f"Running Veritas Inquisitor on {len(all_conditions)} conditions "
+            f"(5-agent swarm with web search)...\n"
+        )
+
+        all_conditions, veritas_report = await verify_conditions_with_veritas(
+            all_conditions, user_query, req_id,
+        )
+
+        removed = pre_count - len(all_conditions)
+        overall_score = veritas_report.get("overall_score", -1)
+        halluc_prob = veritas_report.get("overall_hallucination_probability", -1)
+
+        summary_parts = []
+        if removed > 0:
+            summary_parts.append(f"{removed} hallucinated claim{'s' if removed != 1 else ''} removed")
+        if overall_score >= 0:
+            summary_parts.append(f"truthfulness {overall_score:.0%}")
+        if halluc_prob >= 0:
+            summary_parts.append(f"hallucination probability {halluc_prob:.0%}")
+
+        if summary_parts:
+            progress.append(f"Veritas: {', '.join(summary_parts)}.\n")
+        else:
+            progress.append("Veritas verification complete.\n")
+
+        progress.append(
+            f"{len(all_conditions)} conditions retained out of {pre_count}.\n"
         )
 
     mc = _metrics_collectors.get(req_id)

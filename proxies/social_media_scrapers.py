@@ -596,11 +596,11 @@ def _bd_twitter_input(query: str) -> list[dict]:
     return [{"url": f"https://x.com/search?q={quote(query, safe='')}&src=typed_query&f=live"}]
 
 
-def _bd_reddit_input(query: str, subreddit: str = "") -> list[dict]:
+def _bd_reddit_input(query: str, subreddit: str = "", sort: str = "relevance") -> list[dict]:
     from urllib.parse import quote
     if subreddit:
-        return [{"url": f"https://www.reddit.com/r/{subreddit}/search/?q={quote(query, safe='')}&sort=relevance&t=all"}]
-    return [{"url": f"https://www.reddit.com/search/?q={quote(query, safe='')}&sort=relevance&t=all"}]
+        return [{"url": f"https://www.reddit.com/r/{subreddit}/search/?q={quote(query, safe='')}&sort={sort}&t=all"}]
+    return [{"url": f"https://www.reddit.com/search/?q={quote(query, safe='')}&sort={sort}&t=all"}]
 
 
 def _bd_instagram_input(query: str) -> list[dict]:
@@ -634,7 +634,7 @@ _BD_DATASETS = {
 
 _BD_INPUT_BUILDERS = {
     "twitter": lambda q, **kw: _bd_twitter_input(q),
-    "reddit": lambda q, **kw: _bd_reddit_input(q, kw.get("subreddit", "")),
+    "reddit": lambda q, **kw: _bd_reddit_input(q, kw.get("subreddit", ""), kw.get("sort", "relevance")),
     "instagram": lambda q, **kw: _bd_instagram_input(q),
     "tiktok": lambda q, **kw: _bd_tiktok_input(q),
     "linkedin": lambda q, **kw: _bd_linkedin_input(q),
@@ -659,12 +659,12 @@ def _apify_twitter_input(query: str) -> dict:
     return {"searchTerms": [query], "maxTweets": MAX_RESULTS_PER_QUERY, "sort": "Latest"}
 
 
-def _apify_reddit_input(query: str, subreddit: str = "") -> dict:
+def _apify_reddit_input(query: str, subreddit: str = "", sort: str = "relevance") -> dict:
     from urllib.parse import quote
     if subreddit:
-        url = f"https://www.reddit.com/r/{subreddit}/search/?q={quote(query, safe='')}&sort=relevance&t=all"
+        url = f"https://www.reddit.com/r/{subreddit}/search/?q={quote(query, safe='')}&sort={sort}&t=all"
     else:
-        url = f"https://www.reddit.com/search/?q={quote(query, safe='')}&sort=relevance&t=all"
+        url = f"https://www.reddit.com/search/?q={quote(query, safe='')}&sort={sort}&t=all"
     return {"startUrls": [{"url": url}], "maxItems": MAX_RESULTS_PER_QUERY}
 
 
@@ -682,7 +682,7 @@ def _apify_youtube_input(query: str) -> dict:
 
 _APIFY_INPUT_BUILDERS = {
     "twitter": lambda q, **kw: _apify_twitter_input(q),
-    "reddit": lambda q, **kw: _apify_reddit_input(q, kw.get("subreddit", "")),
+    "reddit": lambda q, **kw: _apify_reddit_input(q, kw.get("subreddit", ""), kw.get("sort", "relevance")),
     "instagram": lambda q, **kw: _apify_instagram_input(q),
     "tiktok": lambda q, **kw: _apify_tiktok_input(q),
     "youtube": lambda q, **kw: _apify_youtube_input(q),

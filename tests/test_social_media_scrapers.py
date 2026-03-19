@@ -819,6 +819,23 @@ class TestInputBuilders:
         assert "wallstreetbets" in result["startUrls"][0]["url"]
         assert "GME" in result["startUrls"][0]["url"]
 
+    def test_bd_reddit_sort_parameter(self):
+        from social_media_scrapers import _bd_reddit_input
+        result = _bd_reddit_input("crypto", sort="new")
+        assert "sort=new" in result[0]["url"]
+        result2 = _bd_reddit_input("crypto", sort="top")
+        assert "sort=top" in result2[0]["url"]
+        # Default should be relevance
+        result3 = _bd_reddit_input("crypto")
+        assert "sort=relevance" in result3[0]["url"]
+
+    def test_apify_reddit_sort_parameter(self):
+        from social_media_scrapers import _apify_reddit_input
+        result = _apify_reddit_input("crypto", sort="new")
+        assert "sort=new" in result["startUrls"][0]["url"]
+        result2 = _apify_reddit_input("crypto", sort="top")
+        assert "sort=top" in result2["startUrls"][0]["url"]
+
     def test_apify_instagram_input(self):
         from social_media_scrapers import _apify_instagram_input
         result = _apify_instagram_input("food art")

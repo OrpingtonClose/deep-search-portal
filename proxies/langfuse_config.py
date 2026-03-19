@@ -145,6 +145,8 @@ def create_callback_handler(
 
         handler = CallbackHandler(
             public_key=LANGFUSE_PUBLIC_KEY,
+            secret_key=LANGFUSE_SECRET_KEY,
+            host=LANGFUSE_BASE_URL,
             trace_context=trace_context,
         )
         return handler

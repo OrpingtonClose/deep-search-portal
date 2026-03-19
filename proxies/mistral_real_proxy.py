@@ -541,7 +541,7 @@ async def node_revise_response(state: MistralRealState) -> dict:
         # Fall back to Veritas's own revised output, or the original draft
         revised = revised_output or draft_text
     else:
-        revised = result.get("content", draft_text)
+        revised = result.get("content", "") or draft_text
 
     return {
         "revised_text": revised,

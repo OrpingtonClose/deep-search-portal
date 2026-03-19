@@ -3636,7 +3636,7 @@ async def run_subagent(
                             }
                             child_tasks.append(
                                 asyncio.create_task(
-                                    run_subagent(child_angle, subagent_index * 100 + gi, progress_queue, req_id, user_query, depth + 1)
+                                    run_subagent(child_angle, subagent_index * 100 + gi, progress_queue, req_id, user_query, depth + 1, collector=collector)
                                 )
                             )
 
@@ -4870,7 +4870,7 @@ async def pdr_node_tree_research(state: PersistentResearchState) -> dict:
     # Get or create the live findings collector
     collector = _live_collectors.get(req_id)
     if collector is None:
-        collector = LiveFindingsCollector()
+        collector = LiveFindingsCollector(user_query=state["user_query"])
         _live_collectors[req_id] = collector
 
     # Get or create the curated queue

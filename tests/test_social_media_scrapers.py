@@ -611,6 +611,18 @@ class TestSocialMediaSearch:
             social_media_scrapers.SESSION_BUDGET = orig_budget
 
     @pytest.mark.asyncio
+    async def test_apify_fallback_on_bd_empty_list(self):
+        """When BD returns [] (not None), Apify fallback should still engage."""
+        records = _make_reddit_records(3)
+        with patch.object(social_media_scrapers, "BRIGHT_DATA_API_KEY", "test-key"):
+            with patch.object(social_media_scrapers, "APIFY_API_TOKEN", "test-token"):
+                with patch("social_media_scrapers._bd_search", return_value=[]):
+                    with patch("social_media_scrapers._apify_run_actor", return_value=records) as mock_apify:
+                        result = await social_media_search("reddit", "crypto news")
+                        assert "apify" in result
+                        mock_apify.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_censorship_warning_on_empty_results(self):
         with patch.object(social_media_scrapers, "BRIGHT_DATA_API_KEY", "test-key"):
             with patch("social_media_scrapers._bd_search", return_value=[]):

@@ -732,8 +732,8 @@ async def social_media_search(
             if results is not None:
                 provider_used = "bright_data"
 
-    # Tier 2: Apify Actor API
-    if results is None and APIFY_API_TOKEN and platform in _APIFY_ACTORS:
+    # Tier 2: Apify Actor API (also triggered when BD returns empty list)
+    if not results and APIFY_API_TOKEN and platform in _APIFY_ACTORS:
         actor_id = _APIFY_ACTORS[platform]
         input_builder = _APIFY_INPUT_BUILDERS.get(platform)
         if input_builder:

@@ -87,9 +87,9 @@ struct SettingsView: View {
     }
 
     private func deleteServers(at offsets: IndexSet) {
-        for index in offsets {
-            let server = appState.servers[index]
-            appState.deleteServer(server.id)
+        let idsToDelete = offsets.map { appState.servers[$0].id }
+        for id in idsToDelete {
+            appState.deleteServer(id)
         }
     }
 

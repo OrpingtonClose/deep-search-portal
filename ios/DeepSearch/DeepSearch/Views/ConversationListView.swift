@@ -26,9 +26,9 @@ struct ConversationListView: View {
     }
 
     private func deleteConversations(at offsets: IndexSet) {
-        for index in offsets {
-            let conversation = appState.conversations[index]
-            appState.deleteConversation(conversation.id)
+        let idsToDelete = offsets.map { appState.conversations[$0].id }
+        for id in idsToDelete {
+            appState.deleteConversation(id)
         }
     }
 }

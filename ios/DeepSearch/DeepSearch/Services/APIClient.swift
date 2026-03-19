@@ -30,9 +30,12 @@ final class APIClient: @unchecked Sendable {
         temperature: Double = 0.3
     ) -> AsyncThrowingStream<StreamToken, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 do {
-                    let url = URL(string: "\(baseURL)/v1/chat/completions")!
+                    guard let url = URL(string: "\(baseURL)/v1/chat/completions") else {
+                        continuation.finish(throwing: APIError.invalidURL("\(baseURL)/v1/chat/completions"))
+                        return
+                    }
                     var request = URLRequest(url: url)
                     request.httpMethod = "POST"
                     request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -69,6 +72,7 @@ final class APIClient: @unchecked Sendable {
                     let parser = SSEStreamParser()
 
                     for try await line in bytes.lines {
+                        if Task.isCancelled { break }
                         let lineData = Data((line + "\n").utf8)
                         let events = parser.parse(lineData)
 
@@ -95,6 +99,9 @@ final class APIClient: @unchecked Sendable {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
         }
     }
 
@@ -102,7 +109,9 @@ final class APIClient: @unchecked Sendable {
 
     /// Fetch available models from a proxy endpoint.
     func fetchModels(baseURL: String, apiKey: String) async throws -> [ModelInfo] {
-        let url = URL(string: "\(baseURL)/v1/models")!
+        guard let url = URL(string: "\(baseURL)/v1/models") else {
+            throw APIError.invalidURL("\(baseURL)/v1/models")
+        }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
@@ -121,7 +130,9 @@ final class APIClient: @unchecked Sendable {
 
     /// Check the health of a proxy endpoint.
     func checkHealth(baseURL: String) async throws -> HealthResponse {
-        let url = URL(string: "\(baseURL)/health")!
+        guard let url = URL(string: "\(baseURL)/health") else {
+            throw APIError.invalidURL("\(baseURL)/health")
+        }
         let (data, response) = try await session.data(for: URLRequest(url: url))
 
         guard let httpResponse = response as? HTTPURLResponse,
@@ -145,6 +156,7 @@ enum StreamToken {
 
 enum APIError: LocalizedError {
     case invalidResponse
+    case invalidURL(String)
     case httpError(statusCode: Int, body: String)
     case noActiveServer
 
@@ -152,6 +164,8 @@ enum APIError: LocalizedError {
         switch self {
         case .invalidResponse:
             return "Invalid response from server"
+        case .invalidURL(let url):
+            return "Invalid URL: \(url)"
         case .httpError(let code, let body):
             return "HTTP \(code): \(body.prefix(200))"
         case .noActiveServer:

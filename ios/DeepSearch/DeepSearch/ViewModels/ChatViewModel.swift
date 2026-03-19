@@ -130,14 +130,14 @@ final class ChatViewModel: ObservableObject {
                 }
             }
 
-            // Flush any remaining buffered content
-            let (thinkDelta, answerDelta) = parser.flush()
-            if !thinkDelta.isEmpty { streamingThinking += thinkDelta }
-            if !answerDelta.isEmpty { streamingAnswer += answerDelta }
-
         } catch {
             self.error = error.localizedDescription
         }
+
+        // Flush any remaining buffered content (runs even after stream errors)
+        let (thinkDelta, answerDelta) = parser.flush()
+        if !thinkDelta.isEmpty { streamingThinking += thinkDelta }
+        if !answerDelta.isEmpty { streamingAnswer += answerDelta }
 
         // Finalize the message
         finalizeStreamingMessage(

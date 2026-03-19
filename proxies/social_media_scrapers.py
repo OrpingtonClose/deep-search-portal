@@ -747,7 +747,7 @@ async def social_media_search(
                 "\n\n[No social media scraper credentials configured. "
                 "Set BRIGHT_DATA_API_KEY and/or APIFY_API_TOKEN environment variables.]"
             )
-        provider_used = provider_used if provider_used != "none" else "none (no credentials)"
+        provider_used = provider_used if provider_used != "none" else ("none (no credentials)" if not BRIGHT_DATA_API_KEY and not APIFY_API_TOKEN else "none (search failed)")
     else:
         result_count = len(results)
         formatted = formatter(results, provider_used)

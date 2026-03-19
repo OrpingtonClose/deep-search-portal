@@ -45,7 +45,7 @@ BD_DATASET_YOUTUBE = os.getenv("BD_DATASET_YOUTUBE", "gd_lk538t2k2p1k3oos71")
 
 # Apify actor IDs per platform (community / official actors)
 APIFY_ACTOR_TWITTER = os.getenv("APIFY_ACTOR_TWITTER", "quacker/twitter-scraper")
-APIFY_ACTOR_REDDIT = os.getenv("APIFY_ACTOR_REDDIT", "trudax/reddit-scraper")
+APIFY_ACTOR_REDDIT = os.getenv("APIFY_ACTOR_REDDIT", "trudax/reddit-scraper-lite")
 APIFY_ACTOR_INSTAGRAM = os.getenv("APIFY_ACTOR_INSTAGRAM", "apify/instagram-scraper")
 APIFY_ACTOR_TIKTOK = os.getenv("APIFY_ACTOR_TIKTOK", "clockworks/tiktok-scraper")
 APIFY_ACTOR_YOUTUBE = os.getenv("APIFY_ACTOR_YOUTUBE", "bernardo/youtube-scraper")
@@ -379,10 +379,12 @@ async def _apify_run_actor(
 
     try:
         # Use REST API directly to avoid requiring apify-client dependency
+        # Apify REST API uses ~ as separator in actor IDs (e.g., "trudax~reddit-scraper-lite")
+        api_actor_id = actor_id.replace("/", "~")
         async with httpx.AsyncClient(timeout=httpx.Timeout(float(timeout_secs + 30), connect=15.0)) as client:
             # Start the actor run
             resp = await client.post(
-                f"https://api.apify.com/v2/acts/{actor_id}/runs",
+                f"https://api.apify.com/v2/acts/{api_actor_id}/runs",
                 params={"token": APIFY_API_TOKEN, "timeout": timeout_secs},
                 json=run_input,
                 headers={"Content-Type": "application/json"},
@@ -658,10 +660,12 @@ def _apify_twitter_input(query: str) -> dict:
 
 
 def _apify_reddit_input(query: str, subreddit: str = "") -> dict:
-    inp: dict[str, Any] = {"searches": [query], "maxItems": MAX_RESULTS_PER_QUERY, "sort": "relevance"}
+    from urllib.parse import quote
     if subreddit:
-        inp["subreddits"] = [subreddit]
-    return inp
+        url = f"https://www.reddit.com/r/{subreddit}/search/?q={quote(query, safe='')}&sort=relevance&t=all"
+    else:
+        url = f"https://www.reddit.com/search/?q={quote(query, safe='')}&sort=relevance&t=all"
+    return {"startUrls": [{"url": url}], "maxItems": MAX_RESULTS_PER_QUERY}
 
 
 def _apify_instagram_input(query: str) -> dict:

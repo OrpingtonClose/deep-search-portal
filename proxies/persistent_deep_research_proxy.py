@@ -165,9 +165,6 @@ TREE_WORKER_IDLE_TIMEOUT = float(os.getenv("TREE_WORKER_IDLE_TIMEOUT", "60.0"))
 APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
 BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
 BRIGHT_DATA_HOST = os.getenv("BRIGHT_DATA_HOST", "")  # e.g. brd.superproxy.io:33335
-
-# --- Enhanced Web Scraping Config ---
-BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
 BRIGHT_DATA_CUSTOMER_ID = os.getenv("BRIGHT_DATA_CUSTOMER_ID", "hl_dc044bf4")
 BRIGHT_DATA_ZONE = os.getenv("BRIGHT_DATA_ZONE", "web_unlocker1")
 OXYLABS_USERNAME = os.getenv("OXYLABS_USERNAME", "")

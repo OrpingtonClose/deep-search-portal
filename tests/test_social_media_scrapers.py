@@ -815,7 +815,9 @@ class TestInputBuilders:
     def test_apify_reddit_input_with_subreddit(self):
         from social_media_scrapers import _apify_reddit_input
         result = _apify_reddit_input("GME", subreddit="wallstreetbets")
-        assert result["subreddits"] == ["wallstreetbets"]
+        assert "startUrls" in result
+        assert "wallstreetbets" in result["startUrls"][0]["url"]
+        assert "GME" in result["startUrls"][0]["url"]
 
     def test_apify_instagram_input(self):
         from social_media_scrapers import _apify_instagram_input

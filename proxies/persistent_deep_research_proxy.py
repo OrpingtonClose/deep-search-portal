@@ -1450,8 +1450,8 @@ async def _fetch_via_selenium(url: str) -> Optional[str]:
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
             driver = webdriver.Chrome(options=opts)
-            driver.set_page_load_timeout(30)
             try:
+                driver.set_page_load_timeout(30)
                 driver.get(url)
                 body = driver.find_element("tag name", "body")
                 return body.text.strip() if body else None

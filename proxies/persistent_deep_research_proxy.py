@@ -4343,10 +4343,13 @@ async def _generate_heartbeat_message(
         f"- {f[:120]}" for f in shared_facts[:8]
     ) if shared_facts else "(none yet)"
 
-    prompt = _HEARTBEAT_PROMPT.format(
-        findings=findings_text,
-        already_shared=already_text,
-        user_query=collector.user_query[:200],
+    # Use replace instead of .format() to avoid KeyError if user_query contains { or }
+    prompt = _HEARTBEAT_PROMPT.replace(
+        "{findings}", findings_text
+    ).replace(
+        "{already_shared}", already_text
+    ).replace(
+        "{user_query}", collector.user_query[:200]
     )
 
     try:
@@ -5117,6 +5120,14 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
     final_answer = await synthesize_with_revision(
         state["user_query"], state["subagent_results"], state["prior_conditions"], req_id,
     )
+
+    # Relevance gate: check if the final answer actually addresses the query
+    is_relevant = await relevance_gate(final_answer, state["user_query"], req_id)
+    if not is_relevant:
+        log.warning(f"[{req_id}] Final answer failed relevance gate — re-running synthesis")
+        final_answer = await synthesize_with_revision(
+            state["user_query"], state["subagent_results"], state["prior_conditions"], req_id,
+        )
 
     progress.append("Critic review complete.\n")
     progress.append("Final revision complete.\n")

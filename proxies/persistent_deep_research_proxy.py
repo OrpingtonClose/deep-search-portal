@@ -116,6 +116,7 @@ from research_metrics import (
 )
 import research_report
 import b2_publisher
+import langfuse_config
 
 from shared import (
     ConcurrencyLimiter,
@@ -5709,11 +5710,27 @@ async def run_persistent_research(
     _metrics_collectors[req_id] = metrics_collector
     metrics_callback = ResearchMetricsCallback(metrics_collector)
 
+    # --- Langfuse tracing: generate trace URL and emit as first message ---
+    langfuse_trace_id = langfuse_config.create_trace_id(req_id)
+    langfuse_trace_url = langfuse_config.get_trace_url(langfuse_trace_id)
+    langfuse_handler = langfuse_config.create_callback_handler(
+        trace_id=langfuse_trace_id,
+        session_id=req_id,
+        tags=["persistent-research"],
+    )
+
+    if langfuse_trace_url:
+        yield chunk(f"[Langfuse trace]({langfuse_trace_url})\n\n")
+
     yield chunk("<think>\n")
+
+    callbacks = [metrics_callback]
+    if langfuse_handler is not None:
+        callbacks.append(langfuse_handler)
 
     config = {
         "configurable": {"thread_id": req_id},
-        "callbacks": [metrics_callback],
+        "callbacks": callbacks,
     }
 
     # Register the config so call_llm and execute_tool can look it up
@@ -5774,6 +5791,7 @@ async def run_persistent_research(
         _curated_queues.pop(req_id, None)
         _metrics_collectors.pop(req_id, None)
         _request_configs.pop(req_id, None)
+        langfuse_config.flush()
         tracker.finish(req_id)
 
 

@@ -1,0 +1,98 @@
+# =============================================================================
+# Langfuse Self-Hosted — LLM Observability for Deep Search Portal
+#
+# Runs Langfuse v3 alongside the existing stack.  Requires:
+#   - LANGFUSE_ENCRYPTION_KEY (generate with: openssl rand -hex 32)
+#   - GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET  (reuse from Open WebUI)
+#
+# Start:  docker compose -f docker-compose.langfuse.yml up -d
+# UI:     http://localhost:3001
+# =============================================================================
+
+version: "3.9"
+
+x-langfuse-common: &langfuse-env
+  DATABASE_URL: "postgresql://langfuse:langfuse@langfuse-postgres:5432/langfuse"
+  CLICKHOUSE_URL: "http://langfuse-clickhouse:8123"
+  CLICKHOUSE_MIGRATION_URL: "clickhouse://langfuse-clickhouse:9000"
+  REDIS_HOST: "langfuse-redis"
+  REDIS_PORT: "6379"
+  REDIS_AUTH: ""
+  ENCRYPTION_KEY: "${LANGFUSE_ENCRYPTION_KEY:?Set LANGFUSE_ENCRYPTION_KEY (openssl rand -hex 32)}"
+  SALT: "${LANGFUSE_SALT:-langfuse-deep-search-salt}"
+  TELEMETRY_ENABLED: "false"
+  LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+  # --- Google OAuth (same credentials as Open WebUI) ---
+  AUTH_GOOGLE_ENABLED: "true"
+  AUTH_GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID not set}"
+  AUTH_GOOGLE_CLIENT_SECRET: "${GOOGLE_CLIENT_SECRET:?GOOGLE_CLIENT_SECRET not set}"
+  AUTH_GOOGLE_ALLOW_ACCOUNT_LINKING: "true"
+  AUTH_DISABLE_USERNAME_PASSWORD: "false"
+  NEXTAUTH_URL: "${LANGFUSE_URL:-http://localhost:3001}"
+  NEXTAUTH_SECRET: "${LANGFUSE_NEXTAUTH_SECRET:-langfuse-nextauth-secret-change-me}"
+  NEXT_PUBLIC_SIGN_UP_DISABLED: "false"
+
+services:
+  # --- PostgreSQL (Langfuse metadata) ---
+  langfuse-postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- ClickHouse (Langfuse analytics / traces) ---
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: langfuse
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+    volumes:
+      - langfuse-ch-data:/var/lib/clickhouse
+      - langfuse-ch-logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- Redis (Langfuse caching / queues) ---
+  langfuse-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- Langfuse Web + Worker (single container in v3) ---
+  langfuse:
+    image: langfuse/langfuse:3
+    restart: unless-stopped
+    ports:
+      - "${LANGFUSE_PORT:-3001}:3000"
+    environment:
+      <<: *langfuse-env
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+
+volumes:
+  langfuse-pg-data:
+  langfuse-ch-data:
+  langfuse-ch-logs:

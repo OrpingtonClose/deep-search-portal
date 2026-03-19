@@ -57,6 +57,7 @@ from shared import (
     stream_passthrough,
 )
 from research_metrics import MetricsCollector, ResearchMetricsCallback
+import langfuse_config
 
 # ---------------------------------------------------------------------------
 # Logging & Configuration
@@ -786,6 +787,18 @@ async def run_mistral_real(
 
     output_queue: asyncio.Queue = asyncio.Queue()
 
+    # --- Langfuse tracing: generate trace URL and emit as first message ---
+    langfuse_trace_id = langfuse_config.create_trace_id(req_id)
+    langfuse_trace_url = langfuse_config.get_trace_url(langfuse_trace_id)
+    langfuse_handler = langfuse_config.create_callback_handler(
+        trace_id=langfuse_trace_id,
+        session_id=req_id,
+        tags=["mistral-real"],
+    )
+
+    if langfuse_trace_url:
+        yield chunk(f"[Langfuse trace]({langfuse_trace_url})\n\n")
+
     yield chunk("<think>\n")
     yield chunk("**[Phase 1: Draft Generation]**\n")
     yield chunk(f"Using {UPSTREAM_MODEL} to generate a reasoned draft...\n\n")
@@ -793,9 +806,12 @@ async def run_mistral_real(
     # Wire LangChain callbacks so metrics fire for every LLM/tool call
     metrics_collector = MetricsCollector(session_id=req_id, query=user_query)
     metrics_callback = ResearchMetricsCallback(metrics_collector)
+    callbacks = [metrics_callback]
+    if langfuse_handler is not None:
+        callbacks.append(langfuse_handler)
     config = {
         "configurable": {"thread_id": req_id},
-        "callbacks": [metrics_callback],
+        "callbacks": callbacks,
     }
     _real_request_configs[req_id] = config
 
@@ -829,6 +845,7 @@ async def run_mistral_real(
             except asyncio.CancelledError:
                 pass
         _real_request_configs.pop(req_id, None)
+        langfuse_config.flush()
         tracker.finish(req_id)
 
 

@@ -542,50 +542,30 @@ class TestConfigToggles:
 class TestModerateQuery:
     @pytest.mark.asyncio
     async def test_safe_query_passes(self):
-        """Normal research query should pass moderation."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "results": [{
-                "categories": {
-                    "sexual": False,
-                    "hate_and_discrimination": False,
-                    "violence_and_threats": False,
-                    "dangerous_and_criminal_content": False,
-                    "selfharm": False,
-                },
-            }],
-        }
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_resp)
+        """Normal research query should pass moderation via LangChain."""
+        mock_ai_msg = MagicMock()
+        mock_ai_msg.content = '{"safe": true, "flagged_categories": []}'
 
-        with patch.object(pdr, "http_client", return_value=mock_client), \
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=mock_ai_msg)
+
+        with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
              patch.object(pdr, "UPSTREAM_KEY", "test-key"):
             is_safe, details = await pdr.moderate_query("used Technogym Biostrength price")
 
         assert is_safe is True
-        assert "categories" in details
+        assert "flagged_categories" in details
 
     @pytest.mark.asyncio
     async def test_dangerous_query_blocked(self):
         """Query flagged as dangerous should be blocked from commercial APIs."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "results": [{
-                "categories": {
-                    "sexual": False,
-                    "hate_and_discrimination": False,
-                    "violence_and_threats": True,
-                    "dangerous_and_criminal_content": True,
-                    "selfharm": False,
-                },
-            }],
-        }
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_ai_msg = MagicMock()
+        mock_ai_msg.content = '{"safe": false, "flagged_categories": ["violence_and_threats", "dangerous_and_criminal_content"]}'
 
-        with patch.object(pdr, "http_client", return_value=mock_client), \
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=mock_ai_msg)
+
+        with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
              patch.object(pdr, "UPSTREAM_KEY", "test-key"):
             is_safe, details = await pdr.moderate_query("how to make explosives")
 
@@ -595,11 +575,11 @@ class TestModerateQuery:
 
     @pytest.mark.asyncio
     async def test_moderation_api_failure_fails_closed(self):
-        """If moderation API fails, should fail closed (no commercial APIs)."""
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(side_effect=Exception("API timeout"))
+        """If moderation LLM call fails, should fail closed (no commercial APIs)."""
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=Exception("API timeout"))
 
-        with patch.object(pdr, "http_client", return_value=mock_client), \
+        with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
              patch.object(pdr, "UPSTREAM_KEY", "test-key"):
             is_safe, details = await pdr.moderate_query("normal query")
 
@@ -615,18 +595,20 @@ class TestModerateQuery:
         assert is_safe is False
 
     @pytest.mark.asyncio
-    async def test_moderation_http_error_fails_closed(self):
-        """HTTP error from moderation API should fail closed."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 500
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_resp)
+    async def test_moderation_unparseable_response_fails_closed(self):
+        """Unparseable LLM response from moderation should fail closed."""
+        mock_ai_msg = MagicMock()
+        mock_ai_msg.content = "I cannot classify this query."
 
-        with patch.object(pdr, "http_client", return_value=mock_client), \
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=mock_ai_msg)
+
+        with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
              patch.object(pdr, "UPSTREAM_KEY", "test-key"):
             is_safe, details = await pdr.moderate_query("normal query")
 
         assert is_safe is False
+        assert "error" in details
 
 
 # ============================================================================

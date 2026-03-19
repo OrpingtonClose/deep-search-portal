@@ -1247,50 +1247,81 @@ _MODERATION_BLOCK_CATEGORIES = frozenset({
 })
 
 
+_MODERATION_PROMPT = """You are a content safety classifier. Evaluate the user query below and determine if it falls into any of these blocked categories:
+- sexual
+- hate_and_discrimination
+- violence_and_threats
+- dangerous_and_criminal_content
+- selfharm
+
+Respond with ONLY valid JSON (no markdown, no explanation):
+{{"safe": true/false, "flagged_categories": ["category1", ...]}}
+
+If the query is safe for commercial search APIs, set safe=true and flagged_categories=[].
+If any blocked category applies, set safe=false and list the matching categories.
+Be permissive — only flag content that clearly and primarily promotes the listed harms.
+Research queries about sensitive topics (drugs, weapons, conflicts) for informational purposes are SAFE."""
+
+
+def _get_moderation_llm() -> ChatOpenAI:
+    """Return a ChatOpenAI instance configured for the moderation model."""
+    return ChatOpenAI(
+        model=MODERATION_MODEL,
+        api_key=UPSTREAM_KEY,
+        base_url=UPSTREAM_BASE,
+        temperature=0.0,
+        max_tokens=100,
+    )
+
+
 async def moderate_query(query: str) -> tuple[bool, dict]:
-    """Check a query with Mistral moderation before sending to commercial APIs.
+    """Check a query with Mistral moderation via LangChain before sending to commercial APIs.
+
+    Uses ChatOpenAI with the moderation model so the call is tracked
+    by LangChain callbacks (metrics, tracing).
 
     Returns:
         (is_safe, details)  —  is_safe=True means commercial APIs can be used.
-        details contains the raw category scores for logging.
+        details contains the flagged categories for logging.
     """
     if not UPSTREAM_KEY:
         return False, {"error": "no API key"}
 
     try:
-        client = http_client()
-        resp = await client.post(
-            f"{UPSTREAM_BASE.rstrip('/').rsplit('/v1', 1)[0]}/v1/moderations",
-            headers={
-                "Authorization": f"Bearer {UPSTREAM_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={"model": MODERATION_MODEL, "input": [query]},
-            timeout=10.0,
-        )
-        if resp.status_code != 200:
-            log.warning(f"Moderation API returned {resp.status_code}")
-            return False, {"error": f"HTTP {resp.status_code}"}
+        llm = _get_moderation_llm()
+        messages = [
+            SystemMessage(content=_MODERATION_PROMPT),
+            HumanMessage(content=query),
+        ]
+        ai_msg = await llm.ainvoke(messages)
+        content = ai_msg.content.strip()
 
-        data = resp.json()
-        results = data.get("results", [])
-        if not results:
-            return False, {"error": "empty results"}
+        # Parse the JSON response
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            # Try to extract JSON from markdown fences
+            m = re.search(r"\{.*\}", content, re.DOTALL)
+            if m:
+                data = json.loads(m.group())
+            else:
+                log.warning(f"Moderation returned unparseable response: {content[:200]}")
+                return False, {"error": "unparseable response"}
 
-        categories = results[0].get("categories", {})
+        is_safe = data.get("safe", False)
         flagged_cats = [
-            cat for cat, flagged in categories.items()
-            if flagged and cat in _MODERATION_BLOCK_CATEGORIES
+            cat for cat in data.get("flagged_categories", [])
+            if cat in _MODERATION_BLOCK_CATEGORIES
         ]
 
-        if flagged_cats:
+        if not is_safe or flagged_cats:
             log.info(
                 f"Moderation blocked commercial search: query='{query[:60]}' "
                 f"flagged={flagged_cats}"
             )
             return False, {"flagged": flagged_cats}
 
-        return True, {"categories": categories}
+        return True, {"flagged_categories": []}
 
     except Exception as e:
         log.warning(f"Moderation check failed: {e}")

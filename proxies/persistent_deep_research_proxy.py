@@ -98,6 +98,9 @@ _STREAM_DONE = object()
 import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool as langchain_tool
+from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
 import knowledge_client
@@ -139,6 +142,39 @@ UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "mistral-large-latest")
 SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "mistral-small-latest")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
 LISTEN_PORT = env_int("PERSISTENT_RESEARCH_PORT", 9300, minimum=1)
+
+# --- LangChain Model Factories ---
+# Use ChatOpenAI pointing at the Mistral OpenAI-compatible endpoint.
+# This makes every LLM call fire LangChain callbacks automatically,
+# enabling metrics collection, LangSmith tracing, and ecosystem tools.
+
+
+def _get_llm(
+    model: str = "",
+    *,
+    max_tokens: int = 4096,
+    temperature: float = 0.3,
+    timeout: float = 300.0,
+) -> ChatOpenAI:
+    """Create a LangChain ChatOpenAI instance pointing at the Mistral API."""
+    return ChatOpenAI(
+        model=model or UPSTREAM_MODEL,
+        api_key=UPSTREAM_KEY,
+        base_url=UPSTREAM_BASE,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        timeout=timeout,
+    )
+
+
+def _get_synthesis_llm(**kwargs: Any) -> ChatOpenAI:
+    """LLM for synthesis / revision (upstream large model)."""
+    return _get_llm(model=UPSTREAM_MODEL, max_tokens=8192, temperature=0.3, **kwargs)
+
+
+def _get_subagent_llm(**kwargs: Any) -> ChatOpenAI:
+    """LLM for subagents, heartbeat, relevance gate (small/fast model)."""
+    return _get_llm(model=SUBAGENT_MODEL, max_tokens=4096, temperature=0.3, **kwargs)
 MAX_SUBAGENT_TURNS = env_int("MAX_SUBAGENT_TURNS", 15, minimum=1)
 MAX_CONCURRENT = env_int("MAX_CONCURRENT_PERSISTENT", 2, minimum=1)
 RESEARCH_NAMESPACE = os.getenv("RESEARCH_NAMESPACE", "research")
@@ -1178,6 +1214,22 @@ NATIVE_TOOLS = [
 
 
 # ============================================================================
+# LangChain Tool Definitions (for bind_tools + callback tracking)
+# ============================================================================
+# Convert NATIVE_TOOLS (OpenAI function-calling format) into the format
+# that ChatOpenAI.bind_tools() expects.  We also build a registry so
+# execute_tool can fire on_tool_start / on_tool_end callbacks.
+
+LANGCHAIN_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "function": t["function"],
+    }
+    for t in NATIVE_TOOLS
+]
+
+
+# ============================================================================
 # Tool Execution
 # ============================================================================
 
@@ -1195,50 +1247,81 @@ _MODERATION_BLOCK_CATEGORIES = frozenset({
 })
 
 
+_MODERATION_PROMPT = """You are a content safety classifier. Evaluate the user query below and determine if it falls into any of these blocked categories:
+- sexual
+- hate_and_discrimination
+- violence_and_threats
+- dangerous_and_criminal_content
+- selfharm
+
+Respond with ONLY valid JSON (no markdown, no explanation):
+{{"safe": true/false, "flagged_categories": ["category1", ...]}}
+
+If the query is safe for commercial search APIs, set safe=true and flagged_categories=[].
+If any blocked category applies, set safe=false and list the matching categories.
+Be permissive — only flag content that clearly and primarily promotes the listed harms.
+Research queries about sensitive topics (drugs, weapons, conflicts) for informational purposes are SAFE."""
+
+
+def _get_moderation_llm() -> ChatOpenAI:
+    """Return a ChatOpenAI instance configured for the moderation model."""
+    return ChatOpenAI(
+        model=MODERATION_MODEL,
+        api_key=UPSTREAM_KEY,
+        base_url=UPSTREAM_BASE,
+        temperature=0.0,
+        max_tokens=100,
+    )
+
+
 async def moderate_query(query: str) -> tuple[bool, dict]:
-    """Check a query with Mistral moderation before sending to commercial APIs.
+    """Check a query with Mistral moderation via LangChain before sending to commercial APIs.
+
+    Uses ChatOpenAI with the moderation model so the call is tracked
+    by LangChain callbacks (metrics, tracing).
 
     Returns:
         (is_safe, details)  —  is_safe=True means commercial APIs can be used.
-        details contains the raw category scores for logging.
+        details contains the flagged categories for logging.
     """
     if not UPSTREAM_KEY:
         return False, {"error": "no API key"}
 
     try:
-        client = http_client()
-        resp = await client.post(
-            f"{UPSTREAM_BASE.rstrip('/').rsplit('/v1', 1)[0]}/v1/moderations",
-            headers={
-                "Authorization": f"Bearer {UPSTREAM_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={"model": MODERATION_MODEL, "input": [query]},
-            timeout=10.0,
-        )
-        if resp.status_code != 200:
-            log.warning(f"Moderation API returned {resp.status_code}")
-            return False, {"error": f"HTTP {resp.status_code}"}
+        llm = _get_moderation_llm()
+        messages = [
+            SystemMessage(content=_MODERATION_PROMPT),
+            HumanMessage(content=query),
+        ]
+        ai_msg = await llm.ainvoke(messages)
+        content = ai_msg.content.strip()
 
-        data = resp.json()
-        results = data.get("results", [])
-        if not results:
-            return False, {"error": "empty results"}
+        # Parse the JSON response
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            # Try to extract JSON from markdown fences
+            m = re.search(r"\{.*\}", content, re.DOTALL)
+            if m:
+                data = json.loads(m.group())
+            else:
+                log.warning(f"Moderation returned unparseable response: {content[:200]}")
+                return False, {"error": "unparseable response"}
 
-        categories = results[0].get("categories", {})
+        is_safe = data.get("safe", False)
         flagged_cats = [
-            cat for cat, flagged in categories.items()
-            if flagged and cat in _MODERATION_BLOCK_CATEGORIES
+            cat for cat in data.get("flagged_categories", [])
+            if cat in _MODERATION_BLOCK_CATEGORIES
         ]
 
-        if flagged_cats:
+        if not is_safe or flagged_cats:
             log.info(
                 f"Moderation blocked commercial search: query='{query[:60]}' "
                 f"flagged={flagged_cats}"
             )
             return False, {"flagged": flagged_cats}
 
-        return True, {"categories": categories}
+        return True, {"flagged_categories": []}
 
     except Exception as e:
         log.warning(f"Moderation check failed: {e}")
@@ -2487,8 +2570,8 @@ async def tool_web_search(query: str) -> str:
     return searxng_result
 
 
-async def execute_tool(tool_name: str, arguments: dict) -> str:
-    """Route and execute a tool call."""
+async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
+    """Route and execute a tool call (inner implementation)."""
     if tool_name == "searxng_search":
         return await tool_web_search(arguments.get("query", ""))
     elif tool_name == "news_search":
@@ -2567,6 +2650,50 @@ async def execute_tool(tool_name: str, arguments: dict) -> str:
         )
     else:
         return f"Unknown tool: {tool_name}"
+
+
+async def execute_tool(
+    tool_name: str,
+    arguments: dict,
+    req_id: str = "",
+) -> str:
+    """Route and execute a tool call, firing LangChain callbacks.
+
+    Wraps the inner tool execution with on_tool_start / on_tool_end
+    callbacks so that ResearchMetricsCallback tracks every tool call.
+    """
+    config = _request_configs.get(req_id, {}) if req_id else {}
+    callbacks = config.get("callbacks", [])
+    run_id = uuid.uuid4()
+    serialized = {"name": tool_name}
+    input_str = json.dumps(arguments)[:500]
+
+    # Fire on_tool_start for all registered callbacks
+    for cb in callbacks:
+        try:
+            cb.on_tool_start(serialized, input_str, run_id=run_id)
+        except Exception:
+            pass
+
+    try:
+        result = await _execute_tool_inner(tool_name, arguments)
+    except Exception as e:
+        error_str = str(e)
+        for cb in callbacks:
+            try:
+                cb.on_tool_error(e, run_id=run_id)
+            except Exception:
+                pass
+        return f"Tool error ({tool_name}): {error_str}"
+
+    # Fire on_tool_end for all registered callbacks
+    for cb in callbacks:
+        try:
+            cb.on_tool_end(result[:1000], run_id=run_id)
+        except Exception:
+            pass
+
+    return result
 
 
 async def tool_knowledge_graph_search(arguments: dict) -> str:
@@ -2681,12 +2808,13 @@ async def tool_knowledge_discover(arguments: dict) -> str:
 
 async def execute_tools_parallel(
     tool_calls_with_ids: list[tuple[str, str, dict]],
+    req_id: str = "",
 ) -> list[tuple[str, str, str, float]]:
     """Execute multiple tool calls concurrently."""
 
     async def _run_one(tc_id: str, name: str, args: dict):
         t0 = time.monotonic()
-        result = await execute_tool(name, args)
+        result = await execute_tool(name, args, req_id=req_id)
         return tc_id, name, result, time.monotonic() - t0
 
     tasks = [_run_one(tc_id, name, args) for tc_id, name, args in tool_calls_with_ids]
@@ -2702,6 +2830,42 @@ MAX_LLM_RETRIES = 3
 RETRY_BACKOFF = [5, 15, 30]
 
 
+def _dicts_to_langchain_messages(
+    messages: list[dict],
+) -> list[SystemMessage | HumanMessage | AIMessage | ToolMessage]:
+    """Convert OpenAI-format message dicts to LangChain message objects."""
+    lc_msgs: list[SystemMessage | HumanMessage | AIMessage | ToolMessage] = []
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "") or ""
+        if role == "system":
+            lc_msgs.append(SystemMessage(content=content))
+        elif role == "assistant":
+            # Preserve tool_calls if present so bind_tools round-trips work
+            tc = m.get("tool_calls")
+            if tc:
+                lc_msgs.append(AIMessage(
+                    content=content,
+                    additional_kwargs={"tool_calls": tc},
+                ))
+            else:
+                lc_msgs.append(AIMessage(content=content))
+        elif role == "tool":
+            lc_msgs.append(ToolMessage(
+                content=content,
+                tool_call_id=m.get("tool_call_id", ""),
+            ))
+        else:
+            lc_msgs.append(HumanMessage(content=content))
+    return lc_msgs
+
+
+# Per-request LangGraph callback config, keyed by req_id.
+# call_llm looks up the config for the current request so that
+# ResearchMetricsCallback fires on every LLM call automatically.
+_request_configs: dict[str, dict] = {}
+
+
 async def call_llm(
     messages: list[dict],
     req_id: str,
@@ -2711,76 +2875,85 @@ async def call_llm(
     max_tokens: int = 4096,
     temperature: float = 0.3,
 ) -> dict:
-    """Call the upstream LLM with retry logic."""
-    model = model or UPSTREAM_MODEL
-    body: dict = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "stream": False,
-    }
+    """Call the upstream LLM via LangChain ChatOpenAI (fires callbacks).
+
+    Returns the same dict format as the old raw-httpx version for
+    backward compatibility:
+        {"content": str, "tool_calls": list|None, "message": dict, "finish_reason": str}
+    or  {"error": str}
+    """
+    resolved_model = model or UPSTREAM_MODEL
+    llm = _get_llm(
+        model=resolved_model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
     if include_tools:
-        body["tools"] = NATIVE_TOOLS
-        body["tool_choice"] = "auto"
+        llm = llm.bind_tools(LANGCHAIN_TOOLS)
+
+    lc_messages = _dicts_to_langchain_messages(messages)
+
+    # Look up per-request config (contains callbacks list with
+    # ResearchMetricsCallback) so metrics fire automatically.
+    config = _request_configs.get(req_id, {})
 
     last_error: Optional[str] = None
-    client = http_client()
-
     for attempt in range(MAX_LLM_RETRIES + 1):
         try:
-            resp = await client.post(
-                f"{UPSTREAM_BASE}/chat/completions",
-                json=body,
-                headers={
-                    "Authorization": f"Bearer {UPSTREAM_KEY}",
-                    "Content-Type": "application/json",
-                },
-                timeout=httpx.Timeout(300.0, connect=30.0),
-            )
+            ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
 
-            if resp.status_code != 200:
-                error_text = resp.text[:500]
-                last_error = f"[LLM Error: HTTP {resp.status_code}] {error_text}"
+            content = ai_msg.content or ""
 
-                if resp.status_code in RETRYABLE_STATUS_CODES and attempt < MAX_LLM_RETRIES:
-                    wait = RETRY_BACKOFF[attempt]
-                    log.warning(
-                        f"[{req_id}] Retryable error {resp.status_code}, "
-                        f"waiting {wait}s (attempt {attempt + 1}/{MAX_LLM_RETRIES})"
-                    )
-                    await asyncio.sleep(wait)
-                    continue
+            # Extract tool_calls in OpenAI format for backward compat
+            tool_calls_out = None
+            if ai_msg.tool_calls:
+                tool_calls_out = [
+                    {
+                        "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc.get("args", {})),
+                        },
+                    }
+                    for tc in ai_msg.tool_calls
+                ]
 
-                return {"error": last_error}
+            # Build backward-compatible "message" dict
+            message_dict: dict[str, Any] = {"content": content}
+            if tool_calls_out:
+                message_dict["tool_calls"] = tool_calls_out
 
-            data = resp.json()
-            choices = data.get("choices", [])
-            if not choices:
-                return {"error": "[LLM Error: No choices in response]"}
-
-            message = choices[0].get("message", {})
             return {
-                "message": message,
-                "content": message.get("content", "") or "",
-                "tool_calls": message.get("tool_calls", None),
-                "finish_reason": choices[0].get("finish_reason", ""),
+                "message": message_dict,
+                "content": content,
+                "tool_calls": tool_calls_out,
+                "finish_reason": ai_msg.response_metadata.get(
+                    "finish_reason", "stop"
+                ),
             }
 
-        except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
-            last_error = f"[LLM Error: {type(e).__name__}]"
-            if attempt < MAX_LLM_RETRIES:
+        except Exception as e:
+            err_str = str(e)
+            # Detect retryable HTTP status codes from the error message
+            retryable = any(
+                f" {code}" in err_str or f"status_code: {code}" in err_str
+                for code in RETRYABLE_STATUS_CODES
+            ) or isinstance(e, (httpx.ReadTimeout, httpx.ConnectTimeout))
+
+            last_error = f"[LLM Error: {err_str[:500]}]"
+
+            if retryable and attempt < MAX_LLM_RETRIES:
                 wait = RETRY_BACKOFF[attempt]
                 log.warning(
-                    f"[{req_id}] Timeout, retrying in {wait}s "
-                    f"(attempt {attempt + 1}/{MAX_LLM_RETRIES})"
+                    f"[{req_id}] Retryable LLM error, waiting {wait}s "
+                    f"(attempt {attempt + 1}/{MAX_LLM_RETRIES}): {err_str[:200]}"
                 )
                 await asyncio.sleep(wait)
                 continue
-            return {"error": last_error}
 
-        except Exception as e:
-            return {"error": f"[LLM Error: {str(e)}]"}
+            return {"error": last_error}
 
     return {"error": last_error or "[LLM Error: Max retries exceeded]"}
 
@@ -3460,7 +3633,7 @@ async def run_subagent(
                 calls_to_run.append((tc_id, tool_name, arguments))
 
             if calls_to_run:
-                tool_results = await execute_tools_parallel(calls_to_run)
+                tool_results = await execute_tools_parallel(calls_to_run, req_id=req_id)
                 result.tool_calls_made += len(tool_results)
 
                 for tc_id, tool_name, tool_result, duration in tool_results:
@@ -3888,14 +4061,14 @@ async def _research_single_node(
     and feeds findings into the collector and curated queue.
     """
     angle = {
-        "title": node.question[:80],
+        "title": node.question,
         "query": node.question,
         "description": node.context,
         "is_bridge": False,
     }
 
     # Track this question as actively being researched
-    await collector.set_active_question(node.question[:120])
+    await collector.set_active_question(node.question)
 
     # Lightweight internal progress queue (not emitting system noise)
     internal_queue: asyncio.Queue = asyncio.Queue()
@@ -3911,7 +4084,7 @@ async def _research_single_node(
     )
 
     # Clear the active question now that research is done
-    await collector.clear_active_question(node.question[:120])
+    await collector.clear_active_question(node.question)
 
     # Feed conditions to the live findings collector for heartbeat
     if sa_result.conditions:
@@ -3924,7 +4097,7 @@ async def _research_single_node(
             "type": "finding",
             "node_id": node.id,
             "question": node.question,
-            "finding": top_finding.fact[:200],
+            "finding": top_finding.fact,
             "conditions_count": len(sa_result.conditions),
             "depth": node.depth,
         })
@@ -3971,13 +4144,13 @@ async def tree_research_reactor(
     prior_text = ""
     if prior_conditions:
         prior_text = " | Prior knowledge: " + "; ".join(
-            pc["fact"][:80] for pc in prior_conditions[:5]
+            pc["fact"] for pc in prior_conditions[:5]
         )
 
     neighbor_text = ""
     if graph_neighbors:
         neighbor_text = " | Graph context: " + "; ".join(
-            f"{n.get('fact', '')[:80]} (via {n.get('via_entity', '?')})"
+            f"{n.get('fact', '')} (via {n.get('via_entity', '?')})"
             for n in graph_neighbors[:5]
         )
 
@@ -3998,7 +4171,7 @@ async def tree_research_reactor(
         f"depth limit {TREE_MAX_DEPTH}, "
         f"node budget {TREE_MAX_NODES})\n"
     )
-    progress.append(f"Root question: {user_query[:120]}\n")
+    progress.append(f"Root question: {user_query}\n")
 
     await curated_queue.put({
         "type": "start",
@@ -4077,9 +4250,9 @@ async def tree_research_reactor(
                     if actually_queued > 0:
                         await curated_queue.put({
                             "type": "branch",
-                            "parent_question": node.question[:80],
+                            "parent_question": node.question,
                             "children_count": actually_queued,
-                            "top_child": children[0].question[:100] if children else "",
+                            "top_child": children[0].question if children else "",
                             "depth": node.depth + 1,
                         })
             finally:
@@ -4295,19 +4468,18 @@ def _build_context_aware_status(activity: dict) -> str:
             # Show domain, not full URL
             try:
                 from urllib.parse import urlparse
-                domain = urlparse(query).netloc or query[:60]
+                domain = urlparse(query).netloc or query
                 return f"Reading {domain} ({last['duration']:.1f}s)"
             except Exception:
                 pass
             return f"Fetching page content ({last['duration']:.1f}s)"
         if query:
-            return f"Querying {tool_name}: \"{query[:80]}\" ({last['duration']:.1f}s)"
+            return f"Querying {tool_name}: \"{query}\" ({last['duration']:.1f}s)"
         return f"Calling {tool_name} ({last['duration']:.1f}s)"
 
     # Active question messages
     if active_qs:
-        q = active_qs[-1][:100]
-        return f"Investigating: {q}"
+        return f"Investigating: {active_qs[-1]}"
 
     # Source count fallback (still specific)
     if sources_count > 0:
@@ -4418,7 +4590,7 @@ async def _heartbeat_loop(
                     pass
 
             if curated_msg is not None:
-                formatted = _format_curated_event(curated_msg)
+                formatted = await _format_curated_event_llm(curated_msg, req_id)
                 if formatted:
                     await output_queue.put(chunk_fn(f"\n{formatted}\n"))
                     last_heartbeat = time.monotonic()
@@ -4439,47 +4611,82 @@ async def _heartbeat_loop(
         return
 
 
-def _truncate_at_word(text: str, max_len: int) -> str:
-    """Truncate text at a word boundary, never mid-word."""
-    if len(text) <= max_len:
-        return text
-    truncated = text[:max_len]
-    # Find the last space before the limit
-    last_space = truncated.rfind(" ")
-    if last_space > max_len * 0.4:  # only use word boundary if reasonable
-        truncated = truncated[:last_space]
-    return truncated.rstrip(".,;:—- ") + "…"
+_CURATED_EVENT_PROMPT = """You are a research progress formatter. Convert the raw research event below into a single concise, informative status message for the user.
+
+Rules:
+- One sentence, under 40 words
+- Lead with the most specific, useful information (names, numbers, sources, topics)
+- Professional and factual — like a Reuters wire ticker
+- NO excitement, NO commentary, NO hedging
+- Include depth/branch context if relevant
+- If the event has no useful information for the user, output exactly: SKIP
+
+Raw event:
+{event_json}"""
 
 
-def _format_curated_event(event: dict) -> str:
-    """Format a tree reactor curated event into a user-facing message.
+async def _format_curated_event_llm(event: dict, req_id: str) -> str:
+    """Format a tree reactor curated event via LLM prompt.
 
-    Returns an empty string for events that should be silently consumed.
-    All messages are capped at ~180 chars and truncated at word boundaries.
+    Uses a fast model to produce a concise, naturally-worded status
+    message instead of programmatic string truncation.
+    Falls back to a simple template if the LLM call fails.
     """
+    evt_type = event.get("type", "")
+    if not evt_type:
+        return ""
+
+    # Summary events are already concise — no LLM needed
+    if evt_type == "summary":
+        nodes = event.get("nodes_explored", 0)
+        conds = event.get("conditions_count", 0)
+        return f"Research complete: {nodes} branches explored, {conds} findings collected"
+
+    # Build the prompt with the full event data (no truncation)
+    event_json = json.dumps(event, default=str, ensure_ascii=False)
+    prompt = _CURATED_EVENT_PROMPT.replace("{event_json}", event_json)
+
+    try:
+        result = await call_llm(
+            [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": "Format this event."},
+            ],
+            req_id,
+            model=SUBAGENT_MODEL,
+            max_tokens=60,
+            temperature=0.2,
+        )
+        if "error" not in result:
+            msg = result.get("content", "").strip()
+            if msg and msg.upper().strip() != "SKIP" and len(msg) > 5:
+                return msg
+    except Exception as e:
+        log.debug(f"[{req_id}] Curated event LLM format failed: {e}")
+
+    # Fallback — simple templates without character truncation
+    return _format_curated_event_fallback(event)
+
+
+def _format_curated_event_fallback(event: dict) -> str:
+    """Fallback template formatter when LLM is unavailable."""
     evt_type = event.get("type", "")
 
     if evt_type == "start":
-        q = _truncate_at_word(event.get("question", ""), 140)
-        return f"Investigating: {q}"
+        return f"Investigating: {event.get('question', '')}"
 
     elif evt_type == "finding":
         finding = event.get("finding", "")
         depth = event.get("depth", 0)
         count = event.get("conditions_count", 0)
-        q = _truncate_at_word(event.get("question", ""), 60)
-        # Cap the finding to keep total message under ~180 chars
-        prefix = f"[depth {depth}] " if depth > 0 else ""
-        header = f"{prefix}{q} — {count} findings"
-        remaining = 180 - len(header) - 7  # 7 for ". Key: "
-        if remaining > 30:
-            finding_text = _truncate_at_word(finding, remaining)
-            return f"{header}. Key: {finding_text}"
-        return header
+        q = event.get("question", "")
+        if depth > 0:
+            return f"[depth {depth}] {q} — {count} findings. Key: {finding}"
+        return f"{q} — {count} findings. Key: {finding}"
 
     elif evt_type == "branch":
         n = event.get("children_count", 0)
-        child = _truncate_at_word(event.get("top_child", ""), 100)
+        child = event.get("top_child", "")
         return f"Spawning {n} follow-up question{'s' if n != 1 else ''} — highest priority: {child}"
 
     elif evt_type == "summary":
@@ -5409,6 +5616,10 @@ async def run_persistent_research(
         "callbacks": [metrics_callback],
     }
 
+    # Register the config so call_llm and execute_tool can look it up
+    # by req_id and fire callbacks on every LLM/tool invocation.
+    _request_configs[req_id] = config
+
     # Start the pipeline producer as a background task
     pipeline_task = asyncio.create_task(
         _pipeline_producer(initial_state, config, output_queue, chunk, req_id)
@@ -5458,10 +5669,11 @@ async def run_persistent_research(
             except asyncio.CancelledError:
                 pass
 
-        # Clean up the live collector, curated queue, and metrics collector
+        # Clean up the live collector, curated queue, metrics collector, and config
         _live_collectors.pop(req_id, None)
         _curated_queues.pop(req_id, None)
         _metrics_collectors.pop(req_id, None)
+        _request_configs.pop(req_id, None)
         tracker.finish(req_id)
 
 

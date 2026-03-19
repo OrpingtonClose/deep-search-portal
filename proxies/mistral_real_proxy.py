@@ -38,6 +38,8 @@ from typing import Annotated, Any, AsyncGenerator, Optional, TypedDict
 import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
 from shared import (
@@ -53,6 +55,7 @@ from shared import (
     setup_logging,
     stream_passthrough,
 )
+from research_metrics import MetricsCollector, ResearchMetricsCallback
 
 # ---------------------------------------------------------------------------
 # Logging & Configuration
@@ -98,6 +101,45 @@ MAX_LLM_RETRIES = 3
 RETRY_BACKOFF = [5, 15, 30]
 
 
+def _get_real_llm(
+    model: str = "",
+    *,
+    max_tokens: int = 8192,
+    temperature: float = 0.3,
+    timeout: float = 300.0,
+) -> ChatOpenAI:
+    """Create a LangChain ChatOpenAI instance for Mistral (Real)."""
+    return ChatOpenAI(
+        model=model or UPSTREAM_MODEL,
+        api_key=UPSTREAM_KEY,
+        base_url=UPSTREAM_BASE,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        timeout=timeout,
+    )
+
+
+def _dicts_to_lc_messages(
+    messages: list[dict],
+) -> list[SystemMessage | HumanMessage | AIMessage]:
+    """Convert OpenAI-format message dicts to LangChain message objects."""
+    lc: list[SystemMessage | HumanMessage | AIMessage] = []
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "") or ""
+        if role == "system":
+            lc.append(SystemMessage(content=content))
+        elif role == "assistant":
+            lc.append(AIMessage(content=content))
+        else:
+            lc.append(HumanMessage(content=content))
+    return lc
+
+
+# Per-request LangGraph callback config, keyed by req_id.
+_real_request_configs: dict[str, dict] = {}
+
+
 async def call_llm(
     messages: list[dict],
     req_id: str,
@@ -107,64 +149,50 @@ async def call_llm(
     temperature: float = 0.3,
     stream: bool = False,
 ) -> dict:
-    """Call the upstream LLM with retry logic.  Returns parsed response dict."""
-    model = model or UPSTREAM_MODEL
-    body: dict = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "stream": stream,
-    }
+    """Call the upstream LLM via LangChain ChatOpenAI (fires callbacks).
+
+    Returns dict with keys: content, finish_reason, usage (or error).
+    The `stream` parameter is accepted for backward compat but ignored;
+    LangChain handles streaming separately via astream().
+    """
+    llm = _get_real_llm(
+        model=model, max_tokens=max_tokens, temperature=temperature,
+    )
+    lc_messages = _dicts_to_lc_messages(messages)
+    config = _real_request_configs.get(req_id, {})
 
     last_error: Optional[str] = None
-    client = http_client()
-
     for attempt in range(MAX_LLM_RETRIES + 1):
         try:
-            resp = await client.post(
-                f"{UPSTREAM_BASE}/chat/completions",
-                json=body,
-                headers={
-                    "Authorization": f"Bearer {UPSTREAM_KEY}",
-                    "Content-Type": "application/json",
-                },
-                timeout=httpx.Timeout(300.0, connect=30.0),
-            )
-
-            if resp.status_code != 200:
-                error_text = resp.text[:500]
-                last_error = f"HTTP {resp.status_code}: {error_text}"
-                if resp.status_code in RETRYABLE_STATUS_CODES and attempt < MAX_LLM_RETRIES:
-                    wait = RETRY_BACKOFF[attempt]
-                    log.warning(f"[{req_id}] LLM retry {attempt+1}/{MAX_LLM_RETRIES} in {wait}s")
-                    await asyncio.sleep(wait)
-                    continue
-                return {"error": last_error}
-
-            data = resp.json()
-            choices = data.get("choices", [])
-            if not choices:
-                return {"error": "No choices in response"}
-
-            message = choices[0].get("message", {})
+            ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
+            usage = ai_msg.response_metadata.get("token_usage", {})
             return {
-                "content": message.get("content", "") or "",
-                "finish_reason": choices[0].get("finish_reason", ""),
-                "usage": data.get("usage", {}),
+                "content": ai_msg.content or "",
+                "finish_reason": ai_msg.response_metadata.get(
+                    "finish_reason", "stop"
+                ),
+                "usage": usage,
             }
 
-        except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
-            last_error = f"Timeout: {type(e).__name__}"
-            if attempt < MAX_LLM_RETRIES:
+        except Exception as e:
+            err_str = str(e)
+            retryable = any(
+                f" {code}" in err_str or f"status_code: {code}" in err_str
+                for code in RETRYABLE_STATUS_CODES
+            ) or isinstance(e, (httpx.ReadTimeout, httpx.ConnectTimeout))
+
+            last_error = f"{err_str[:500]}"
+
+            if retryable and attempt < MAX_LLM_RETRIES:
                 wait = RETRY_BACKOFF[attempt]
-                log.warning(f"[{req_id}] LLM timeout, retry in {wait}s")
+                log.warning(
+                    f"[{req_id}] LLM retry {attempt+1}/{MAX_LLM_RETRIES} "
+                    f"in {wait}s: {err_str[:200]}"
+                )
                 await asyncio.sleep(wait)
                 continue
-            return {"error": last_error}
 
-        except Exception as e:
-            return {"error": str(e)}
+            return {"error": last_error}
 
     return {"error": last_error or "Max retries exceeded"}
 
@@ -177,52 +205,18 @@ async def stream_llm(
     max_tokens: int = 8192,
     temperature: float = 0.3,
 ) -> AsyncGenerator[str, None]:
-    """Stream tokens from the upstream LLM.  Yields content strings."""
-    model = model or UPSTREAM_MODEL
-    body: dict = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "stream": True,
-    }
+    """Stream tokens from the upstream LLM via LangChain astream."""
+    llm = _get_real_llm(
+        model=model, max_tokens=max_tokens, temperature=temperature,
+    )
+    lc_messages = _dicts_to_lc_messages(messages)
+    config = _real_request_configs.get(req_id, {})
 
-    client = http_client()
     try:
-        async with client.stream(
-            "POST",
-            f"{UPSTREAM_BASE}/chat/completions",
-            json=body,
-            headers={
-                "Authorization": f"Bearer {UPSTREAM_KEY}",
-                "Content-Type": "application/json",
-            },
-            timeout=httpx.Timeout(300.0, connect=30.0),
-        ) as resp:
-            if resp.status_code != 200:
-                error_body = await resp.aread()
-                error_text = error_body.decode("utf-8", errors="replace")[:500]
-                log.error(f"[{req_id}] Stream error {resp.status_code}: {error_text}")
-                yield f"[Error: HTTP {resp.status_code}]"
-                return
-
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                payload = line[6:].strip()
-                if payload == "[DONE]":
-                    return
-                try:
-                    chunk = json.loads(payload)
-                    choices = chunk.get("choices", [])
-                    if choices:
-                        delta = choices[0].get("delta", {})
-                        token = delta.get("content", "")
-                        if token:
-                            yield token
-                except json.JSONDecodeError:
-                    continue
-
+        async for chunk in llm.astream(lc_messages, config=config):
+            token = chunk.content
+            if token:
+                yield token
     except Exception as e:
         log.error(f"[{req_id}] Stream LLM exception: {e}")
         yield f"[Error: {e}]"
@@ -795,7 +789,14 @@ async def run_mistral_real(
     yield chunk("**[Phase 1: Draft Generation]**\n")
     yield chunk(f"Using {UPSTREAM_MODEL} to generate a reasoned draft...\n\n")
 
-    config = {"configurable": {"thread_id": req_id}}
+    # Wire LangChain callbacks so metrics fire for every LLM/tool call
+    metrics_collector = MetricsCollector(session_id=req_id, query=user_query)
+    metrics_callback = ResearchMetricsCallback(metrics_collector)
+    config = {
+        "configurable": {"thread_id": req_id},
+        "callbacks": [metrics_callback],
+    }
+    _real_request_configs[req_id] = config
 
     pipeline_task = asyncio.create_task(
         _pipeline_producer(initial_state, config, output_queue, chunk, req_id)
@@ -826,6 +827,7 @@ async def run_mistral_real(
                 await pipeline_task
             except asyncio.CancelledError:
                 pass
+        _real_request_configs.pop(req_id, None)
         tracker.finish(req_id)
 
 

@@ -595,33 +595,30 @@ class TestEndToEnd:
 class TestCallLlm:
     @pytest.mark.asyncio
     async def test_successful_call(self):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}],
-            "usage": {"total_tokens": 10},
+        mock_ai_msg = MagicMock()
+        mock_ai_msg.content = "hello"
+        mock_ai_msg.response_metadata = {
+            "finish_reason": "stop",
+            "token_usage": {"total_tokens": 10},
         }
 
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=mock_ai_msg)
 
-        with patch.object(mrp, "http_client", return_value=mock_client):
+        with patch.object(mrp, "_get_real_llm", return_value=mock_llm):
             result = await mrp.call_llm(
                 [{"role": "user", "content": "hi"}], "test-req"
             )
 
         assert result["content"] == "hello"
+        assert result["finish_reason"] == "stop"
 
     @pytest.mark.asyncio
     async def test_error_response(self):
-        mock_response = MagicMock()
-        mock_response.status_code = 400
-        mock_response.text = "Bad request"
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=Exception("status_code: 400 Bad request"))
 
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_response)
-
-        with patch.object(mrp, "http_client", return_value=mock_client):
+        with patch.object(mrp, "_get_real_llm", return_value=mock_llm):
             result = await mrp.call_llm(
                 [{"role": "user", "content": "hi"}], "test-req"
             )
@@ -629,15 +626,11 @@ class TestCallLlm:
         assert "error" in result
 
     @pytest.mark.asyncio
-    async def test_no_choices(self):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"choices": []}
+    async def test_exception_returns_error(self):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=Exception("Connection refused"))
 
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_response)
-
-        with patch.object(mrp, "http_client", return_value=mock_client):
+        with patch.object(mrp, "_get_real_llm", return_value=mock_llm):
             result = await mrp.call_llm(
                 [{"role": "user", "content": "hi"}], "test-req"
             )

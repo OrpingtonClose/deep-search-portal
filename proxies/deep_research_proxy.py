@@ -34,6 +34,8 @@ from typing import Annotated, Any, AsyncGenerator, Optional, TypedDict
 import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
 from shared import (
@@ -49,6 +51,7 @@ from shared import (
     setup_logging,
     stream_passthrough,
 )
+from research_metrics import MetricsCollector, ResearchMetricsCallback
 
 # --- Logging ---
 LOG_DIR = os.getenv("DEEP_RESEARCH_LOG_DIR", "/opt/deep_research_logs")
@@ -512,79 +515,133 @@ MAX_LLM_RETRIES = 3
 RETRY_BACKOFF = [5, 15, 30]  # seconds between retries
 
 
+def _get_deep_llm(
+    model: str = "",
+    *,
+    max_tokens: int = 4096,
+    temperature: float = 0.3,
+    timeout: float = 300.0,
+) -> ChatOpenAI:
+    """Create a LangChain ChatOpenAI instance for Deep Research."""
+    return ChatOpenAI(
+        model=model or UPSTREAM_MODEL,
+        api_key=UPSTREAM_KEY,
+        base_url=UPSTREAM_BASE,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        timeout=timeout,
+    )
+
+
+def _dicts_to_lc_messages(
+    messages: list[dict],
+) -> list[SystemMessage | HumanMessage | AIMessage | ToolMessage]:
+    """Convert OpenAI-format message dicts to LangChain message objects."""
+    lc: list[SystemMessage | HumanMessage | AIMessage | ToolMessage] = []
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "") or ""
+        if role == "system":
+            lc.append(SystemMessage(content=content))
+        elif role == "assistant":
+            tc = m.get("tool_calls")
+            if tc:
+                lc.append(AIMessage(
+                    content=content,
+                    additional_kwargs={"tool_calls": tc},
+                ))
+            else:
+                lc.append(AIMessage(content=content))
+        elif role == "tool":
+            lc.append(ToolMessage(
+                content=content,
+                tool_call_id=m.get("tool_call_id", ""),
+            ))
+        else:
+            lc.append(HumanMessage(content=content))
+    return lc
+
+
+# LangChain-format tool definitions for bind_tools
+LANGCHAIN_TOOLS: list[dict] = [
+    {"type": "function", "function": t["function"]}
+    for t in NATIVE_TOOLS
+]
+
+
+# Per-request LangGraph callback config, keyed by req_id.
+_deep_request_configs: dict[str, dict] = {}
+
+
 async def call_llm(messages: list[dict], req_id: str, turn: int, include_tools: bool = True) -> dict:
-    """Call the upstream LLM with native function calling. Retries on transient errors."""
-    body: dict = {
-        "model": UPSTREAM_MODEL,
-        "messages": messages,
-        "max_tokens": 4096,
-        "temperature": 0.3,
-        "stream": False,
-    }
+    """Call the upstream LLM via LangChain ChatOpenAI (fires callbacks).
+
+    Returns the same dict format as the old raw-httpx version:
+        {"content": str, "tool_calls": list|None, "message": dict, "finish_reason": str}
+    or  {"error": str}
+    """
+    llm = _get_deep_llm()
+
     if include_tools:
-        body["tools"] = NATIVE_TOOLS
-        body["tool_choice"] = "auto"
+        llm = llm.bind_tools(LANGCHAIN_TOOLS)
+
+    lc_messages = _dicts_to_lc_messages(messages)
+    config = _deep_request_configs.get(req_id, {})
 
     last_error: Optional[str] = None
-    client = http_client()
-
     for attempt in range(MAX_LLM_RETRIES + 1):
         try:
-            resp = await client.post(
-                f"{UPSTREAM_BASE}/chat/completions",
-                json=body,
-                headers={
-                    "Authorization": f"Bearer {UPSTREAM_KEY}",
-                    "Content-Type": "application/json",
-                },
-                timeout=httpx.Timeout(300.0, connect=30.0),
-            )
+            ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
 
-            if resp.status_code != 200:
-                error_text = resp.text[:500]
-                last_error = f"[LLM Error: HTTP {resp.status_code}] {error_text}"
+            content = ai_msg.content or ""
 
-                if resp.status_code in RETRYABLE_STATUS_CODES and attempt < MAX_LLM_RETRIES:
-                    wait = RETRY_BACKOFF[attempt]
-                    log.warning(
-                        f"[{req_id}] Turn {turn}: Retryable error {resp.status_code}, "
-                        f"waiting {wait}s (attempt {attempt + 1}/{MAX_LLM_RETRIES})"
-                    )
-                    await asyncio.sleep(wait)
-                    continue
+            # Extract tool_calls in OpenAI format for backward compat
+            tool_calls_out = None
+            if ai_msg.tool_calls:
+                tool_calls_out = [
+                    {
+                        "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc.get("args", {})),
+                        },
+                    }
+                    for tc in ai_msg.tool_calls
+                ]
 
-                log.error(f"[{req_id}] Turn {turn}: LLM error {resp.status_code} (final): {error_text}")
-                return {"error": last_error}
-
-            data = resp.json()
-            choices = data.get("choices", [])
-            if not choices:
-                return {"error": "[LLM Error: No choices in response]"}
-
-            message = choices[0].get("message", {})
-            finish_reason = choices[0].get("finish_reason", "")
+            message_dict: dict[str, Any] = {"content": content}
+            if tool_calls_out:
+                message_dict["tool_calls"] = tool_calls_out
 
             return {
-                "message": message,
-                "content": message.get("content", "") or "",
-                "tool_calls": message.get("tool_calls", None),
-                "finish_reason": finish_reason,
+                "message": message_dict,
+                "content": content,
+                "tool_calls": tool_calls_out,
+                "finish_reason": ai_msg.response_metadata.get(
+                    "finish_reason", "stop"
+                ),
             }
 
-        except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
-            last_error = f"[LLM Error: {type(e).__name__}]"
-            if attempt < MAX_LLM_RETRIES:
+        except Exception as e:
+            err_str = str(e)
+            retryable = any(
+                f" {code}" in err_str or f"status_code: {code}" in err_str
+                for code in RETRYABLE_STATUS_CODES
+            ) or isinstance(e, (httpx.ReadTimeout, httpx.ConnectTimeout))
+
+            last_error = f"[LLM Error: {err_str[:500]}]"
+
+            if retryable and attempt < MAX_LLM_RETRIES:
                 wait = RETRY_BACKOFF[attempt]
                 log.warning(
-                    f"[{req_id}] Turn {turn}: Timeout, retrying in {wait}s "
-                    f"(attempt {attempt + 1}/{MAX_LLM_RETRIES})"
+                    f"[{req_id}] Turn {turn}: Retryable error, waiting {wait}s "
+                    f"(attempt {attempt + 1}/{MAX_LLM_RETRIES}): {err_str[:200]}"
                 )
                 await asyncio.sleep(wait)
                 continue
-            return {"error": last_error}
 
-        except Exception as e:
-            return {"error": f"[LLM Error: {str(e)}]"}
+            return {"error": last_error}
 
     return {"error": last_error or "[LLM Error: Max retries exceeded]"}
 
@@ -1039,7 +1096,14 @@ async def run_deep_research(
 
     yield chunk("<think>\n")
 
-    config = {"configurable": {"thread_id": req_id}}
+    # Wire LangChain callbacks so metrics fire for every LLM/tool call
+    metrics_collector = MetricsCollector(session_id=req_id, query=str(user_messages[-1].get("content", "") if user_messages else ""))
+    metrics_callback = ResearchMetricsCallback(metrics_collector)
+    config = {
+        "configurable": {"thread_id": req_id},
+        "callbacks": [metrics_callback],
+    }
+    _deep_request_configs[req_id] = config
     last_progress_idx = 0
     final_state = initial_state
 
@@ -1091,6 +1155,7 @@ async def run_deep_research(
         yield "data: [DONE]\n\n"
 
     finally:
+        _deep_request_configs.pop(req_id, None)
         tracker.finish(req_id)
 
 

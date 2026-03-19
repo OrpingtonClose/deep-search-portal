@@ -1121,23 +1121,25 @@ async def tool_searxng_search(query: str) -> str:
     """
     try:
         general_results = await _searxng_query(query, categories="general")
+    except httpx.TimeoutException:
+        return "Search error: request timed out after 20s"
+    except Exception as e:
+        return f"Search error: {str(e)}"
 
-        # Auto-detect news intent and merge news-category results.
-        if _has_news_intent(query):
+    # Auto-detect news intent and merge news-category results.
+    # Wrapped separately so a news-query failure doesn't discard general results.
+    if _has_news_intent(query):
+        try:
             news_results = await _searxng_query(query, categories="news", time_range="week")
-            # Dedup by URL.
             seen_urls = {r.get("url", "") for r in general_results}
             for r in news_results:
                 if r.get("url", "") not in seen_urls:
                     general_results.append(r)
                     seen_urls.add(r.get("url", ""))
+        except Exception:
+            log.warning("News-category query failed; returning general results only")
 
-        return _format_search_results(general_results) or "No results found."
-
-    except httpx.TimeoutException:
-        return "Search error: request timed out after 20s"
-    except Exception as e:
-        return f"Search error: {str(e)}"
+    return _format_search_results(general_results) or "No results found."
 
 
 async def tool_news_search(query: str, time_range: str = "week") -> str:
@@ -1151,25 +1153,25 @@ async def tool_news_search(query: str, time_range: str = "week") -> str:
         time_range = "week"
 
     try:
-        # Query news category with time filter.
         news_results = await _searxng_query(query, categories="news", time_range=time_range)
+    except httpx.TimeoutException:
+        return "News search error: request timed out after 20s"
+    except Exception as e:
+        return f"News search error: {str(e)}"
 
-        # Also query general as fallback — some news sites are indexed there.
+    # Also query general as fallback — some news sites are indexed there.
+    # Wrapped separately so a general-query failure doesn't discard news results.
+    try:
         general_results = await _searxng_query(query, categories="general", time_range=time_range)
-
-        # Merge, news first.
         seen_urls = {r.get("url", "") for r in news_results}
         for r in general_results:
             if r.get("url", "") not in seen_urls:
                 news_results.append(r)
                 seen_urls.add(r.get("url", ""))
+    except Exception:
+        log.warning("General-category fallback failed; returning news results only")
 
-        return _format_search_results(news_results, source_label="news") or "No recent news found."
-
-    except httpx.TimeoutException:
-        return "News search error: request timed out after 20s"
-    except Exception as e:
-        return f"News search error: {str(e)}"
+    return _format_search_results(news_results, source_label="news") or "No recent news found."
 
 
 async def tool_fetch_webpage(url: str, extract_info: str = "") -> str:

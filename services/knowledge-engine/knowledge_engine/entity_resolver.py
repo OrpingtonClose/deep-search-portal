@@ -68,7 +68,7 @@ def resolve_entities(namespace: str) -> dict:
             """
             MATCH (c:Concept {namespace: $ns})
             RETURN c.id AS id, c.name AS name, c.mention_count AS mentions
-            ORDER BY length(c.name) ASC
+            ORDER BY size(c.name) ASC
             """,
             ns=namespace,
         )

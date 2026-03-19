@@ -3,3 +3,7 @@
 __pycache__/
 *.log
 .b2_account_info
+tests/integration_report_*.html
+tests/integration_report_*.json
+tests/server_report_*.html
+tests/integration_flow_report.html

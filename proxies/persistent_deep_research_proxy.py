@@ -139,14 +139,10 @@ UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "mistral-large-latest")
 SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "mistral-small-latest")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
 LISTEN_PORT = env_int("PERSISTENT_RESEARCH_PORT", 9300, minimum=1)
-MAX_SUBAGENTS = env_int("MAX_SUBAGENTS", 7, minimum=1)
 MAX_SUBAGENT_TURNS = env_int("MAX_SUBAGENT_TURNS", 15, minimum=1)
 MAX_CONCURRENT = env_int("MAX_CONCURRENT_PERSISTENT", 2, minimum=1)
 RESEARCH_NAMESPACE = os.getenv("RESEARCH_NAMESPACE", "research")
 JSONL_LOG_DIR = os.getenv("JSONL_LOG_DIR", "/opt/persistent_research_logs/jsonl")
-MAX_RECURSIVE_DEPTH = env_int("MAX_RECURSIVE_DEPTH", 3, minimum=0)
-SEARCH_ANGLES_PER_TURN = env_int("SEARCH_ANGLES_PER_TURN", 5, minimum=1)
-TARGET_UNIQUE_SOURCES = env_int("TARGET_UNIQUE_SOURCES", 100, minimum=10)
 WEBPAGE_MAX_CHARS = 15000
 PYTHON_TIMEOUT = 30
 PYTHON_OUTPUT_MAX = 5000
@@ -154,6 +150,21 @@ MAX_PRIOR_CONDITIONS = 20
 # Saturation detection thresholds
 NOVELTY_EXPAND_THRESHOLD = 0.3
 NOVELTY_STOP_THRESHOLD = 0.05
+# Legacy constants used by plan_research() and run_subagent() recursive spawning
+MAX_SUBAGENTS = env_int("MAX_SUBAGENTS", 7, minimum=1)
+MAX_RECURSIVE_DEPTH = env_int("MAX_RECURSIVE_DEPTH", 2, minimum=0)
+
+# --- Tree Research Reactor Config ---
+TREE_MAX_CONCURRENT = env_int("TREE_MAX_CONCURRENT", 10, minimum=1)
+TREE_MAX_DEPTH = env_int("TREE_MAX_DEPTH", 5, minimum=1)
+TREE_MAX_NODES = env_int("TREE_MAX_NODES", 50, minimum=5)
+TREE_PRESSURE_THRESHOLD = float(os.getenv("TREE_PRESSURE_THRESHOLD", "0.15"))
+TREE_WORKER_IDLE_TIMEOUT = float(os.getenv("TREE_WORKER_IDLE_TIMEOUT", "60.0"))
+
+# --- Enhanced Web Scraping Config ---
+APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
+BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
+BRIGHT_DATA_HOST = os.getenv("BRIGHT_DATA_HOST", "")  # e.g. brd.superproxy.io:33335
 
 # --- Enhanced Web Scraping Config ---
 BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
@@ -191,8 +202,10 @@ MODERATION_MODEL = os.getenv("MODERATION_MODEL", "mistral-moderation-latest")
 log.info(
     f"Config: synthesis_model={UPSTREAM_MODEL}, subagent_model={SUBAGENT_MODEL}, "
     f"upstream={UPSTREAM_BASE}, searxng={SEARXNG_URL}, port={LISTEN_PORT}, "
-    f"max_subagents={MAX_SUBAGENTS}, max_subagent_turns={MAX_SUBAGENT_TURNS}, "
-    f"max_recursive_depth={MAX_RECURSIVE_DEPTH}, research_ns={RESEARCH_NAMESPACE}, "
+    f"tree_concurrent={TREE_MAX_CONCURRENT}, tree_depth={TREE_MAX_DEPTH}, "
+    f"tree_nodes={TREE_MAX_NODES}, subagent_turns={MAX_SUBAGENT_TURNS}, "
+    f"research_ns={RESEARCH_NAMESPACE}, "
+    f"apify={'yes' if APIFY_API_KEY else 'no'}, "
     f"bright_data={'yes' if BRIGHT_DATA_API_KEY else 'no'}, "
     f"oxylabs={'yes' if OXYLABS_USERNAME else 'no'}, "
     f"playwright={'yes' if _PLAYWRIGHT_AVAILABLE else 'no'}, "
@@ -207,9 +220,11 @@ limiter = ConcurrencyLimiter(MAX_CONCURRENT)
 # Created when research starts, cleaned up when research ends.
 _live_collectors: dict[str, "LiveFindingsCollector"] = {}
 
+# Per-request curated event queues for tree reactor -> heartbeat.
+_curated_queues: dict[str, asyncio.Queue] = {}
+
 # Per-request metrics collectors, keyed by req_id.
 _metrics_collectors: dict[str, MetricsCollector] = {}
-
 
 # ============================================================================
 # Trust Scoring System
@@ -319,6 +334,28 @@ class SubagentResult:
     error: str = ""
     novelty_history: list[float] = field(default_factory=list)
     spawned_children: int = 0
+
+
+@dataclass
+class ResearchNode:
+    """A single node in the research exploration tree.
+
+    Each node represents a question/claim to investigate.  Workers pull
+    nodes from a priority queue, research them, and push child nodes
+    back.  Only the active LLM+tool research phase occupies a
+    semaphore slot.
+    """
+    id: str
+    question: str
+    context: str  # why this node was spawned
+    depth: int
+    pressure: float  # 0-1, higher = explore first
+    parent_id: Optional[str] = None
+    status: str = "pending"  # pending | researching | done | pruned
+
+    def __lt__(self, other: "ResearchNode") -> bool:
+        """PriorityQueue needs ordering; higher pressure = higher priority."""
+        return self.pressure > other.pressure
 
 
 # ============================================================================
@@ -1444,46 +1481,54 @@ async def tool_news_search(query: str, time_range: str = "week") -> str:
     return _format_search_results(news_results, source_label="news") or "No recent news found."
 
 
-async def tool_fetch_webpage(url: str, extract_info: str = "") -> str:
-    """Fetch a webpage and extract readable text."""
+
+
+async def _tool_fetch_webpage_direct(url: str, extract_info: str = "") -> str:
+    """Direct fetch — original implementation."""
+    # (identical to old tool_fetch_webpage, now an internal helper)
     try:
         client = http_client()
         resp = await client.get(
             url,
             timeout=20.0,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; DeepResearchBot/1.0)"},
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
         )
         if resp.status_code != 200:
-            return f"Fetch error: HTTP {resp.status_code}"
+            return f"Fetch error: HTTP {resp.status_code} for {url}"
 
         content_type = resp.headers.get("content-type", "")
-        if "text/html" not in content_type and "text/plain" not in content_type:
-            return f"Non-text content type: {content_type}"
+        if "pdf" in content_type.lower():
+            return f"PDF document at {url} (binary content, cannot extract text directly)"
+        if ("text/html" not in content_type and "text/plain" not in content_type
+                and "text/xml" not in content_type and "application/json" not in content_type):
+            return f"Non-text content type: {content_type} at {url}"
 
-        raw_html = resp.text
-
-        text = re.sub(r'<script[^>]*>.*?</script>', '', raw_html, flags=re.DOTALL | re.IGNORECASE)
+        raw = resp.text
+        text = re.sub(r'<script[^>]*>.*?</script>', '', raw, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'<[^>]+>', ' ', text)
         text = html.unescape(text)
         text = re.sub(r'\s+', ' ', text).strip()
-        text = re.sub(r'\n{3,}', '\n\n', text)
+
+        if not text:
+            return f"No readable text content found at {url}"
 
         if len(text) > WEBPAGE_MAX_CHARS:
-            text = text[:WEBPAGE_MAX_CHARS] + "\n\n[... content truncated ...]"
+            text = text[:WEBPAGE_MAX_CHARS] + "\n[...truncated...]\n"
 
-        if not text.strip():
-            return "Page returned no readable text content."
-
-        result = f"**Content from {url}:**\n\n{text}"
+        result = f"Content from {url}:\n{text}"
         if extract_info:
-            result = f"**Looking for: {extract_info}**\n\n{result}"
+            result = f"Instructions: {extract_info}\n\n{result}"
         return result
 
-    except httpx.ReadTimeout:
-        return f"Fetch error: Timeout reading {url}"
     except Exception as e:
-        return f"Fetch error: {str(e)}"
+        return f"Fetch error for {url}: {e}"
+
+
+async def tool_fetch_webpage(url: str, extract_info: str = "") -> str:
+    """Fetch a webpage with enhanced scraping fallback chain."""
+    return await enhanced_web_fetch(url, extract_info)
 
 
 # ============================================================================
@@ -3675,6 +3720,387 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
 
 
 # ============================================================================
+# Tree Research Reactor
+# ============================================================================
+
+SPAWN_QUESTIONS_PROMPT = """You are a research strategist.  Given the findings so far from investigating a question, generate focused follow-up questions that would deepen understanding.
+
+**Original user query:** {user_query}
+**Question just investigated:** {node_question}
+**Context:** {node_context}
+
+**Findings from this investigation:**
+{findings_text}
+
+**Questions already in the research tree (avoid duplicates):**
+{existing_questions}
+
+Generate follow-up questions.  For each, provide:
+- "question": a specific, searchable question
+- "context": one sentence on why this matters
+- "pressure": 0.0-1.0 importance score (1.0 = critical gap, 0.1 = minor curiosity)
+
+Rules:
+- Generate 0-5 questions maximum
+- Only questions that would SIGNIFICANTLY improve the final answer
+- Higher pressure for: contradictions, unverified claims, critical gaps
+- Lower pressure for: tangential curiosity, already-well-covered areas
+- 0 questions is fine if the topic is saturated
+- Do NOT repeat questions already in the tree
+- Output ONLY valid JSON, no markdown fences
+
+Output format:
+{{"sub_questions": [{{"question": "...", "context": "...", "pressure": 0.8}}]}}"""
+
+
+def _compute_pressure(
+    base_pressure: float,
+    depth: int,
+    parent_pressure: float,
+) -> float:
+    """Compute final pressure score for a research node.
+
+    Combines the LLM's assessed importance with a depth decay and
+    inheritance from the parent node's pressure.
+    """
+    depth_decay = max(0.1, 1.0 - (depth * 0.15))
+    inherited = parent_pressure * 0.3
+    base_weight = base_pressure * 0.7
+    return min(1.0, (base_weight + inherited) * depth_decay)
+
+
+async def _spawn_sub_questions(
+    node: ResearchNode,
+    conditions: list[AtomicCondition],
+    user_query: str,
+    existing_questions: list[str],
+    req_id: str,
+) -> list[ResearchNode]:
+    """Ask LLM to generate follow-up questions from research findings.
+
+    Returns a list of new ResearchNode children.
+    """
+    if not conditions or node.depth >= TREE_MAX_DEPTH:
+        return []
+
+    findings_text = "\n".join(
+        f"- {c.fact} [confidence: {c.confidence:.1f}]"
+        for c in conditions[:15]
+    )
+
+    existing_text = "\n".join(f"- {q}" for q in existing_questions[-30:]) or "(none yet)"
+
+    prompt = SPAWN_QUESTIONS_PROMPT.format(
+        user_query=user_query,
+        node_question=node.question,
+        node_context=node.context,
+        findings_text=findings_text,
+        existing_questions=existing_text,
+    )
+
+    result = await call_llm(
+        [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": "Generate follow-up questions based on these findings."},
+        ],
+        req_id,
+        model=SUBAGENT_MODEL,
+        max_tokens=1024,
+        temperature=0.4,
+    )
+
+    if "error" in result:
+        log.warning(f"[{req_id}] Spawn sub-questions error: {result['error']}")
+        return []
+
+    content = result.get("content", "")
+    try:
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+            cleaned = re.sub(r'\s*```$', '', cleaned)
+        data = json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        json_match = re.search(r'\{[^{}]*"sub_questions"\s*:\s*\[.*?\]\s*\}', content, re.DOTALL)
+        if json_match:
+            try:
+                data = json.loads(json_match.group())
+            except (json.JSONDecodeError, ValueError):
+                return []
+        else:
+            return []
+
+    children: list[ResearchNode] = []
+    for sq in data.get("sub_questions", []):
+        question = sq.get("question", "").strip()
+        if not question:
+            continue
+        # Skip near-duplicate questions
+        q_lower = question.lower()
+        if any(q_lower in eq.lower() or eq.lower() in q_lower for eq in existing_questions):
+            continue
+
+        raw_pressure = float(sq.get("pressure", 0.5))
+        pressure = _compute_pressure(raw_pressure, node.depth + 1, node.pressure)
+
+        if pressure < TREE_PRESSURE_THRESHOLD:
+            continue
+
+        child = ResearchNode(
+            id=f"{req_id}-n{uuid.uuid4().hex[:6]}",
+            question=question,
+            context=sq.get("context", ""),
+            depth=node.depth + 1,
+            pressure=pressure,
+            parent_id=node.id,
+        )
+        children.append(child)
+
+    return children
+
+
+async def _research_single_node(
+    node: ResearchNode,
+    user_query: str,
+    req_id: str,
+    collector: "LiveFindingsCollector",
+    curated_queue: asyncio.Queue,
+) -> tuple[list[AtomicCondition], SubagentResult]:
+    """Research a single tree node using the existing subagent loop.
+
+    This wraps run_subagent with the tree node's question/context
+    and feeds findings into the collector and curated queue.
+    """
+    angle = {
+        "title": node.question[:80],
+        "query": node.question,
+        "description": node.context,
+        "is_bridge": False,
+    }
+
+    # Lightweight internal progress queue (not emitting system noise)
+    internal_queue: asyncio.Queue = asyncio.Queue()
+
+    sa_result = await run_subagent(
+        angle=angle,
+        subagent_index=0,
+        progress_queue=internal_queue,
+        req_id=req_id,
+        user_query=user_query,
+        depth=0,
+    )
+
+    # Feed conditions to the live findings collector for heartbeat
+    if sa_result.conditions:
+        await collector.add_conditions(sa_result.conditions)
+
+    # Emit a curated update about what we found
+    if sa_result.conditions:
+        top_finding = max(sa_result.conditions, key=lambda c: c.confidence)
+        await curated_queue.put({
+            "type": "finding",
+            "node_id": node.id,
+            "question": node.question,
+            "finding": top_finding.fact[:200],
+            "conditions_count": len(sa_result.conditions),
+            "depth": node.depth,
+        })
+
+    return sa_result.conditions, sa_result
+
+
+async def tree_research_reactor(
+    user_query: str,
+    prior_conditions: list[dict],
+    graph_neighbors: list[dict],
+    req_id: str,
+    collector: "LiveFindingsCollector",
+    curated_queue: asyncio.Queue,
+) -> dict:
+    """Tree-based research reactor.
+
+    Explores the research space as a tree: each finding can spawn
+    sub-questions which get explored by concurrent workers.
+
+    The semaphore governs only the workers doing active LLM+tool
+    research.  Spawning and queuing are free (no slot consumed).
+
+    Returns a dict with keys matching the old plan+subagents output:
+      - subagent_results, all_conditions, total_turns, total_tools,
+        total_children, progress_log
+    """
+    sem = asyncio.Semaphore(TREE_MAX_CONCURRENT)
+    pending: asyncio.PriorityQueue = asyncio.PriorityQueue()
+    progress: list[str] = []
+
+    # Bookkeeping
+    all_conditions: list[AtomicCondition] = []
+    all_results: list[SubagentResult] = []
+    all_questions: list[str] = [user_query]
+    nodes_by_id: dict[str, ResearchNode] = {}
+    total_queued = 0
+    total_processed = 0
+    active_workers = 0  # count of workers currently researching a node
+    lock = asyncio.Lock()
+    done_event = asyncio.Event()  # set when tree exploration is complete
+
+    # Build the root node
+    prior_text = ""
+    if prior_conditions:
+        prior_text = " | Prior knowledge: " + "; ".join(
+            pc["fact"][:80] for pc in prior_conditions[:5]
+        )
+
+    neighbor_text = ""
+    if graph_neighbors:
+        neighbor_text = " | Graph context: " + "; ".join(
+            f"{n.get('fact', '')[:80]} (via {n.get('via_entity', '?')})"
+            for n in graph_neighbors[:5]
+        )
+
+    root = ResearchNode(
+        id=f"{req_id}-root",
+        question=user_query,
+        context=f"Original user query{prior_text}{neighbor_text}",
+        depth=0,
+        pressure=1.0,
+    )
+    nodes_by_id[root.id] = root
+    await pending.put(root)
+    total_queued = 1
+
+    progress.append(
+        f"\n**[Phase 2: Tree Research Reactor]** "
+        f"(max {TREE_MAX_CONCURRENT} concurrent, "
+        f"depth limit {TREE_MAX_DEPTH}, "
+        f"node budget {TREE_MAX_NODES})\n"
+    )
+    progress.append(f"Root question: {user_query[:120]}\n")
+
+    await curated_queue.put({
+        "type": "start",
+        "question": user_query,
+    })
+
+    async def worker(worker_id: int) -> None:
+        nonlocal total_processed, total_queued, active_workers
+
+        while True:
+            # Wait for work or termination.  Instead of a simple timeout
+            # (which causes idle workers to exit before children are
+            # spawned), we poll the queue in short intervals and only
+            # exit when done_event is set.
+            node = None
+            while node is None:
+                if done_event.is_set():
+                    return
+                try:
+                    node = await asyncio.wait_for(
+                        pending.get(), timeout=TREE_WORKER_IDLE_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    # Check if exploration is complete: no items in
+                    # queue and no workers actively researching.
+                    async with lock:
+                        if active_workers == 0 and pending.empty():
+                            done_event.set()
+                            return
+                    continue
+
+            # Skip pruned nodes
+            if node.status == "pruned":
+                continue
+
+            # Mark this worker as active before acquiring semaphore
+            async with lock:
+                active_workers += 1
+
+            try:
+                # Acquire semaphore — only active research counts
+                async with sem:
+                    node.status = "researching"
+
+                    conditions, sa_result = await _research_single_node(
+                        node, user_query, req_id, collector, curated_queue,
+                    )
+
+                    node.status = "done"
+
+                async with lock:
+                    total_processed += 1
+                    all_conditions.extend(conditions)
+                    all_results.append(sa_result)
+
+                # Spawn children (doesn't hold semaphore)
+                async with lock:
+                    current_queued = total_queued
+
+                if current_queued < TREE_MAX_NODES and conditions:
+                    children = await _spawn_sub_questions(
+                        node, conditions, user_query, all_questions, req_id,
+                    )
+
+                    async with lock:
+                        actually_queued = 0
+                        for child in children:
+                            if total_queued >= TREE_MAX_NODES:
+                                break
+                            nodes_by_id[child.id] = child
+                            all_questions.append(child.question)
+                            await pending.put(child)
+                            total_queued += 1
+                            actually_queued += 1
+
+                    if actually_queued > 0:
+                        await curated_queue.put({
+                            "type": "branch",
+                            "parent_question": node.question[:80],
+                            "children_count": actually_queued,
+                            "top_child": children[0].question[:100] if children else "",
+                            "depth": node.depth + 1,
+                        })
+            finally:
+                async with lock:
+                    active_workers -= 1
+
+    # Launch worker pool
+    workers = [
+        asyncio.create_task(worker(i))
+        for i in range(TREE_MAX_CONCURRENT)
+    ]
+
+    await asyncio.gather(*workers, return_exceptions=True)
+
+    # Compute totals
+    total_turns = sum(r.turns_used for r in all_results)
+    total_tools = sum(r.tool_calls_made for r in all_results)
+    total_children = sum(r.spawned_children for r in all_results)
+
+    progress.append(
+        f"\n**Tree Exploration Complete:** "
+        f"{total_processed} nodes explored "
+        f"(depth reached: {max((n.depth for n in nodes_by_id.values()), default=0)}), "
+        f"{len(all_conditions)} atomic conditions, "
+        f"{total_turns} total turns, {total_tools} tool calls\n"
+    )
+
+    await curated_queue.put({
+        "type": "summary",
+        "nodes_explored": total_processed,
+        "conditions_count": len(all_conditions),
+    })
+
+    return {
+        "subagent_results": all_results,
+        "all_conditions": all_conditions,
+        "total_turns": total_turns,
+        "total_tools": total_tools,
+        "total_children": total_children,
+        "progress_log": progress,
+    }
+
+
+# ============================================================================
 # Live Findings Collector (shared state for heartbeat)
 # ============================================================================
 
@@ -3721,33 +4147,32 @@ class LiveFindingsCollector:
 # Heartbeat Prompt & Task
 # ============================================================================
 
-_HEARTBEAT_PROMPT = """You are a research assistant giving a brief live update to a curious friend about what you just discovered.
-
-Pick the single most interesting NEW finding from the list below and describe it conversationally in under 40 words.
+_HEARTBEAT_PROMPT = """You are a research analyst. Share ONE noteworthy new finding as a direct factual statement in under 40 words.
 
 Rules:
-- Share a concrete, specific finding — not a vague progress update
-- Write like you're excited to tell a friend what you just learned
-- No technical jargon about subagents, turns, models, or system internals
-- No bullet points or markdown
-- If nothing is genuinely new or interesting, reply with a brief natural status like "Still searching through regulatory databases..." or "Digging into the academic literature on this..."
+- Lead with the specific data: names, numbers, prices, dates, percentages, sources
+- Example: "Technogym Biostrength uses AI-driven resistance adjustment and claims 30% faster strength gains vs conventional machines, per their 2024 whitepaper."
+- NO commentary, NO excitement, NO exclamation marks, NO "I found", NO "It turns out", NO "Oh my gosh"
+- NO hedging like "how cool is that" or "imagine" — just the facts
+- Professional, dry, factual — like a Reuters wire report
+- If nothing is genuinely new vs the "Already shared" list, reply with exactly: SKIP
 
 New findings:
 {findings}
 
-Already shared (do NOT repeat these):
+Already shared (do NOT repeat or rephrase — if a finding covers the same topic as any item below, output SKIP):
 {already_shared}"""
 
 
 _HEARTBEAT_STATUS_PHRASES = [
-    "Still searching through databases for relevant patterns...",
-    "Digging deeper into the academic literature on this...",
-    "Cross-referencing findings across different sources...",
-    "Following a promising trail through regulatory records...",
-    "Scanning through recent publications for fresh insights...",
-    "Checking historical archives for additional context...",
-    "Comparing data across multiple jurisdictions...",
+    "Searching for additional sources...",
+    "Cross-referencing across databases...",
     "Verifying claims against primary sources...",
+    "Checking for corroborating evidence...",
+    "Scanning recent publications...",
+    "Reviewing archived records...",
+    "Comparing data across sources...",
+    "Evaluating source reliability...",
 ]
 
 
@@ -3798,10 +4223,15 @@ async def _generate_heartbeat_message(
 
         if "error" not in result:
             msg = result.get("content", "").strip()
+            # If the LLM says SKIP, there's nothing new to share
+            if msg and msg.upper().strip() == "SKIP":
+                idx = _phrase_idx[0] % len(_HEARTBEAT_STATUS_PHRASES)
+                _phrase_idx[0] += 1
+                return _HEARTBEAT_STATUS_PHRASES[idx]
             if msg and len(msg) > 10:
-                # Mark the finding that was most likely used
-                if new_findings:
-                    await collector.mark_shared(new_findings[0].fact)
+                # Mark all findings as shared to prevent rephrasing
+                for f in new_findings:
+                    await collector.mark_shared(f.fact)
                 return msg
     except Exception as e:
         log.debug(f"[{req_id}] Heartbeat LLM call failed: {e}")
@@ -3818,8 +4248,13 @@ async def _heartbeat_loop(
     chunk_fn,
     req_id: str,
     interval: float = 8.0,
+    curated_queue: Optional[asyncio.Queue] = None,
 ) -> None:
-    """Background task: emit engaging heartbeat updates into the SSE stream.
+    """Background task: emit curated research updates into the SSE stream.
+
+    When a curated_queue is provided (tree reactor mode), it consumes
+    structured events from the reactor and formats them as user-facing
+    updates.  Otherwise falls back to the LLM-based heartbeat.
 
     Also emits `: keepalive` SSE comments every 5 seconds to prevent
     proxy/CDN timeouts (these are invisible to the UI parser).
@@ -3833,7 +4268,20 @@ async def _heartbeat_loop(
             now = time.monotonic()
             time_since_heartbeat = now - last_heartbeat
 
-            if time_since_heartbeat >= interval:
+            # Drain curated queue first (tree reactor events)
+            curated_msg = None
+            if curated_queue is not None:
+                try:
+                    curated_msg = curated_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+
+            if curated_msg is not None:
+                formatted = _format_curated_event(curated_msg)
+                if formatted:
+                    await output_queue.put(chunk_fn(f"\n{formatted}\n"))
+                    last_heartbeat = time.monotonic()
+            elif time_since_heartbeat >= interval:
                 msg = await _generate_heartbeat_message(collector, req_id, phrase_idx)
                 await output_queue.put(chunk_fn(f"\n{msg}\n"))
                 last_heartbeat = time.monotonic()
@@ -3848,6 +4296,38 @@ async def _heartbeat_loop(
     except asyncio.CancelledError:
         log.debug(f"[{req_id}] Heartbeat task cancelled")
         return
+
+
+def _format_curated_event(event: dict) -> str:
+    """Format a tree reactor curated event into a user-facing message.
+
+    Returns an empty string for events that should be silently consumed.
+    """
+    evt_type = event.get("type", "")
+
+    if evt_type == "start":
+        return f"Investigating: {event.get('question', '')[:120]}"
+
+    elif evt_type == "finding":
+        finding = event.get("finding", "")
+        depth = event.get("depth", 0)
+        count = event.get("conditions_count", 0)
+        q = event.get("question", "")[:80]
+        if depth > 0:
+            return f"[depth {depth}] {q} — {count} findings. Key: {finding}"
+        return f"{q} — {count} findings. Key: {finding}"
+
+    elif evt_type == "branch":
+        n = event.get("children_count", 0)
+        child = event.get("top_child", "")
+        return f"Spawning {n} follow-up question{'s' if n != 1 else ''} — highest priority: {child}"
+
+    elif evt_type == "summary":
+        nodes = event.get("nodes_explored", 0)
+        conds = event.get("conditions_count", 0)
+        return f"Research complete: {nodes} branches explored, {conds} findings collected"
+
+    return ""
 
 
 # ============================================================================
@@ -4083,12 +4563,12 @@ class PersistentResearchState(TypedDict):
     # Phase outputs
     prior_conditions: list[dict]
     graph_neighbors: list[dict]
-    angles: list[dict]
     subagent_results: list  # list[SubagentResult] (not TypedDict-serialisable)
     all_conditions: list  # list[AtomicCondition]
     total_turns: int
     total_tools: int
     total_children: int
+    nodes_explored: int  # tree reactor: how many nodes were explored
     reflection: dict
     final_answer: str
     # Progress
@@ -4139,131 +4619,45 @@ async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
         "prior_conditions": prior_conditions,
         "graph_neighbors": graph_neighbors,
         "progress_log": progress,
-        "phase": "plan",
+        "phase": "tree_research",
     }
 
 
-async def pdr_node_plan(state: PersistentResearchState) -> dict:
-    """Phase 2: Plan research angles."""
+async def pdr_node_tree_research(state: PersistentResearchState) -> dict:
+    """Phase 2: Tree-based research reactor.
+
+    Replaces the old plan-angles + parallel-subagents phases with a
+    tree exploration that starts from the user query, researches it,
+    and spawns focused sub-questions from each finding.
+    """
     req_id = state["req_id"]
     mc = _metrics_collectors.get(req_id)
     if mc:
-        mc.start_node("plan")
-    progress: list[str] = [
-        f"\n**[Phase 2: Planning Research Angles]**\n",
-        f"Using {SUBAGENT_MODEL} for planning...\n",
-    ]
+        mc.start_node("tree_research")
 
-    plan = await plan_research(
-        state["user_query"], state["prior_conditions"], state["graph_neighbors"], req_id,
+    # Get or create the live findings collector
+    collector = _live_collectors.get(req_id)
+    if collector is None:
+        collector = LiveFindingsCollector()
+        _live_collectors[req_id] = collector
+
+    # Get or create the curated queue
+    curated_queue = _curated_queues.get(req_id)
+    if curated_queue is None:
+        curated_queue = asyncio.Queue()
+        _curated_queues[req_id] = curated_queue
+
+    result = await tree_research_reactor(
+        user_query=state["user_query"],
+        prior_conditions=state["prior_conditions"],
+        graph_neighbors=state["graph_neighbors"],
+        req_id=req_id,
+        collector=collector,
+        curated_queue=curated_queue,
     )
-    angles = plan["angles"]
-
-    progress.append(f"Decomposed into {len(angles)} research angles:\n")
-    for i, angle in enumerate(angles, 1):
-        bridge_tag = " [BRIDGE]" if angle.get("is_bridge") else ""
-        progress.append(f"  {i}. **{angle['title']}**{bridge_tag}: {angle.get('description', '')[:80]}\n")
-
-    mc = _metrics_collectors.get(req_id)
-    if mc:
-        mc.end_node("plan")
-
-    return {"angles": angles, "progress_log": progress, "phase": "subagents"}
-
-
-async def pdr_node_subagents(state: PersistentResearchState) -> dict:
-    """Phase 3: Parallel subagent research."""
-    req_id = state["req_id"]
-    mc = _metrics_collectors.get(req_id)
-    if mc:
-        mc.start_node("subagents")
-    angles = state["angles"]
-    n_agents = len(angles)
-    progress: list[str] = [
-        f"\n**[Phase 3: Launching {n_agents} Parallel Subagents]** "
-        f"(model: {SUBAGENT_MODEL}, max_turns: {MAX_SUBAGENT_TURNS}, "
-        f"recursive_depth: {MAX_RECURSIVE_DEPTH})\n"
-    ]
-
-    progress_queue: asyncio.Queue = asyncio.Queue()
-
-    subagent_tasks = [
-        asyncio.create_task(
-            run_subagent(angle, i, progress_queue, req_id, state["user_query"], depth=0)
-        )
-        for i, angle in enumerate(angles)
-    ]
-
-    pending_tasks = set(subagent_tasks)
-    completed_count = 0
-
-    while completed_count < n_agents and pending_tasks:
-        done_tasks, _ = await asyncio.wait(
-            pending_tasks, timeout=0, return_when=asyncio.FIRST_COMPLETED
-        )
-        for t in done_tasks:
-            pending_tasks.discard(t)
-            if t.exception() is not None:
-                completed_count += 1
-                idx = subagent_tasks.index(t)
-                log.error(f"[{req_id}] Subagent {idx} crashed: {t.exception()}")
-                progress.append(f"  Subagent {idx + 1} failed: {t.exception()}\n")
-
-        try:
-            msg = await asyncio.wait_for(progress_queue.get(), timeout=2.0)
-        except asyncio.TimeoutError:
-            if all(t.done() for t in subagent_tasks):
-                break
-            continue
-
-        if msg["type"] == "progress":
-            progress.append(msg["text"])
-        elif msg["type"] == "tool":
-            progress.append(msg["text"])
-        elif msg["type"] == "conditions":
-            # Feed live conditions to the heartbeat collector
-            collector = _live_collectors.get(req_id)
-            if collector:
-                await collector.add_conditions(msg["conditions"])
-        elif msg["type"] == "done":
-            completed_count += 1
-            progress.append(
-                f"  Subagent {msg['subagent'] + 1} ({msg['angle']}) complete: "
-                f"{msg['conditions_count']} atomic conditions\n"
-            )
-
-    subagent_results: list[SubagentResult] = []
-    for task in subagent_tasks:
-        if task.done() and task.exception() is None:
-            try:
-                subagent_results.append(task.result())
-            except Exception as e:
-                log.error(f"[{req_id}] Failed to collect subagent result: {e}")
-        elif task.done() and task.exception() is not None:
-            log.error(f"[{req_id}] Subagent task exception: {task.exception()}")
-        else:
-            task.cancel()
-            log.warning(f"[{req_id}] Cancelled hanging subagent task")
-
-    all_conditions: list[AtomicCondition] = []
-    total_turns = 0
-    total_tools = 0
-    total_children = 0
-    for sr in subagent_results:
-        all_conditions.extend(sr.conditions)
-        total_turns += sr.turns_used
-        total_tools += sr.tool_calls_made
-        total_children += sr.spawned_children
-
-    progress.append(
-        f"\n**Research Summary:** {len(all_conditions)} atomic conditions, "
-        f"{total_turns} total turns, {total_tools} tool calls"
-    )
-    if total_children > 0:
-        progress.append(f", {total_children} recursive sub-subagents spawned")
-    progress.append("\n")
 
     # Record subagent metrics
+    subagent_results = result["subagent_results"]
     mc = _metrics_collectors.get(req_id)
     if mc:
         for i, sr in enumerate(subagent_results):
@@ -4277,15 +4671,16 @@ async def pdr_node_subagents(state: PersistentResearchState) -> dict:
                 children_spawned=sr.spawned_children,
                 error=sr.error,
             ))
-        mc.end_node("subagents")
+        mc.end_node("tree_research")
 
     return {
-        "subagent_results": subagent_results,
-        "all_conditions": all_conditions,
-        "total_turns": total_turns,
-        "total_tools": total_tools,
-        "total_children": total_children,
-        "progress_log": progress,
+        "subagent_results": result["subagent_results"],
+        "all_conditions": result["all_conditions"],
+        "total_turns": result["total_turns"],
+        "total_tools": result["total_tools"],
+        "total_children": result["total_children"],
+        "nodes_explored": len(result["subagent_results"]),
+        "progress_log": result["progress_log"],
         "phase": "entities",
     }
 
@@ -4470,34 +4865,34 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
 
 
 async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
-    """Phase 8: Draft-Synthesis-Revision loop."""
+    """Final phase: Draft-Synthesis-Revision loop."""
     req_id = state["req_id"]
     mc = _metrics_collectors.get(req_id)
     if mc:
         mc.start_node("synthesize")
     progress: list[str] = [
-        f"\n**[Phase 8: Draft-Synthesis-Revision]** (model: {UPSTREAM_MODEL})\n",
-        "Phase 8a: Generating draft synthesis...\n",
+        f"\n**[Synthesis Phase]** (model: {UPSTREAM_MODEL})\n",
+        "Generating draft synthesis...\n",
     ]
 
     final_answer = await synthesize_with_revision(
         state["user_query"], state["subagent_results"], state["prior_conditions"], req_id,
     )
 
-    progress.append("Phase 8b: Critic review complete.\n")
-    progress.append("Phase 8c: Final revision complete.\n")
+    progress.append("Critic review complete.\n")
+    progress.append("Final revision complete.\n")
 
     elapsed = time.monotonic() - state["start_time"]
-    n_agents = len(state["angles"])
+    nodes_explored = state.get("nodes_explored", 0)
     all_conditions = state["all_conditions"]
     total_children = state["total_children"]
 
     progress.append(
         f"\nResearch complete in {elapsed:.1f}s "
-        f"({len(all_conditions)} conditions from {n_agents} subagents"
+        f"({len(all_conditions)} conditions from {nodes_explored} tree nodes"
     )
     if total_children > 0:
-        progress.append(f" + {total_children} recursive sub-subagents")
+        progress.append(f" + {total_children} recursive sub-explorations")
     progress.append(")\n")
 
     # Generate report + metrics
@@ -4578,16 +4973,15 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
 def build_persistent_research_graph() -> Any:
     """Build the persistent research LangGraph.
 
-    Graph topology (linear 8-phase pipeline)::
+    Graph topology (tree reactor pipeline)::
 
-        START -> retrieve -> plan -> subagents -> entities -> verify
+        START -> retrieve -> tree_research -> entities -> verify
               -> reflect -> persist -> synthesize -> END
     """
     graph = StateGraph(PersistentResearchState)
 
     graph.add_node("retrieve", pdr_node_retrieve)
-    graph.add_node("plan", pdr_node_plan)
-    graph.add_node("subagents", pdr_node_subagents)
+    graph.add_node("tree_research", pdr_node_tree_research)
     graph.add_node("entities", pdr_node_entities)
     graph.add_node("verify", pdr_node_verify)
     graph.add_node("reflect", pdr_node_reflect)
@@ -4595,9 +4989,8 @@ def build_persistent_research_graph() -> Any:
     graph.add_node("synthesize", pdr_node_synthesize)
 
     graph.add_edge(START, "retrieve")
-    graph.add_edge("retrieve", "plan")
-    graph.add_edge("plan", "subagents")
-    graph.add_edge("subagents", "entities")
+    graph.add_edge("retrieve", "tree_research")
+    graph.add_edge("tree_research", "entities")
     graph.add_edge("entities", "verify")
     graph.add_edge("verify", "reflect")
     graph.add_edge("reflect", "persist")
@@ -4712,12 +5105,12 @@ async def run_persistent_research(
         "start_time": start_time,
         "prior_conditions": [],
         "graph_neighbors": [],
-        "angles": [],
         "subagent_results": [],
         "all_conditions": [],
         "total_turns": 0,
         "total_tools": 0,
         "total_children": 0,
+        "nodes_explored": 0,
         "reflection": {},
         "final_answer": "",
         "progress_log": [],
@@ -4726,10 +5119,12 @@ async def run_persistent_research(
         "metrics_url": "",
     }
 
-    # Create the shared output queue and live findings collector
+    # Create the shared output queue, live findings collector, and curated queue
     output_queue: asyncio.Queue = asyncio.Queue()
     collector = LiveFindingsCollector()
     _live_collectors[req_id] = collector
+    curated_queue: asyncio.Queue = asyncio.Queue()
+    _curated_queues[req_id] = curated_queue
 
     # Create metrics collector for this session
     metrics_collector = MetricsCollector(session_id=req_id, query=user_query)
@@ -4748,9 +5143,12 @@ async def run_persistent_research(
         _pipeline_producer(initial_state, config, output_queue, chunk, req_id)
     )
 
-    # Start the heartbeat task (will be cancelled when synthesis starts or pipeline ends)
+    # Start the heartbeat task with curated queue for tree reactor updates
     heartbeat_task = asyncio.create_task(
-        _heartbeat_loop(output_queue, collector, chunk, req_id, interval=8.0)
+        _heartbeat_loop(
+            output_queue, collector, chunk, req_id,
+            interval=8.0, curated_queue=curated_queue,
+        )
     )
 
     try:
@@ -4789,8 +5187,9 @@ async def run_persistent_research(
             except asyncio.CancelledError:
                 pass
 
-        # Clean up the live collector and metrics collector
+        # Clean up the live collector, curated queue, and metrics collector
         _live_collectors.pop(req_id, None)
+        _curated_queues.pop(req_id, None)
         _metrics_collectors.pop(req_id, None)
         tracker.finish(req_id)
 
@@ -4814,6 +5213,9 @@ register_standard_routes(
         "max_subagents": MAX_SUBAGENTS,
         "max_subagent_turns": MAX_SUBAGENT_TURNS,
         "max_recursive_depth": MAX_RECURSIVE_DEPTH,
+        "tree_max_concurrent": TREE_MAX_CONCURRENT,
+        "tree_max_depth": TREE_MAX_DEPTH,
+        "tree_max_nodes": TREE_MAX_NODES,
         "research_namespace": RESEARCH_NAMESPACE,
         "jsonl_log_dir": JSONL_LOG_DIR,
         "tools": [t["function"]["name"] for t in NATIVE_TOOLS],

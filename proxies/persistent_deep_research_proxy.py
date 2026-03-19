@@ -5294,12 +5294,14 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
 
         all_conditions = await verify_conditions(all_conditions, req_id)
 
+        stage1_removed = pre_count - len(all_conditions)
         high_conf = sum(1 for c in all_conditions if c.confidence >= 0.7)
         low_conf = sum(1 for c in all_conditions if c.confidence < 0.4)
-        progress.append(
-            f"Cross-check complete: {high_conf} high-confidence, "
-            f"{low_conf} low-confidence conditions.\n"
-        )
+        summary = (f"Cross-check complete: {high_conf} high-confidence, "
+                   f"{low_conf} low-confidence conditions.")
+        if stage1_removed > 0:
+            summary += f" {stage1_removed} fabricated removed."
+        progress.append(summary + "\n")
 
     # Stage 2: Veritas Inquisitor — external evidence-based verification
     veritas_report: dict = {}
@@ -5310,11 +5312,12 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
             f"(5-agent swarm with web search)...\n"
         )
 
+        pre_veritas_count = len(all_conditions)
         all_conditions, veritas_report = await verify_conditions_with_veritas(
             all_conditions, user_query, req_id,
         )
 
-        removed = pre_count - len(all_conditions)
+        removed = pre_veritas_count - len(all_conditions)
         speculative_count = sum(
             1 for c in all_conditions if c.verification_status == "speculative"
         )
@@ -5342,7 +5345,7 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
             progress.append("Veritas verification complete.\n")
 
         progress.append(
-            f"{len(all_conditions)} conditions retained out of {pre_count}.\n"
+            f"{len(all_conditions)} conditions retained out of {pre_veritas_count}.\n"
         )
 
     mc = _metrics_collectors.get(req_id)

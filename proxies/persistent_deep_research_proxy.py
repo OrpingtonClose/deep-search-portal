@@ -2937,9 +2937,9 @@ async def call_llm(
         except Exception as e:
             err_str = str(e)
             # Detect retryable HTTP status codes from the error message
-            retryable = any(
-                re.search(rf"\b{code}\b", err_str)
-                for code in RETRYABLE_STATUS_CODES
+            _codes_pattern = "|".join(str(c) for c in RETRYABLE_STATUS_CODES)
+            retryable = bool(
+                re.search(rf"\b({_codes_pattern})\b", err_str)
             ) or isinstance(e, (httpx.ReadTimeout, httpx.ConnectTimeout))
 
             last_error = f"[LLM Error: {err_str[:500]}]"

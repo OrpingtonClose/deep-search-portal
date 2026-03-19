@@ -52,6 +52,7 @@ from shared import (
     stream_passthrough,
 )
 from research_metrics import MetricsCollector, ResearchMetricsCallback
+import langfuse_config
 
 # --- Logging ---
 LOG_DIR = os.getenv("DEEP_RESEARCH_LOG_DIR", "/opt/deep_research_logs")
@@ -1094,14 +1095,29 @@ async def run_deep_research(
         "finish_reason": "",
     }
 
+    # --- Langfuse tracing: generate trace URL and emit as first message ---
+    langfuse_trace_id = langfuse_config.create_trace_id(req_id)
+    langfuse_trace_url = langfuse_config.get_trace_url(langfuse_trace_id)
+    langfuse_handler = langfuse_config.create_callback_handler(
+        trace_id=langfuse_trace_id,
+        session_id=req_id,
+        tags=["deep-research"],
+    )
+
+    if langfuse_trace_url:
+        yield chunk(f"[Langfuse trace]({langfuse_trace_url})\n\n")
+
     yield chunk("<think>\n")
 
     # Wire LangChain callbacks so metrics fire for every LLM/tool call
     metrics_collector = MetricsCollector(session_id=req_id, query=str(user_messages[-1].get("content", "") if user_messages else ""))
     metrics_callback = ResearchMetricsCallback(metrics_collector)
+    callbacks = [metrics_callback]
+    if langfuse_handler is not None:
+        callbacks.append(langfuse_handler)
     config = {
         "configurable": {"thread_id": req_id},
-        "callbacks": [metrics_callback],
+        "callbacks": callbacks,
     }
     _deep_request_configs[req_id] = config
     last_progress_idx = 0
@@ -1156,6 +1172,7 @@ async def run_deep_research(
 
     finally:
         _deep_request_configs.pop(req_id, None)
+        langfuse_config.flush()
         tracker.finish(req_id)
 
 

@@ -90,7 +90,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Annotated, Any, AsyncGenerator, Optional, TypedDict
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 # Sentinel used to signal the SSE output queue that the pipeline is done.
 _STREAM_DONE = object()
@@ -103,6 +103,16 @@ from langgraph.graph import END, START, StateGraph
 import knowledge_client
 import social_media_scrapers
 import veritas_inquisitor
+from research_metrics import (
+    MetricsCollector,
+    ResearchMetricsCallback,
+    SubagentMetrics,
+    list_available_reports,
+    load_metrics,
+    save_metrics,
+)
+import research_report
+import b2_publisher
 
 from shared import (
     ConcurrencyLimiter,
@@ -167,6 +177,17 @@ try:
 except ImportError:
     _SELENIUM_AVAILABLE = False
 
+# Veritas integration: run the full 5-agent fact-checking reactor
+# on research conditions before synthesis.
+VERITAS_VERIFY_ENABLED = os.getenv("VERITAS_VERIFY_ENABLED", "true").lower() in ("1", "true", "yes")
+VERITAS_MIN_CONDITIONS = env_int("VERITAS_MIN_CONDITIONS", 3, minimum=1)
+VERITAS_HALLUCINATION_THRESHOLD = float(os.getenv("VERITAS_HALLUCINATION_THRESHOLD", "0.3"))
+
+# Commercial search APIs — gated by Mistral moderation to avoid sending
+# immoral/dangerous queries to censored commercial services.
+COMMERCIAL_SEARCH_ENABLED = os.getenv("COMMERCIAL_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes")
+BRIGHT_DATA_SERP_ZONE = os.getenv("BRIGHT_DATA_SERP_ZONE", "serp")
+MODERATION_MODEL = os.getenv("MODERATION_MODEL", "mistral-moderation-latest")
 log.info(
     f"Config: synthesis_model={UPSTREAM_MODEL}, subagent_model={SUBAGENT_MODEL}, "
     f"upstream={UPSTREAM_BASE}, searxng={SEARXNG_URL}, port={LISTEN_PORT}, "
@@ -185,6 +206,9 @@ limiter = ConcurrencyLimiter(MAX_CONCURRENT)
 # Per-request live findings collectors, keyed by req_id.
 # Created when research starts, cleaned up when research ends.
 _live_collectors: dict[str, "LiveFindingsCollector"] = {}
+
+# Per-request metrics collectors, keyed by req_id.
+_metrics_collectors: dict[str, MetricsCollector] = {}
 
 
 # ============================================================================
@@ -1091,6 +1115,31 @@ NATIVE_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "news_search",
+            "description": (
+                "Search for recent news articles using news-specific search engines "
+                "(Google News, Bing News, etc.). Use this for any query about current "
+                "events, recent developments, breaking news, market movements, or "
+                "anything that happened within the last days/weeks/months. Supports "
+                "time_range filtering."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The news search query"},
+                    "time_range": {
+                        "type": "string",
+                        "enum": ["day", "week", "month", "year"],
+                        "description": "Filter results to this time range (default: week)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -1098,41 +1147,301 @@ NATIVE_TOOLS = [
 # Tool Execution
 # ============================================================================
 
-async def tool_searxng_search(query: str) -> str:
-    """Execute a SearXNG search and return formatted results."""
+# ============================================================================
+# Mistral Moderation Gate
+# ============================================================================
+
+# Categories that indicate content too risky for commercial APIs.
+_MODERATION_BLOCK_CATEGORIES = frozenset({
+    "sexual",
+    "hate_and_discrimination",
+    "violence_and_threats",
+    "dangerous_and_criminal_content",
+    "selfharm",
+})
+
+
+async def moderate_query(query: str) -> tuple[bool, dict]:
+    """Check a query with Mistral moderation before sending to commercial APIs.
+
+    Returns:
+        (is_safe, details)  —  is_safe=True means commercial APIs can be used.
+        details contains the raw category scores for logging.
+    """
+    if not UPSTREAM_KEY:
+        return False, {"error": "no API key"}
+
     try:
         client = http_client()
-        resp = await client.get(
-            f"{SEARXNG_URL}/search",
-            params={"q": query, "format": "json", "categories": "general"},
-            timeout=20.0,
+        resp = await client.post(
+            f"{UPSTREAM_BASE.rstrip('/').rsplit('/v1', 1)[0]}/v1/moderations",
+            headers={
+                "Authorization": f"Bearer {UPSTREAM_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={"model": MODERATION_MODEL, "input": [query]},
+            timeout=10.0,
         )
         if resp.status_code != 200:
-            return f"Search error: HTTP {resp.status_code}"
+            log.warning(f"Moderation API returned {resp.status_code}")
+            return False, {"error": f"HTTP {resp.status_code}"}
 
         data = resp.json()
-        results = data.get("results", [])[:10]
-
+        results = data.get("results", [])
         if not results:
-            return "No results found."
+            return False, {"error": "empty results"}
 
-        formatted = []
-        for i, r in enumerate(results, 1):
-            title = r.get("title", "No title")
-            url = r.get("url", "")
-            snippet = r.get("content", "")[:300]
-            trust = trust_score_url(url)
-            formatted.append(
-                f"{i}. **{title}** [trust: {trust:.1f}]\n"
-                f"   URL: {url}\n   {snippet}"
+        categories = results[0].get("categories", {})
+        flagged_cats = [
+            cat for cat, flagged in categories.items()
+            if flagged and cat in _MODERATION_BLOCK_CATEGORIES
+        ]
+
+        if flagged_cats:
+            log.info(
+                f"Moderation blocked commercial search: query='{query[:60]}' "
+                f"flagged={flagged_cats}"
             )
+            return False, {"flagged": flagged_cats}
 
-        return "\n\n".join(formatted)
+        return True, {"categories": categories}
 
+    except Exception as e:
+        log.warning(f"Moderation check failed: {e}")
+        # Fail closed — don't use commercial APIs if we can't moderate.
+        return False, {"error": str(e)}
+
+
+# ============================================================================
+# Commercial SERP APIs
+# ============================================================================
+
+
+async def _search_bright_data_serp(query: str) -> list[dict]:
+    """Search via Bright Data SERP API.  Returns list of {title, url, snippet}."""
+    if not BRIGHT_DATA_API_KEY:
+        return []
+    try:
+        client = http_client()
+        search_url = f"https://www.google.com/search?q={quote_plus(query)}&hl=en&gl=us"
+        resp = await client.post(
+            "https://api.brightdata.com/request",
+            headers={
+                "Authorization": f"Bearer {BRIGHT_DATA_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "zone": BRIGHT_DATA_SERP_ZONE,
+                "url": search_url,
+                "format": "json",
+            },
+            timeout=30.0,
+        )
+        if resp.status_code != 200:
+            log.warning(f"Bright Data SERP: HTTP {resp.status_code}")
+            return []
+
+        data = resp.json()
+        # Bright Data SERP returns organic results under "organic" key.
+        organic = data.get("organic", [])
+        results = []
+        for item in organic[:10]:
+            results.append({
+                "title": item.get("title", ""),
+                "url": item.get("link", item.get("url", "")),
+                "snippet": item.get("description", item.get("snippet", ""))[:300],
+                "source": "bright_data",
+            })
+        return results
+
+    except Exception as e:
+        log.warning(f"Bright Data SERP error: {e}")
+        return []
+
+
+async def _search_oxylabs_serp(query: str) -> list[dict]:
+    """Search via Oxylabs Web Scraper SERP API.  Returns list of {title, url, snippet}."""
+    if not OXYLABS_USERNAME or not OXYLABS_PASSWORD:
+        return []
+    try:
+        client = http_client()
+        resp = await client.post(
+            "https://realtime.oxylabs.io/v1/queries",
+            auth=(OXYLABS_USERNAME, OXYLABS_PASSWORD),
+            json={
+                "source": "google_search",
+                "query": query,
+                "parse": True,
+            },
+            timeout=30.0,
+        )
+        if resp.status_code != 200:
+            log.warning(f"Oxylabs SERP: HTTP {resp.status_code}")
+            return []
+
+        data = resp.json()
+        # Oxylabs nests results under results[0].content.results.organic
+        oxy_results = data.get("results", [])
+        if not oxy_results:
+            return []
+
+        content = oxy_results[0].get("content", {})
+        organic = content.get("results", {}).get("organic", [])
+        results = []
+        for item in organic[:10]:
+            results.append({
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "snippet": item.get("desc", item.get("description", ""))[:300],
+                "source": "oxylabs",
+            })
+        return results
+
+    except Exception as e:
+        log.warning(f"Oxylabs SERP error: {e}")
+        return []
+
+
+async def _commercial_search(query: str) -> list[dict]:
+    """Try Bright Data SERP first, fall back to Oxylabs."""
+    results = await _search_bright_data_serp(query)
+    if results:
+        return results
+    return await _search_oxylabs_serp(query)
+
+
+# ============================================================================
+# Tool Implementations
+# ============================================================================
+
+
+def _format_search_results(results: list[dict], source_label: str = "") -> str:
+    """Format search results into a readable string.  Returns empty string on empty input."""
+    if not results:
+        return ""
+
+    formatted = []
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "No title")
+        url = r.get("url", "")
+        snippet = r.get("content", r.get("snippet", ""))[:300]
+        trust = trust_score_url(url)
+        tag = f" ({source_label})" if source_label else ""
+        formatted.append(
+            f"{i}. **{title}** [trust: {trust:.1f}]{tag}\n"
+            f"   URL: {url}\n   {snippet}"
+        )
+
+    return "\n\n".join(formatted)
+
+
+async def _searxng_query(
+    query: str,
+    categories: str = "general",
+    time_range: str = "",
+) -> list[dict]:
+    """Low-level SearXNG query.  Returns raw result dicts.
+
+    Raises on HTTP errors and timeouts so callers can provide
+    descriptive error messages to the subagent.
+    """
+    client = http_client()
+    params: dict[str, str] = {
+        "q": query,
+        "format": "json",
+        "categories": categories,
+    }
+    if time_range:
+        params["time_range"] = time_range
+
+    resp = await client.get(
+        f"{SEARXNG_URL}/search",
+        params=params,
+        timeout=20.0,
+    )
+    if resp.status_code != 200:
+        log.warning(f"SearXNG returned HTTP {resp.status_code} for categories={categories}")
+        raise RuntimeError(f"SearXNG HTTP {resp.status_code}")
+
+    data = resp.json()
+    return data.get("results", [])[:10]
+
+
+# News-intent keywords: if a search query contains any of these, it likely
+# wants recent news rather than evergreen web pages.
+_NEWS_INTENT_KEYWORDS = re.compile(
+    r"\b(news|latest|today|yesterday|this week|this month|breaking|recent|update|announced|announces"
+    r"|just released|market|stock market|stocks today|crypto today|bitcoin today|headlines"
+    r"|march 2026|april 2026|2026)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_news_intent(query: str) -> bool:
+    """Detect whether a search query is looking for recent news."""
+    return bool(_NEWS_INTENT_KEYWORDS.search(query))
+
+
+async def tool_searxng_search(query: str) -> str:
+    """Execute a SearXNG search and return formatted results.
+
+    If the query has news-intent (mentions dates, 'news', 'today', etc.),
+    automatically queries both the general AND news categories and merges
+    results.
+    """
+    try:
+        general_results = await _searxng_query(query, categories="general")
     except httpx.TimeoutException:
         return "Search error: request timed out after 20s"
     except Exception as e:
         return f"Search error: {str(e)}"
+
+    # Auto-detect news intent and merge news-category results.
+    # Wrapped separately so a news-query failure doesn't discard general results.
+    if _has_news_intent(query):
+        try:
+            news_results = await _searxng_query(query, categories="news", time_range="week")
+            seen_urls = {r.get("url", "") for r in general_results}
+            for r in news_results:
+                if r.get("url", "") not in seen_urls:
+                    general_results.append(r)
+                    seen_urls.add(r.get("url", ""))
+        except Exception:
+            log.warning("News-category query failed; returning general results only")
+
+    return _format_search_results(general_results) or "No results found."
+
+
+async def tool_news_search(query: str, time_range: str = "week") -> str:
+    """Search for recent news using SearXNG's news category.
+
+    Always queries news-specific search engines (Google News, Bing News, etc.)
+    with an explicit time_range filter.
+    """
+    valid_ranges = {"day", "week", "month", "year"}
+    if time_range not in valid_ranges:
+        time_range = "week"
+
+    try:
+        news_results = await _searxng_query(query, categories="news", time_range=time_range)
+    except httpx.TimeoutException:
+        return "News search error: request timed out after 20s"
+    except Exception as e:
+        return f"News search error: {str(e)}"
+
+    # Also query general as fallback — some news sites are indexed there.
+    # Wrapped separately so a general-query failure doesn't discard news results.
+    try:
+        general_results = await _searxng_query(query, categories="general", time_range=time_range)
+        seen_urls = {r.get("url", "") for r in news_results}
+        for r in general_results:
+            if r.get("url", "") not in seen_urls:
+                news_results.append(r)
+                seen_urls.add(r.get("url", ""))
+    except Exception:
+        log.warning("General-category fallback failed; returning news results only")
+
+    return _format_search_results(news_results, source_label="news") or "No recent news found."
 
 
 async def tool_fetch_webpage(url: str, extract_info: str = "") -> str:
@@ -2068,10 +2377,74 @@ async def tool_wikidata_query(entity: str) -> str:
         return f"Wikidata query error: {str(e)}"
 
 
+async def tool_web_search(query: str) -> str:
+    """Unified web search: SearXNG + commercial APIs (if moderation passes).
+
+    Always runs SearXNG.  If COMMERCIAL_SEARCH_ENABLED and the query passes
+    Mistral moderation, also queries Bright Data / Oxylabs SERP and merges
+    results (deduped by URL).
+    """
+    # Always run SearXNG as baseline.
+    searxng_result = await tool_searxng_search(query)
+
+    if not COMMERCIAL_SEARCH_ENABLED:
+        return searxng_result
+
+    # Gate commercial APIs behind Mistral moderation.
+    is_safe, mod_details = await moderate_query(query)
+    if not is_safe:
+        flagged = mod_details.get("flagged", [])
+        if flagged:
+            log.info(
+                f"Commercial search skipped (moderation): {flagged}"
+            )
+        return searxng_result
+
+    # Fetch commercial results.
+    commercial_results = await _commercial_search(query)
+    if not commercial_results:
+        return searxng_result
+
+    # Merge: extract URLs already in SearXNG results to dedup.
+    seen_urls: set[str] = set()
+    for line in searxng_result.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("URL: "):
+            seen_urls.add(stripped[5:].strip())
+
+    extra_formatted = []
+    next_idx = searxng_result.count("**") // 2 + 1  # rough count of existing results
+    for r in commercial_results:
+        url = r.get("url", "")
+        if url in seen_urls or not url:
+            continue
+        seen_urls.add(url)
+        title = r.get("title", "No title")
+        snippet = r.get("snippet", "")[:300]
+        trust = trust_score_url(url)
+        source_tag = r.get("source", "commercial")
+        extra_formatted.append(
+            f"{next_idx}. **{title}** [trust: {trust:.1f}] ({source_tag})\n"
+            f"   URL: {url}\n   {snippet}"
+        )
+        next_idx += 1
+
+    if extra_formatted:
+        if searxng_result in ("No results found.", ""):
+            return "\n\n".join(extra_formatted)
+        return searxng_result + "\n\n" + "\n\n".join(extra_formatted)
+    return searxng_result
+
+
 async def execute_tool(tool_name: str, arguments: dict) -> str:
     """Route and execute a tool call."""
     if tool_name == "searxng_search":
-        return await tool_searxng_search(arguments.get("query", ""))
+        return await tool_web_search(arguments.get("query", ""))
+    elif tool_name == "news_search":
+        return await tool_news_search(
+            arguments.get("query", ""),
+            arguments.get("time_range", "week"),
+        )
     elif tool_name == "fetch_webpage":
         # Use enhanced_web_fetch for the full fallback chain
         return await enhanced_web_fetch(
@@ -2507,6 +2880,147 @@ async def verify_conditions(
         return conditions
 
 
+def _fuzzy_match_claim_to_condition(
+    claim_text: str,
+    conditions: list[AtomicCondition],
+) -> int:
+    """Find the best-matching condition index for a Veritas claim.
+
+    Uses token overlap ratio.  Returns -1 if no condition scores above 0.3.
+    """
+    claim_tokens = set(claim_text.lower().split())
+    if not claim_tokens:
+        return -1
+
+    best_idx = -1
+    best_score = 0.3  # minimum threshold
+    for i, cond in enumerate(conditions):
+        cond_tokens = set(cond.fact.lower().split())
+        if not cond_tokens:
+            continue
+        overlap = len(claim_tokens & cond_tokens)
+        score = overlap / max(len(claim_tokens), len(cond_tokens))
+        if score > best_score:
+            best_score = score
+            best_idx = i
+    return best_idx
+
+
+async def verify_conditions_with_veritas(
+    conditions: list[AtomicCondition],
+    user_query: str,
+    req_id: str,
+) -> tuple[list[AtomicCondition], dict]:
+    """Run the full Veritas Inquisitor 5-agent reactor on research conditions.
+
+    The Veritas system decomposes the conditions into claims, gathers external
+    evidence via web search for each claim, runs a multi-round debate, and
+    produces a final verdict classifying each claim as:
+      - verified
+      - plausible-unverified
+      - hallucinated
+      - overconfident
+
+    Returns:
+        (filtered_conditions, veritas_report)
+        - filtered_conditions: conditions with adjusted confidence; hallucinated
+          ones are removed entirely.
+        - veritas_report: the raw Veritas report dict for logging/metrics.
+    """
+    if len(conditions) < VERITAS_MIN_CONDITIONS:
+        return conditions, {}
+
+    # Format conditions as a text block for Veritas to verify.
+    target_text = "\n".join(
+        f"{i+1}. {c.fact} [source: {c.source_url or 'no source'}]"
+        for i, c in enumerate(conditions)
+    )
+
+    log.info(
+        f"[{req_id}] Running Veritas verification on {len(conditions)} conditions"
+    )
+
+    try:
+        result = await veritas_inquisitor.verify_output(
+            target_text=target_text,
+            original_query=user_query,
+            req_id=f"{req_id}-veritas",
+        )
+    except Exception as e:
+        log.error(f"[{req_id}] Veritas reactor error: {e}")
+        return conditions, {"error": str(e)}
+
+    report = result.get("report", {})
+    claims = report.get("claims", [])
+
+    if not claims:
+        log.warning(f"[{req_id}] Veritas produced no claim verdicts")
+        return conditions, report
+
+    # Map Veritas verdicts back to conditions.
+    # Veritas decomposes text into its own claims, so we fuzzy-match each
+    # verdict back to the original AtomicCondition by text similarity.
+    hallucinated_indices: set[int] = set()
+    confidence_overrides: dict[int, float] = {}
+
+    for claim in claims:
+        claim_text = claim.get("claim_text", "")
+        status = claim.get("status", "")
+        claim_confidence = claim.get("confidence", 0.5)
+        try:
+            claim_confidence = float(claim_confidence)
+        except (TypeError, ValueError):
+            claim_confidence = 0.5
+
+        idx = _fuzzy_match_claim_to_condition(claim_text, conditions)
+        if idx < 0:
+            continue
+
+        if status == "hallucinated":
+            hallucinated_indices.add(idx)
+            log.info(
+                f"[{req_id}] Veritas: HALLUCINATED — "
+                f"{conditions[idx].fact[:80]}"
+            )
+        elif status == "overconfident":
+            # Cap confidence at what Veritas measured.
+            confidence_overrides[idx] = min(
+                conditions[idx].confidence,
+                max(claim_confidence, 0.2),
+            )
+        elif status == "verified":
+            # Boost if Veritas confirms it.
+            confidence_overrides[idx] = max(
+                conditions[idx].confidence,
+                min(claim_confidence, 0.95),
+            )
+        elif status == "plausible-unverified":
+            # Slight downgrade — the claim couldn't be confirmed.
+            confidence_overrides[idx] = min(
+                conditions[idx].confidence,
+                max(claim_confidence, 0.3),
+            )
+
+    # Apply confidence overrides.
+    for idx, conf in confidence_overrides.items():
+        if idx not in hallucinated_indices:
+            conditions[idx].confidence = conf
+
+    # Remove hallucinated conditions entirely.
+    filtered = [
+        c for i, c in enumerate(conditions)
+        if i not in hallucinated_indices
+    ]
+
+    log.info(
+        f"[{req_id}] Veritas results: {len(hallucinated_indices)} hallucinated "
+        f"(removed), {len(confidence_overrides)} confidence-adjusted, "
+        f"{len(filtered)}/{len(conditions)} conditions retained"
+    )
+
+    return filtered, report
+
+
 # ============================================================================
 # Planning Agent
 # ============================================================================
@@ -2695,6 +3209,13 @@ Initial search query: {angle_query}
 5. Be thorough but focused on your assigned angle.
 6. Use arxiv_search for academic papers, wikidata_query for structured facts.
 7. Use wayback_fetch if a link is dead or unavailable.
+8. Use news_search (not searxng_search) for anything about current events, recent news, market movements, or time-sensitive topics.
+
+**CRITICAL RULES:**
+- NEVER fabricate or invent source names. Only cite sources you actually fetched via tools.
+- NEVER claim you checked Bloomberg Terminal, Reuters, or any specific service unless a tool actually returned results from that service.
+- If tools return no useful results, say so honestly — do NOT invent plausible-sounding conclusions.
+- If search results are empty, try different queries or tools before concluding "no information found."
 
 {serendipity_instruction}
 
@@ -3567,12 +4088,18 @@ class PersistentResearchState(TypedDict):
     # Progress
     progress_log: Annotated[list[str], _pdr_append_log]
     phase: str  # current phase name or "done"
+    # Report URLs (populated at end of pipeline)
+    report_url: str
+    metrics_url: str
 
 
 async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
     """Phase 1: Retrieve prior knowledge from Neo4j."""
     user_query = state["user_query"]
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("retrieve")
     progress: list[str] = ["**[Phase 1: Retrieving Prior Knowledge]**\n"]
 
     query_entities = [w for w in user_query.split() if len(w) > 3][:5]
@@ -3598,6 +4125,10 @@ async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
     else:
         progress.append("No graph neighbors found.\n")
 
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.end_node("retrieve")
+
     return {
         "prior_conditions": prior_conditions,
         "graph_neighbors": graph_neighbors,
@@ -3609,6 +4140,9 @@ async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
 async def pdr_node_plan(state: PersistentResearchState) -> dict:
     """Phase 2: Plan research angles."""
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("plan")
     progress: list[str] = [
         f"\n**[Phase 2: Planning Research Angles]**\n",
         f"Using {SUBAGENT_MODEL} for planning...\n",
@@ -3624,12 +4158,19 @@ async def pdr_node_plan(state: PersistentResearchState) -> dict:
         bridge_tag = " [BRIDGE]" if angle.get("is_bridge") else ""
         progress.append(f"  {i}. **{angle['title']}**{bridge_tag}: {angle.get('description', '')[:80]}\n")
 
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.end_node("plan")
+
     return {"angles": angles, "progress_log": progress, "phase": "subagents"}
 
 
 async def pdr_node_subagents(state: PersistentResearchState) -> dict:
     """Phase 3: Parallel subagent research."""
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("subagents")
     angles = state["angles"]
     n_agents = len(angles)
     progress: list[str] = [
@@ -3716,6 +4257,22 @@ async def pdr_node_subagents(state: PersistentResearchState) -> dict:
         progress.append(f", {total_children} recursive sub-subagents spawned")
     progress.append("\n")
 
+    # Record subagent metrics
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        for i, sr in enumerate(subagent_results):
+            mc.add_subagent_metrics(SubagentMetrics(
+                index=i,
+                angle=sr.angle,
+                turns_used=sr.turns_used,
+                tool_calls_made=sr.tool_calls_made,
+                conditions_found=len(sr.conditions),
+                novelty_history=sr.novelty_history,
+                children_spawned=sr.spawned_children,
+                error=sr.error,
+            ))
+        mc.end_node("subagents")
+
     return {
         "subagent_results": subagent_results,
         "all_conditions": all_conditions,
@@ -3730,6 +4287,9 @@ async def pdr_node_subagents(state: PersistentResearchState) -> dict:
 async def pdr_node_entities(state: PersistentResearchState) -> dict:
     """Phase 4: Entity extraction + knowledge graph update."""
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("entities")
     all_conditions = state["all_conditions"]
     progress: list[str] = []
 
@@ -3749,27 +4309,83 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
         else:
             progress.append("No entities extracted.\n")
 
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.end_node("entities")
+
     return {"progress_log": progress, "phase": "verify"}
 
 
 async def pdr_node_verify(state: PersistentResearchState) -> dict:
-    """Phase 5: Citation verification."""
+    """Phase 5: Citation verification.
+
+    Two-stage verification:
+      1. Self-evaluation (fast, LLM-only): cross-checks conditions against each
+         other for contradictions and source quality.
+      2. Veritas Inquisitor (thorough, web-search-backed): runs the full 5-agent
+         reactor to decompose claims, gather external evidence, debate, and
+         produce verdicts.  Hallucinated conditions are removed.
+    """
     req_id = state["req_id"]
+    user_query = state["user_query"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("verify")
     all_conditions = list(state["all_conditions"])
     progress: list[str] = []
+    pre_count = len(all_conditions)
 
     if all_conditions and len(all_conditions) >= 2:
-        progress.append("\n**[Phase 5: Citation Verification]**\n")
-        progress.append("Verifying claims and detecting contradictions...\n")
+        # Stage 1: fast self-evaluation
+        progress.append("\n**[Phase 5a: Citation Cross-Check]**\n")
+        progress.append("Cross-checking claims for contradictions...\n")
 
         all_conditions = await verify_conditions(all_conditions, req_id)
 
         high_conf = sum(1 for c in all_conditions if c.confidence >= 0.7)
         low_conf = sum(1 for c in all_conditions if c.confidence < 0.4)
         progress.append(
-            f"Verification complete: {high_conf} high-confidence, "
+            f"Cross-check complete: {high_conf} high-confidence, "
             f"{low_conf} low-confidence conditions.\n"
         )
+
+    # Stage 2: Veritas Inquisitor — external evidence-based verification
+    veritas_report: dict = {}
+    if VERITAS_VERIFY_ENABLED and len(all_conditions) >= VERITAS_MIN_CONDITIONS:
+        progress.append("\n**[Phase 5b: Veritas Fact-Check]**\n")
+        progress.append(
+            f"Running Veritas Inquisitor on {len(all_conditions)} conditions "
+            f"(5-agent swarm with web search)...\n"
+        )
+
+        all_conditions, veritas_report = await verify_conditions_with_veritas(
+            all_conditions, user_query, req_id,
+        )
+
+        removed = pre_count - len(all_conditions)
+        overall_score = veritas_report.get("overall_score", -1)
+        halluc_prob = veritas_report.get("overall_hallucination_probability", -1)
+
+        summary_parts = []
+        if removed > 0:
+            summary_parts.append(f"{removed} hallucinated claim{'s' if removed != 1 else ''} removed")
+        if overall_score >= 0:
+            summary_parts.append(f"truthfulness {overall_score:.0%}")
+        if halluc_prob >= 0:
+            summary_parts.append(f"hallucination probability {halluc_prob:.0%}")
+
+        if summary_parts:
+            progress.append(f"Veritas: {', '.join(summary_parts)}.\n")
+        else:
+            progress.append("Veritas verification complete.\n")
+
+        progress.append(
+            f"{len(all_conditions)} conditions retained out of {pre_count}.\n"
+        )
+
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.end_node("verify")
 
     return {"all_conditions": all_conditions, "progress_log": progress, "phase": "reflect"}
 
@@ -3777,6 +4393,9 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
 async def pdr_node_reflect(state: PersistentResearchState) -> dict:
     """Phase 6: AoT Reflection."""
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("reflect")
     all_conditions = list(state["all_conditions"])
     user_query = state["user_query"]
     progress: list[str] = []
@@ -3808,6 +4427,11 @@ async def pdr_node_reflect(state: PersistentResearchState) -> dict:
                         confidence=0.4,
                     ))
 
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.set_reflection(reflection)
+        mc.end_node("reflect")
+
     return {
         "all_conditions": all_conditions,
         "reflection": reflection,
@@ -3819,6 +4443,9 @@ async def pdr_node_reflect(state: PersistentResearchState) -> dict:
 async def pdr_node_persist(state: PersistentResearchState) -> dict:
     """Phase 7: Persist findings to Neo4j + JSONL."""
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("persist")
     user_query = state["user_query"]
     all_conditions = state["all_conditions"]
     progress: list[str] = []
@@ -3829,12 +4456,19 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
         stored = await _store_conditions_neo4j(req_id, user_query, all_conditions)
         progress.append(f"Stored {stored} conditions to persistent knowledge base.\n")
 
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.end_node("persist")
+
     return {"progress_log": progress, "phase": "synthesize"}
 
 
 async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
     """Phase 8: Draft-Synthesis-Revision loop."""
     req_id = state["req_id"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("synthesize")
     progress: list[str] = [
         f"\n**[Phase 8: Draft-Synthesis-Revision]** (model: {UPSTREAM_MODEL})\n",
         "Phase 8a: Generating draft synthesis...\n",
@@ -3860,7 +4494,79 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         progress.append(f" + {total_children} recursive sub-subagents")
     progress.append(")\n")
 
-    return {"final_answer": final_answer, "progress_log": progress, "phase": "done"}
+    # Generate report + metrics
+    report_url = ""
+    metrics_url = ""
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.end_node("synthesize")
+
+        # Feed conditions into metrics collector
+        condition_dicts = [
+            {
+                "fact": c.fact,
+                "source_url": c.source_url,
+                "confidence": c.confidence,
+                "angle": c.angle,
+                "trust_score": c.trust_score,
+                "is_serendipitous": c.is_serendipitous,
+                "serendipity_score_val": c.serendipity_score_val,
+            }
+            for c in all_conditions
+        ]
+        mc.set_conditions(condition_dicts)
+
+        # Try to get cost data from social media scrapers
+        try:
+            from social_media_scrapers import cost_tracker
+            if cost_tracker:
+                mc.set_cost_data({
+                    "session_total": cost_tracker.session_total(req_id),
+                    "monthly_total": cost_tracker.monthly_total(),
+                })
+        except Exception:
+            pass
+
+        # Finalise metrics
+        metrics_obj = mc.finalise()
+        metrics_dict = metrics_obj.to_dict()
+        save_metrics(metrics_obj)
+
+        # Generate HTML report
+        try:
+            html_report = research_report.generate_report(
+                metrics=metrics_dict,
+                conditions=condition_dicts,
+                final_answer=final_answer,
+                progress_log=list(state.get("progress_log", [])),
+            )
+            research_report.save_report(html_report, req_id)
+
+            # Publish to B2 if configured
+            if b2_publisher.is_configured():
+                try:
+                    report_url = await asyncio.to_thread(b2_publisher.publish_report, req_id, html_report)
+                    metrics_json = json.dumps(metrics_dict, indent=2, default=str)
+                    metrics_url = await asyncio.to_thread(b2_publisher.publish_metrics, req_id, metrics_json)
+                    log.info(f"[{req_id}] Published report to B2: {report_url}")
+                except Exception as e:
+                    log.error(f"[{req_id}] Failed to publish to B2: {e}")
+        except Exception as e:
+            log.error(f"[{req_id}] Failed to generate report: {e}")
+
+    # Append report link to progress if available
+    if report_url:
+        progress.append(f"\n**Report published:** {report_url}\n")
+    if metrics_url:
+        progress.append(f"**Metrics published:** {metrics_url}\n")
+
+    return {
+        "final_answer": final_answer,
+        "progress_log": progress,
+        "phase": "done",
+        "report_url": report_url,
+        "metrics_url": metrics_url,
+    }
 
 
 def build_persistent_research_graph() -> Any:
@@ -4010,6 +4716,8 @@ async def run_persistent_research(
         "final_answer": "",
         "progress_log": [],
         "phase": "retrieve",
+        "report_url": "",
+        "metrics_url": "",
     }
 
     # Create the shared output queue and live findings collector
@@ -4017,9 +4725,17 @@ async def run_persistent_research(
     collector = LiveFindingsCollector()
     _live_collectors[req_id] = collector
 
+    # Create metrics collector for this session
+    metrics_collector = MetricsCollector(session_id=req_id, query=user_query)
+    _metrics_collectors[req_id] = metrics_collector
+    metrics_callback = ResearchMetricsCallback(metrics_collector)
+
     yield chunk("<think>\n")
 
-    config = {"configurable": {"thread_id": req_id}}
+    config = {
+        "configurable": {"thread_id": req_id},
+        "callbacks": [metrics_callback],
+    }
 
     # Start the pipeline producer as a background task
     pipeline_task = asyncio.create_task(
@@ -4067,8 +4783,9 @@ async def run_persistent_research(
             except asyncio.CancelledError:
                 pass
 
-        # Clean up the live collector
+        # Clean up the live collector and metrics collector
         _live_collectors.pop(req_id, None)
+        _metrics_collectors.pop(req_id, None)
         tracker.finish(req_id)
 
 
@@ -4130,6 +4847,66 @@ async def knowledge_stats():
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/research/reports")
+async def get_research_reports():
+    """List all available research reports with metadata."""
+    try:
+        reports = list_available_reports()
+        return JSONResponse({"reports": reports, "count": len(reports)})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+_SAFE_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+@app.get("/research/report/{session_id}")
+async def get_research_report(session_id: str):
+    """Serve the HTML report for a research session.
+
+    First checks B2, then falls back to local file.
+    """
+    if not _SAFE_SESSION_ID_RE.match(session_id):
+        return JSONResponse({"error": "Invalid session_id"}, status_code=400)
+
+    from fastapi.responses import HTMLResponse
+
+    # Try local file first
+    report_path = os.path.join(
+        os.getenv("RESEARCH_REPORTS_DIR", "/opt/persistent_research_logs/reports"),
+        f"{session_id}.html",
+    )
+    try:
+        with open(report_path, "r", encoding="utf-8") as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content)
+    except FileNotFoundError:
+        return JSONResponse(
+            {"error": f"Report not found for session {session_id}"},
+            status_code=404,
+        )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/research/metrics/{session_id}")
+async def get_research_metrics(session_id: str):
+    """Serve the metrics JSON for a research session.
+
+    Designed for LLM consumption — structured data for performance analysis.
+    """
+    if not _SAFE_SESSION_ID_RE.match(session_id):
+        return JSONResponse({"error": "Invalid session_id"}, status_code=400)
+
+    metrics = load_metrics(session_id)
+    if metrics is None:
+        return JSONResponse(
+            {"error": f"Metrics not found for session {session_id}"},
+            status_code=404,
+        )
+    return JSONResponse(metrics)
 
 
 @app.post("/v1/verify")

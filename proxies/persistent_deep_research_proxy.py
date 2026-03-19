@@ -98,6 +98,9 @@ _STREAM_DONE = object()
 import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool as langchain_tool
+from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
 import knowledge_client
@@ -139,6 +142,39 @@ UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "mistral-large-latest")
 SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "mistral-small-latest")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
 LISTEN_PORT = env_int("PERSISTENT_RESEARCH_PORT", 9300, minimum=1)
+
+# --- LangChain Model Factories ---
+# Use ChatOpenAI pointing at the Mistral OpenAI-compatible endpoint.
+# This makes every LLM call fire LangChain callbacks automatically,
+# enabling metrics collection, LangSmith tracing, and ecosystem tools.
+
+
+def _get_llm(
+    model: str = "",
+    *,
+    max_tokens: int = 4096,
+    temperature: float = 0.3,
+    timeout: float = 300.0,
+) -> ChatOpenAI:
+    """Create a LangChain ChatOpenAI instance pointing at the Mistral API."""
+    return ChatOpenAI(
+        model=model or UPSTREAM_MODEL,
+        api_key=UPSTREAM_KEY,
+        base_url=UPSTREAM_BASE,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        timeout=timeout,
+    )
+
+
+def _get_synthesis_llm(**kwargs: Any) -> ChatOpenAI:
+    """LLM for synthesis / revision (upstream large model)."""
+    return _get_llm(model=UPSTREAM_MODEL, max_tokens=8192, temperature=0.3, **kwargs)
+
+
+def _get_subagent_llm(**kwargs: Any) -> ChatOpenAI:
+    """LLM for subagents, heartbeat, relevance gate (small/fast model)."""
+    return _get_llm(model=SUBAGENT_MODEL, max_tokens=4096, temperature=0.3, **kwargs)
 MAX_SUBAGENT_TURNS = env_int("MAX_SUBAGENT_TURNS", 15, minimum=1)
 MAX_CONCURRENT = env_int("MAX_CONCURRENT_PERSISTENT", 2, minimum=1)
 RESEARCH_NAMESPACE = os.getenv("RESEARCH_NAMESPACE", "research")
@@ -1174,6 +1210,22 @@ NATIVE_TOOLS = [
             },
         },
     },
+]
+
+
+# ============================================================================
+# LangChain Tool Definitions (for bind_tools + callback tracking)
+# ============================================================================
+# Convert NATIVE_TOOLS (OpenAI function-calling format) into the format
+# that ChatOpenAI.bind_tools() expects.  We also build a registry so
+# execute_tool can fire on_tool_start / on_tool_end callbacks.
+
+LANGCHAIN_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "function": t["function"],
+    }
+    for t in NATIVE_TOOLS
 ]
 
 
@@ -2487,8 +2539,8 @@ async def tool_web_search(query: str) -> str:
     return searxng_result
 
 
-async def execute_tool(tool_name: str, arguments: dict) -> str:
-    """Route and execute a tool call."""
+async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
+    """Route and execute a tool call (inner implementation)."""
     if tool_name == "searxng_search":
         return await tool_web_search(arguments.get("query", ""))
     elif tool_name == "news_search":
@@ -2567,6 +2619,50 @@ async def execute_tool(tool_name: str, arguments: dict) -> str:
         )
     else:
         return f"Unknown tool: {tool_name}"
+
+
+async def execute_tool(
+    tool_name: str,
+    arguments: dict,
+    req_id: str = "",
+) -> str:
+    """Route and execute a tool call, firing LangChain callbacks.
+
+    Wraps the inner tool execution with on_tool_start / on_tool_end
+    callbacks so that ResearchMetricsCallback tracks every tool call.
+    """
+    config = _request_configs.get(req_id, {}) if req_id else {}
+    callbacks = config.get("callbacks", [])
+    run_id = uuid.uuid4()
+    serialized = {"name": tool_name}
+    input_str = json.dumps(arguments)[:500]
+
+    # Fire on_tool_start for all registered callbacks
+    for cb in callbacks:
+        try:
+            cb.on_tool_start(serialized, input_str, run_id=run_id)
+        except Exception:
+            pass
+
+    try:
+        result = await _execute_tool_inner(tool_name, arguments)
+    except Exception as e:
+        error_str = str(e)
+        for cb in callbacks:
+            try:
+                cb.on_tool_error(e, run_id=run_id)
+            except Exception:
+                pass
+        return f"Tool error ({tool_name}): {error_str}"
+
+    # Fire on_tool_end for all registered callbacks
+    for cb in callbacks:
+        try:
+            cb.on_tool_end(result[:1000], run_id=run_id)
+        except Exception:
+            pass
+
+    return result
 
 
 async def tool_knowledge_graph_search(arguments: dict) -> str:
@@ -2681,12 +2777,13 @@ async def tool_knowledge_discover(arguments: dict) -> str:
 
 async def execute_tools_parallel(
     tool_calls_with_ids: list[tuple[str, str, dict]],
+    req_id: str = "",
 ) -> list[tuple[str, str, str, float]]:
     """Execute multiple tool calls concurrently."""
 
     async def _run_one(tc_id: str, name: str, args: dict):
         t0 = time.monotonic()
-        result = await execute_tool(name, args)
+        result = await execute_tool(name, args, req_id=req_id)
         return tc_id, name, result, time.monotonic() - t0
 
     tasks = [_run_one(tc_id, name, args) for tc_id, name, args in tool_calls_with_ids]
@@ -2702,6 +2799,42 @@ MAX_LLM_RETRIES = 3
 RETRY_BACKOFF = [5, 15, 30]
 
 
+def _dicts_to_langchain_messages(
+    messages: list[dict],
+) -> list[SystemMessage | HumanMessage | AIMessage | ToolMessage]:
+    """Convert OpenAI-format message dicts to LangChain message objects."""
+    lc_msgs: list[SystemMessage | HumanMessage | AIMessage | ToolMessage] = []
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "") or ""
+        if role == "system":
+            lc_msgs.append(SystemMessage(content=content))
+        elif role == "assistant":
+            # Preserve tool_calls if present so bind_tools round-trips work
+            tc = m.get("tool_calls")
+            if tc:
+                lc_msgs.append(AIMessage(
+                    content=content,
+                    additional_kwargs={"tool_calls": tc},
+                ))
+            else:
+                lc_msgs.append(AIMessage(content=content))
+        elif role == "tool":
+            lc_msgs.append(ToolMessage(
+                content=content,
+                tool_call_id=m.get("tool_call_id", ""),
+            ))
+        else:
+            lc_msgs.append(HumanMessage(content=content))
+    return lc_msgs
+
+
+# Per-request LangGraph callback config, keyed by req_id.
+# call_llm looks up the config for the current request so that
+# ResearchMetricsCallback fires on every LLM call automatically.
+_request_configs: dict[str, dict] = {}
+
+
 async def call_llm(
     messages: list[dict],
     req_id: str,
@@ -2711,76 +2844,85 @@ async def call_llm(
     max_tokens: int = 4096,
     temperature: float = 0.3,
 ) -> dict:
-    """Call the upstream LLM with retry logic."""
-    model = model or UPSTREAM_MODEL
-    body: dict = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "stream": False,
-    }
+    """Call the upstream LLM via LangChain ChatOpenAI (fires callbacks).
+
+    Returns the same dict format as the old raw-httpx version for
+    backward compatibility:
+        {"content": str, "tool_calls": list|None, "message": dict, "finish_reason": str}
+    or  {"error": str}
+    """
+    resolved_model = model or UPSTREAM_MODEL
+    llm = _get_llm(
+        model=resolved_model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
     if include_tools:
-        body["tools"] = NATIVE_TOOLS
-        body["tool_choice"] = "auto"
+        llm = llm.bind_tools(LANGCHAIN_TOOLS)
+
+    lc_messages = _dicts_to_langchain_messages(messages)
+
+    # Look up per-request config (contains callbacks list with
+    # ResearchMetricsCallback) so metrics fire automatically.
+    config = _request_configs.get(req_id, {})
 
     last_error: Optional[str] = None
-    client = http_client()
-
     for attempt in range(MAX_LLM_RETRIES + 1):
         try:
-            resp = await client.post(
-                f"{UPSTREAM_BASE}/chat/completions",
-                json=body,
-                headers={
-                    "Authorization": f"Bearer {UPSTREAM_KEY}",
-                    "Content-Type": "application/json",
-                },
-                timeout=httpx.Timeout(300.0, connect=30.0),
-            )
+            ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
 
-            if resp.status_code != 200:
-                error_text = resp.text[:500]
-                last_error = f"[LLM Error: HTTP {resp.status_code}] {error_text}"
+            content = ai_msg.content or ""
 
-                if resp.status_code in RETRYABLE_STATUS_CODES and attempt < MAX_LLM_RETRIES:
-                    wait = RETRY_BACKOFF[attempt]
-                    log.warning(
-                        f"[{req_id}] Retryable error {resp.status_code}, "
-                        f"waiting {wait}s (attempt {attempt + 1}/{MAX_LLM_RETRIES})"
-                    )
-                    await asyncio.sleep(wait)
-                    continue
+            # Extract tool_calls in OpenAI format for backward compat
+            tool_calls_out = None
+            if ai_msg.tool_calls:
+                tool_calls_out = [
+                    {
+                        "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc.get("args", {})),
+                        },
+                    }
+                    for tc in ai_msg.tool_calls
+                ]
 
-                return {"error": last_error}
+            # Build backward-compatible "message" dict
+            message_dict: dict[str, Any] = {"content": content}
+            if tool_calls_out:
+                message_dict["tool_calls"] = tool_calls_out
 
-            data = resp.json()
-            choices = data.get("choices", [])
-            if not choices:
-                return {"error": "[LLM Error: No choices in response]"}
-
-            message = choices[0].get("message", {})
             return {
-                "message": message,
-                "content": message.get("content", "") or "",
-                "tool_calls": message.get("tool_calls", None),
-                "finish_reason": choices[0].get("finish_reason", ""),
+                "message": message_dict,
+                "content": content,
+                "tool_calls": tool_calls_out,
+                "finish_reason": ai_msg.response_metadata.get(
+                    "finish_reason", "stop"
+                ),
             }
 
-        except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
-            last_error = f"[LLM Error: {type(e).__name__}]"
-            if attempt < MAX_LLM_RETRIES:
+        except Exception as e:
+            err_str = str(e)
+            # Detect retryable HTTP status codes from the error message
+            retryable = any(
+                f" {code}" in err_str or f"status_code: {code}" in err_str
+                for code in RETRYABLE_STATUS_CODES
+            ) or isinstance(e, (httpx.ReadTimeout, httpx.ConnectTimeout))
+
+            last_error = f"[LLM Error: {err_str[:500]}]"
+
+            if retryable and attempt < MAX_LLM_RETRIES:
                 wait = RETRY_BACKOFF[attempt]
                 log.warning(
-                    f"[{req_id}] Timeout, retrying in {wait}s "
-                    f"(attempt {attempt + 1}/{MAX_LLM_RETRIES})"
+                    f"[{req_id}] Retryable LLM error, waiting {wait}s "
+                    f"(attempt {attempt + 1}/{MAX_LLM_RETRIES}): {err_str[:200]}"
                 )
                 await asyncio.sleep(wait)
                 continue
-            return {"error": last_error}
 
-        except Exception as e:
-            return {"error": f"[LLM Error: {str(e)}]"}
+            return {"error": last_error}
 
     return {"error": last_error or "[LLM Error: Max retries exceeded]"}
 
@@ -3460,7 +3602,7 @@ async def run_subagent(
                 calls_to_run.append((tc_id, tool_name, arguments))
 
             if calls_to_run:
-                tool_results = await execute_tools_parallel(calls_to_run)
+                tool_results = await execute_tools_parallel(calls_to_run, req_id=req_id)
                 result.tool_calls_made += len(tool_results)
 
                 for tc_id, tool_name, tool_result, duration in tool_results:
@@ -5390,6 +5532,10 @@ async def run_persistent_research(
         "callbacks": [metrics_callback],
     }
 
+    # Register the config so call_llm and execute_tool can look it up
+    # by req_id and fire callbacks on every LLM/tool invocation.
+    _request_configs[req_id] = config
+
     # Start the pipeline producer as a background task
     pipeline_task = asyncio.create_task(
         _pipeline_producer(initial_state, config, output_queue, chunk, req_id)
@@ -5439,10 +5585,11 @@ async def run_persistent_research(
             except asyncio.CancelledError:
                 pass
 
-        # Clean up the live collector, curated queue, and metrics collector
+        # Clean up the live collector, curated queue, metrics collector, and config
         _live_collectors.pop(req_id, None)
         _curated_queues.pop(req_id, None)
         _metrics_collectors.pop(req_id, None)
+        _request_configs.pop(req_id, None)
         tracker.finish(req_id)
 
 

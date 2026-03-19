@@ -46,6 +46,8 @@ from typing import Annotated, Any, AsyncGenerator, Optional, TypedDict
 import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
 from shared import (
@@ -309,6 +311,45 @@ MAX_LLM_RETRIES = 3
 RETRY_BACKOFF = [5, 15, 30]
 
 
+def _get_veritas_llm(
+    model: str = "",
+    *,
+    max_tokens: int = 4096,
+    temperature: float = 0.2,
+    timeout: float = 300.0,
+) -> ChatOpenAI:
+    """Create a LangChain ChatOpenAI instance for the Veritas Inquisitor."""
+    return ChatOpenAI(
+        model=model or AGENT_MODEL,
+        api_key=UPSTREAM_KEY,
+        base_url=UPSTREAM_BASE,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        timeout=timeout,
+    )
+
+
+def _dicts_to_lc_messages(
+    messages: list[dict],
+) -> list[SystemMessage | HumanMessage | AIMessage]:
+    """Convert OpenAI-format message dicts to LangChain message objects."""
+    lc: list[SystemMessage | HumanMessage | AIMessage] = []
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "") or ""
+        if role == "system":
+            lc.append(SystemMessage(content=content))
+        elif role == "assistant":
+            lc.append(AIMessage(content=content))
+        else:
+            lc.append(HumanMessage(content=content))
+    return lc
+
+
+# Per-request LangGraph callback config, keyed by req_id.
+_veritas_request_configs: dict[str, dict] = {}
+
+
 async def call_llm(
     messages: list[dict],
     req_id: str,
@@ -317,63 +358,46 @@ async def call_llm(
     max_tokens: int = 4096,
     temperature: float = 0.2,
 ) -> dict:
-    """Call the upstream LLM with retry logic. Returns parsed response dict."""
-    model = model or AGENT_MODEL
-    body: dict = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "stream": False,
-    }
+    """Call the upstream LLM via LangChain ChatOpenAI (fires callbacks).
+
+    Returns dict with keys: content, finish_reason (or error).
+    """
+    llm = _get_veritas_llm(
+        model=model, max_tokens=max_tokens, temperature=temperature,
+    )
+    lc_messages = _dicts_to_lc_messages(messages)
+    config = _veritas_request_configs.get(req_id, {})
 
     last_error: Optional[str] = None
-    client = http_client()
-
     for attempt in range(MAX_LLM_RETRIES + 1):
         try:
-            resp = await client.post(
-                f"{UPSTREAM_BASE}/chat/completions",
-                json=body,
-                headers={
-                    "Authorization": f"Bearer {UPSTREAM_KEY}",
-                    "Content-Type": "application/json",
-                },
-                timeout=httpx.Timeout(300.0, connect=30.0),
-            )
-
-            if resp.status_code != 200:
-                error_text = resp.text[:500]
-                last_error = f"HTTP {resp.status_code}: {error_text}"
-                if resp.status_code in RETRYABLE_STATUS_CODES and attempt < MAX_LLM_RETRIES:
-                    wait = RETRY_BACKOFF[attempt]
-                    log.warning(f"[{req_id}] LLM retry {attempt+1}/{MAX_LLM_RETRIES} in {wait}s")
-                    await asyncio.sleep(wait)
-                    continue
-                return {"error": last_error}
-
-            data = resp.json()
-            choices = data.get("choices", [])
-            if not choices:
-                return {"error": "No choices in response"}
-
-            message = choices[0].get("message", {})
+            ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
             return {
-                "content": message.get("content", "") or "",
-                "finish_reason": choices[0].get("finish_reason", ""),
+                "content": ai_msg.content or "",
+                "finish_reason": ai_msg.response_metadata.get(
+                    "finish_reason", "stop"
+                ),
             }
 
-        except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
-            last_error = f"Timeout: {type(e).__name__}"
-            if attempt < MAX_LLM_RETRIES:
+        except Exception as e:
+            err_str = str(e)
+            retryable = any(
+                f" {code}" in err_str or f"status_code: {code}" in err_str
+                for code in RETRYABLE_STATUS_CODES
+            ) or isinstance(e, (httpx.ReadTimeout, httpx.ConnectTimeout))
+
+            last_error = f"{err_str[:500]}"
+
+            if retryable and attempt < MAX_LLM_RETRIES:
                 wait = RETRY_BACKOFF[attempt]
-                log.warning(f"[{req_id}] LLM timeout, retry in {wait}s")
+                log.warning(
+                    f"[{req_id}] LLM retry {attempt+1}/{MAX_LLM_RETRIES} "
+                    f"in {wait}s: {err_str[:200]}"
+                )
                 await asyncio.sleep(wait)
                 continue
-            return {"error": last_error}
 
-        except Exception as e:
-            return {"error": str(e)}
+            return {"error": last_error}
 
     return {"error": last_error or "Max retries exceeded"}
 

@@ -669,7 +669,6 @@ async def _pipeline_producer(
             ))
             await output_queue.put(chunk_fn("", finish_reason="stop"))
             await output_queue.put("data: [DONE]\n\n")
-            await output_queue.put(_STREAM_DONE)
             return
 
         # Emit verification summary before closing think tags
@@ -974,11 +973,27 @@ async def verify_endpoint(request: Request):
 
     tracker.start(req_id, phase="verify", target_chars=len(target_text))
 
-    try:
-        import veritas_inquisitor
-        result = await veritas_inquisitor.verify_output(
-            target_text, original_query, req_id,
+    if not limiter.available():
+        tracker.finish(req_id)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": {
+                    "message": (
+                        f"Too many concurrent verified sessions "
+                        f"({limiter.max_concurrent}). Try again shortly."
+                    ),
+                    "type": "rate_limit",
+                }
+            },
         )
+
+    try:
+        async with limiter.hold():
+            import veritas_inquisitor
+            result = await veritas_inquisitor.verify_output(
+                target_text, original_query, req_id,
+            )
         return JSONResponse(result)
     except Exception as e:
         return JSONResponse(

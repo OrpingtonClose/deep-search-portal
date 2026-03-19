@@ -101,7 +101,9 @@ class ClaimTag(str, Enum):
 class ClaimStatus(str, Enum):
     VERIFIED = "verified"
     PLAUSIBLE_UNVERIFIED = "plausible-unverified"
-    HALLUCINATED = "hallucinated"
+    SPECULATIVE = "speculative"
+    FABRICATED = "fabricated"
+    HALLUCINATED = "hallucinated"  # legacy alias — prefer FABRICATED
     OVERCONFIDENT = "overconfident"
 
 
@@ -580,8 +582,19 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
 
 SYSTEM_PROMPT = (
     "You are Veritas Inquisitor. Objective: identify and classify every claim "
-    "as verified, plausible-unverified, hallucinated, or overconfident. Use "
-    "external tools for every claim. Output only structured data. Never add "
+    "using these statuses:\n"
+    "- verified: claim confirmed by external evidence\n"
+    "- plausible-unverified: claim is reasonable but no direct evidence found\n"
+    "- speculative: a reasonable inference, hypothesis, or educated guess — keep it\n"
+    "- fabricated: claim references entities, sources, or data that do not exist\n"
+    "- overconfident: claim overstates certainty given available evidence\n\n"
+    "IMPORTANT DISTINCTION:\n"
+    "- 'speculative' = a reasonable line of reasoning without direct proof. KEEP these.\n"
+    "- 'fabricated' = invented entities, fake company names, non-existent sources. REMOVE these.\n"
+    "- Do NOT mark a claim as fabricated just because you couldn't verify it. "
+    "Absence of evidence is NOT evidence of fabrication.\n"
+    "- Something being illegal, unusual, or controversial does NOT make it fabricated.\n\n"
+    "Use external tools for every claim. Output only structured data. Never add "
     "politeness or hedging."
 )
 
@@ -627,7 +640,7 @@ FINAL_JUDGE_PROMPT = (
     "    {\n"
     "      \"id\": \"...\",\n"
     "      \"claim_text\": \"...\",\n"
-    "      \"status\": \"verified\"|\"plausible-unverified\"|\"hallucinated\"|\"overconfident\",\n"
+    "      \"status\": \"verified\"|\"plausible-unverified\"|\"speculative\"|\"fabricated\"|\"overconfident\",\n"
     "      \"evidence_summary\": \"...\",\n"
     "      \"confidence\": 0.0\n"
     "    }\n"
@@ -637,8 +650,20 @@ FINAL_JUDGE_PROMPT = (
     "  \"revised_output\": \"...\",\n"
     "  \"evidence_links\": [...]\n"
     "}\n\n"
-    "Score each claim individually. overall_score is the fraction of verified claims. "
-    "revised_output is the original text with hallucinated/overconfident claims corrected or removed."
+    "SCORING RULES:\n"
+    "- 'verified': confirmed by at least one external source.\n"
+    "- 'plausible-unverified': reasonable claim but no confirming source found.\n"
+    "- 'speculative': a hypothesis, inference, or educated guess. Label it but KEEP it. "
+    "Speculation is valuable — it opens investigation paths.\n"
+    "- 'fabricated': the claim references entities, sources, studies, companies, or data "
+    "that demonstrably do not exist. ONLY use this for provable fabrications.\n"
+    "- 'overconfident': the claim overstates certainty vs. available evidence.\n\n"
+    "CRITICAL: Do NOT mark claims as fabricated just because you lack evidence. "
+    "Absence of evidence ≠ fabrication. Something illegal or unusual is NOT fabricated. "
+    "Reserve 'fabricated' for claims where you found positive counter-evidence that the "
+    "referenced entity/source/data does not exist.\n\n"
+    "overall_score is the fraction of verified + speculative + plausible-unverified claims. "
+    "revised_output keeps speculative claims with [SPECULATIVE] labels and removes only fabricated ones."
 )
 
 
@@ -1653,7 +1678,9 @@ async def stream_verification(
                 status_emoji = {
                     "verified": "VERIFIED",
                     "plausible-unverified": "UNVERIFIED",
-                    "hallucinated": "**HALLUCINATED**",
+                    "speculative": "SPECULATIVE",
+                    "fabricated": "**FABRICATED**",
+                    "hallucinated": "**FABRICATED**",  # legacy
                     "overconfident": "OVERCONFIDENT",
                 }.get(status, status)
 

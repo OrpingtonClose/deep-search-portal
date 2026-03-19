@@ -158,12 +158,12 @@ class TestFuzzyMatchClaimToCondition:
 
 class TestVerifyConditionsWithVeritas:
     @pytest.mark.asyncio
-    async def test_removes_hallucinated_conditions(self):
-        """Conditions flagged as hallucinated by Veritas should be removed."""
+    async def test_removes_fabricated_keeps_speculative(self):
+        """Fabricated entities (zero grounding) are removed; speculative kept."""
         conditions = [
             _make_condition("Sarah Hospitality specializes in hotel liquidations", confidence=0.7),
             _make_condition("Technogym Biostrength uses AI-driven resistance adjustment", confidence=0.8),
-            _make_condition("Gym Liquidation Center PLC focuses on commercial gym equipment", confidence=0.6),
+            _make_condition("Used gym equipment resale market is growing", confidence=0.6),
         ]
 
         mock_veritas_result = {
@@ -171,9 +171,9 @@ class TestVerifyConditionsWithVeritas:
                 "claims": [
                     {
                         "claim_text": "Sarah Hospitality specializes in hotel liquidations",
-                        "status": "hallucinated",
-                        "confidence": 0.1,
-                        "evidence_summary": "No evidence of Sarah Hospitality existing",
+                        "status": "fabricated",
+                        "confidence": 0.05,
+                        "evidence_summary": "No evidence of Sarah Hospitality existing — fabricated entity",
                     },
                     {
                         "claim_text": "Technogym Biostrength uses AI-driven resistance adjustment",
@@ -182,14 +182,14 @@ class TestVerifyConditionsWithVeritas:
                         "evidence_summary": "Confirmed via Technogym official website",
                     },
                     {
-                        "claim_text": "Gym Liquidation Center PLC focuses on commercial gym equipment",
-                        "status": "hallucinated",
-                        "confidence": 0.05,
-                        "evidence_summary": "No evidence of Gym Liquidation Center PLC",
+                        "claim_text": "Used gym equipment resale market is growing",
+                        "status": "speculative",
+                        "confidence": 0.4,
+                        "evidence_summary": "Some anecdotal evidence but no market report",
                     },
                 ],
-                "overall_score": 0.33,
-                "overall_hallucination_probability": 0.67,
+                "overall_score": 0.5,
+                "overall_hallucination_probability": 0.33,
             },
             "artifact_count": 12,
             "iterations": 8,
@@ -200,11 +200,56 @@ class TestVerifyConditionsWithVeritas:
                 conditions, "used technogym biostrength", "test-req",
             )
 
-        # Only the verified condition should remain
-        assert len(filtered) == 1
+        # Fabricated removed, verified + speculative kept
+        assert len(filtered) == 2
+        facts = [c.fact for c in filtered]
+        assert "Sarah Hospitality" not in " ".join(facts)
         assert "AI-driven resistance" in filtered[0].fact
-        # Verified condition should have boosted confidence
         assert filtered[0].confidence >= 0.8
+        # Speculative claim kept with status set
+        assert filtered[1].verification_status == "speculative"
+        assert filtered[1].confidence <= 0.6  # capped downward
+
+    @pytest.mark.asyncio
+    async def test_legacy_hallucinated_treated_as_fabricated(self):
+        """Legacy 'hallucinated' status should be treated as 'fabricated'."""
+        conditions = [
+            _make_condition("Fake Corp Ltd sells widgets", confidence=0.7),
+            _make_condition("Real product costs 500 EUR", confidence=0.8),
+            _make_condition("Another real claim", confidence=0.6),
+        ]
+
+        mock_veritas_result = {
+            "report": {
+                "claims": [
+                    {
+                        "claim_text": "Fake Corp Ltd sells widgets",
+                        "status": "hallucinated",
+                        "confidence": 0.02,
+                    },
+                    {
+                        "claim_text": "Real product costs 500 EUR",
+                        "status": "verified",
+                        "confidence": 0.85,
+                    },
+                    {
+                        "claim_text": "Another real claim",
+                        "status": "verified",
+                        "confidence": 0.8,
+                    },
+                ],
+                "overall_score": 0.7,
+            },
+        }
+
+        with patch("veritas_inquisitor.verify_output", new_callable=AsyncMock, return_value=mock_veritas_result):
+            filtered, report = await pdr.verify_conditions_with_veritas(
+                conditions, "query", "test-req",
+            )
+
+        # Legacy hallucinated treated as fabricated => removed
+        assert len(filtered) == 2
+        assert all("Fake Corp" not in c.fact for c in filtered)
 
     @pytest.mark.asyncio
     async def test_adjusts_overconfident_conditions(self):
@@ -381,7 +426,7 @@ class TestPdrNodeVerifyWithVeritas:
         facts = [c.fact for c in result_conditions]
         assert "Claim B is hallucinated" not in facts
 
-        # Progress should mention both stages
+        # Progress should mention both stages and use "fabricated" terminology
         progress_text = " ".join(result["progress_log"])
         assert "Phase 5a" in progress_text
         assert "Phase 5b" in progress_text or "Veritas" in progress_text
@@ -463,7 +508,7 @@ class TestPdrNodeVerifyWithVeritas:
 
         assert len(result["all_conditions"]) == 2
         progress_text = " ".join(result["progress_log"])
-        assert "2 hallucinated claims removed" in progress_text
+        assert "2 fabricated claims removed" in progress_text
         assert "2 conditions retained out of 4" in progress_text
 
     @pytest.mark.asyncio

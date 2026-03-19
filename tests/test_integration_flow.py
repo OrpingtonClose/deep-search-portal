@@ -503,12 +503,16 @@ def analyse_stream(capture, phases, curated):
         curated_by_type[t] = curated_by_type.get(t, 0) + 1
         text = c.get("text", "")
         curated_lengths.append(len(text))
-        # Detect mid-word truncation — use the original content delta
-        # (not the regex-matched substring which greedily captures fragments)
+        # Detect mid-word truncation — use the original content delta.
+        # Messages intentionally capped by _truncate_at_word() end with
+        # '…' (U+2026) which is fine. We only flag messages that end
+        # abruptly mid-word WITHOUT the ellipsis marker.
         orig = c.get("original_text", text).rstrip()
         if orig and len(orig) > 100:
             last_char = orig[-1]
-            if last_char not in '.!?)]}"\'\n0123456789 ':
+            # Accept: punctuation, quotes, parens, digits, ellipsis (…)
+            ok_endings = '.!?)]}"\'\n0123456789 \u2026'
+            if last_char not in ok_endings:
                 # Skip tool-output patterns like "(10.7s)" or URLs
                 if not re.search(r'\(\d+\.\d+s\)$', orig) and not re.search(r'https?://\S+$', orig):
                     truncated_events.append(orig[-30:])
@@ -684,6 +688,8 @@ def run_assertions(capture, analysis, server_metrics, server_jsonl):
     )
 
     # 11. No mid-word truncation in curated events
+    # Note: messages capped by _truncate_at_word() end with '…' which
+    # is acceptable.  Only truly broken mid-word cuts are flagged.
     check(
         "No mid-word truncation in curated events",
         analysis["curated_events"]["truncated_count"] == 0,

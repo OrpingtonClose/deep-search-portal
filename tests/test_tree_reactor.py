@@ -718,6 +718,210 @@ class TestTreeResearchReactor:
 
 
 # ============================================================================
+# Regression: old planning path is dead, tree reactor is the active path
+# ============================================================================
+
+class TestOldPlanningPathIsDead:
+    """Regression tests ensuring the old plan-10-angles + parallel-subagents
+    path is dead code and the tree reactor is the sole research pipeline."""
+
+    def test_plan_research_not_called_by_any_graph_node(self):
+        """plan_research() should exist but not be referenced by any graph node."""
+        import inspect
+        graph_node_funcs = [
+            pdr.pdr_node_retrieve,
+            pdr.pdr_node_tree_research,
+            pdr.pdr_node_entities,
+            pdr.pdr_node_verify,
+            pdr.pdr_node_reflect,
+            pdr.pdr_node_persist,
+            pdr.pdr_node_synthesize,
+        ]
+        for func in graph_node_funcs:
+            source = inspect.getsource(func)
+            assert "plan_research(" not in source, (
+                f"{func.__name__} still calls plan_research() — "
+                f"the old planning path should be dead"
+            )
+
+    def test_run_subagent_not_called_by_any_graph_node(self):
+        """run_subagent() (old parallel dispatch) should not be called by graph nodes."""
+        import inspect
+        graph_node_funcs = [
+            pdr.pdr_node_retrieve,
+            pdr.pdr_node_tree_research,
+            pdr.pdr_node_entities,
+            pdr.pdr_node_verify,
+            pdr.pdr_node_reflect,
+            pdr.pdr_node_persist,
+            pdr.pdr_node_synthesize,
+        ]
+        for func in graph_node_funcs:
+            source = inspect.getsource(func)
+            assert "run_subagent(" not in source, (
+                f"{func.__name__} still calls run_subagent() — "
+                f"the old parallel dispatch should be dead"
+            )
+
+    def test_graph_edge_topology_is_linear_tree_pipeline(self):
+        """Graph edges should follow: retrieve → tree_research → entities → verify
+        → reflect → persist → synthesize → END. No plan/subagent nodes."""
+        graph = pdr.build_persistent_research_graph()
+        g = graph.get_graph()
+        node_names = set(g.nodes.keys())
+
+        # Must NOT contain old-style nodes
+        for forbidden in ("plan", "subagents", "plan_angles", "dispatch"):
+            assert forbidden not in node_names, (
+                f"Graph still contains old node '{forbidden}'"
+            )
+
+        # Must contain the tree reactor
+        assert "tree_research" in node_names
+
+    def test_tree_research_calls_tree_research_reactor(self):
+        """pdr_node_tree_research must delegate to tree_research_reactor."""
+        import inspect
+        source = inspect.getsource(pdr.pdr_node_tree_research)
+        assert "tree_research_reactor(" in source, (
+            "pdr_node_tree_research does not call tree_research_reactor — "
+            "the tree reactor is not being used"
+        )
+
+    def test_state_has_no_legacy_fields(self):
+        """PersistentResearchState should not have legacy planning fields."""
+        annotations = pdr.PersistentResearchState.__annotations__
+        for legacy_field in ("angles", "bridge_queries", "plan"):
+            assert legacy_field not in annotations, (
+                f"PersistentResearchState still has legacy field '{legacy_field}'"
+            )
+        # Should have tree reactor fields
+        assert "nodes_explored" in annotations
+
+    @pytest.mark.asyncio
+    async def test_pdr_node_tree_research_invokes_reactor_not_planner(self):
+        """Full integration: pdr_node_tree_research should call
+        tree_research_reactor (not plan_research) when executed."""
+        collector = pdr.LiveFindingsCollector()
+        curated_queue = asyncio.Queue()
+
+        # Pre-populate the module-level dicts that pdr_node_tree_research reads
+        req_id = "test-regression-no-planner"
+        pdr._live_collectors[req_id] = collector
+        pdr._curated_queues[req_id] = curated_queue
+
+        conditions = [pdr.AtomicCondition(fact="Tree finding", confidence=0.9, angle="root")]
+        reactor_result = {
+            "all_conditions": conditions,
+            "subagent_results": [
+                pdr.SubagentResult(angle="root", conditions=conditions, turns_used=1, tool_calls_made=1),
+            ],
+            "total_turns": 1,
+            "total_tools": 1,
+            "total_children": 0,
+            "progress_log": ["Tree reactor ran"],
+        }
+
+        state = {
+            "req_id": req_id,
+            "user_query": "Test query",
+            "prior_conditions": [],
+            "graph_neighbors": [],
+        }
+
+        with patch.object(pdr, "tree_research_reactor", new_callable=AsyncMock,
+                          return_value=reactor_result) as mock_reactor, \
+             patch.object(pdr, "plan_research", new_callable=AsyncMock) as mock_planner:
+
+            result = await pdr.pdr_node_tree_research(state)
+
+            # tree_research_reactor MUST have been called
+            mock_reactor.assert_called_once()
+            # plan_research MUST NOT have been called
+            mock_planner.assert_not_called()
+
+        assert result["nodes_explored"] == 1
+        assert result["all_conditions"][0].fact == "Tree finding"
+        assert result["phase"] == "entities"
+
+        # Cleanup
+        pdr._live_collectors.pop(req_id, None)
+        pdr._curated_queues.pop(req_id, None)
+
+    @pytest.mark.asyncio
+    async def test_tree_produces_branching_not_flat_angles(self):
+        """Tree reactor should produce a tree structure (root + children at
+        varying depths), not a flat list of N parallel angles."""
+        collector = pdr.LiveFindingsCollector()
+        curated_queue = asyncio.Queue()
+
+        explored_depths = []
+
+        async def mock_research_node(node, user_query, req_id, coll, cq):
+            explored_depths.append(node.depth)
+            conditions = [pdr.AtomicCondition(
+                fact=f"Finding at depth {node.depth}", confidence=0.7, angle=node.question,
+            )]
+            sa = pdr.SubagentResult(
+                angle=node.question, conditions=conditions,
+                turns_used=1, tool_calls_made=1,
+            )
+            return conditions, sa
+
+        spawn_count = [0]
+
+        async def mock_spawn(node, conditions, user_query, existing_questions, req_id):
+            spawn_count[0] += 1
+            if node.depth == 0:
+                # Root spawns 2 children
+                return [
+                    pdr.ResearchNode(
+                        id=f"child-{i}", question=f"Follow-up {i}?",
+                        context="c", depth=1, pressure=0.7, parent_id=node.id,
+                    )
+                    for i in range(2)
+                ]
+            elif node.depth == 1 and spawn_count[0] <= 2:
+                # First child spawns 1 grandchild
+                return [
+                    pdr.ResearchNode(
+                        id=f"grandchild-{node.id}", question=f"Deep follow-up?",
+                        context="c", depth=2, pressure=0.5, parent_id=node.id,
+                    ),
+                ]
+            return []
+
+        original_timeout = pdr.TREE_WORKER_IDLE_TIMEOUT
+        pdr.TREE_WORKER_IDLE_TIMEOUT = 5.0
+        try:
+            with patch.object(pdr, "_research_single_node", side_effect=mock_research_node), \
+                 patch.object(pdr, "_spawn_sub_questions", side_effect=mock_spawn):
+                result = await pdr.tree_research_reactor(
+                    user_query="Test branching",
+                    prior_conditions=[],
+                    graph_neighbors=[],
+                    req_id="test-branching",
+                    collector=collector,
+                    curated_queue=curated_queue,
+                )
+        finally:
+            pdr.TREE_WORKER_IDLE_TIMEOUT = original_timeout
+
+        # Should have explored nodes at multiple depths (tree, not flat)
+        assert 0 in explored_depths, "Root (depth 0) was not explored"
+        assert 1 in explored_depths, "Children (depth 1) were not explored"
+        assert 2 in explored_depths, "Grandchildren (depth 2) were not explored"
+
+        # NOT a flat list of 10 — should have root + 2 children + at least 1 grandchild
+        assert len(result["subagent_results"]) >= 4
+        # Verify multiple depth levels were explored (tree, not flat dispatch)
+        unique_depths = set(explored_depths)
+        assert len(unique_depths) >= 3, (
+            f"Expected at least 3 depth levels (0, 1, 2), got {unique_depths}"
+        )
+
+
+# ============================================================================
 # Test: _pdr_append_log reducer
 # ============================================================================
 

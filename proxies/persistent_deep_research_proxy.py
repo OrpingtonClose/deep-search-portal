@@ -5760,6 +5760,15 @@ async def run_persistent_research(
 
     log.info(f"[{req_id}] Starting persistent deep research: {user_query[:100]}")
 
+    # --- Langfuse tracing: generate trace URL early so it goes into initial_state ---
+    langfuse_trace_id = langfuse_config.create_trace_id(req_id)
+    langfuse_trace_url = langfuse_config.get_trace_url(langfuse_trace_id)
+    langfuse_handler = langfuse_config.create_callback_handler(
+        trace_id=langfuse_trace_id,
+        session_id=req_id,
+        tags=["persistent-research"],
+    )
+
     initial_state: dict[str, Any] = {
         "req_id": req_id,
         "user_query": user_query,
@@ -5792,15 +5801,6 @@ async def run_persistent_research(
     metrics_collector = MetricsCollector(session_id=req_id, query=user_query)
     _metrics_collectors[req_id] = metrics_collector
     metrics_callback = ResearchMetricsCallback(metrics_collector)
-
-    # --- Langfuse tracing: generate trace URL and emit as first message ---
-    langfuse_trace_id = langfuse_config.create_trace_id(req_id)
-    langfuse_trace_url = langfuse_config.get_trace_url(langfuse_trace_id)
-    langfuse_handler = langfuse_config.create_callback_handler(
-        trace_id=langfuse_trace_id,
-        session_id=req_id,
-        tags=["persistent-research"],
-    )
 
     yield chunk("<think>\n")
 

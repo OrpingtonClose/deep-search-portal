@@ -3348,10 +3348,11 @@ Given the user's query, produce a JSON object with exactly this structure:
 
 Rules:
 1. Generate 3-7 angles covering: factual/technical, historical/context, contrarian/alternative views, practical/applied, and recent developments.
-2. Generate 1-3 bridge queries that look for unexpected cross-domain connections (serendipity). These should connect the topic to a seemingly unrelated field.
+2. Generate 0-2 bridge queries ONLY if a genuinely useful cross-domain insight exists. Do NOT force connections — if none are natural, output an empty array. Bridge queries must still directly help answer the user's original question.
 3. Each angle should be independent enough to research separately.
-4. Make search queries specific and actionable.
-5. Output ONLY valid JSON, no markdown fences or commentary."""
+4. Make search queries specific and actionable — they must be queries a human would type to answer the original question.
+5. STAY ON TOPIC: Every angle and bridge query must serve the user's actual intent. If the user asks about buying X, research buying X — do not research side effects, alternative uses, or tangential associations of X.
+6. Output ONLY valid JSON, no markdown fences or commentary."""
 
 
 async def plan_research(
@@ -4012,9 +4013,9 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
 # Tree Research Reactor
 # ============================================================================
 
-SPAWN_QUESTIONS_PROMPT = """You are a research strategist who values LATERAL THINKING and CREATIVE EXPLORATION.
+SPAWN_QUESTIONS_PROMPT = """You are a research strategist who generates focused follow-up questions.
 
-Given the findings so far, generate follow-up questions that branch into DIVERSE directions — not just deeper into the same topic, but sideways into adjacent domains, contrarian perspectives, and unexpected connections.
+Given the findings so far, generate follow-up questions that help answer the ORIGINAL USER QUERY more completely. Diversity is good, but every question must be directly useful for answering what the user actually asked.
 
 **Original user query:** {user_query}
 **Question just investigated:** {node_question}
@@ -4032,19 +4033,19 @@ Generate follow-up questions. For each, provide:
 - "pressure": 0.0-1.0 importance score (1.0 = critical gap, 0.1 = minor curiosity)
 - "strategy": one of "deepen" | "lateral" | "contrarian" | "historical" | "cross-domain"
 
-STRATEGY DIVERSITY RULES:
-- At least ONE question must use a DIFFERENT strategy than "deepen"
-- "lateral": explore a related but different domain that could shed light on the topic
-- "contrarian": investigate the opposite claim or a dissenting viewpoint
-- "historical": look at historical precedents, analogies, or how similar situations played out before
-- "cross-domain": borrow concepts from an entirely different field (e.g., if researching economics, check biology, sociology, engineering for parallels)
-- "deepen": drill further into a specific finding
+STRATEGY RULES:
+- "deepen": drill further into a specific finding (preferred — most questions should be this)
+- "lateral": explore a related angle that DIRECTLY helps answer the original query from a different perspective
+- "contrarian": investigate the opposite claim or a dissenting viewpoint ON THE SAME TOPIC
+- "historical": look at historical precedents directly relevant to the query
+- "cross-domain": ONLY use if there is a genuinely useful parallel — do NOT force random associations
+- Non-deepen strategies are optional. Only use them if they genuinely serve the user's question.
+- CRITICAL: "lateral" does NOT mean "free association with a keyword". If the user asks about buying insulin, a lateral question is about alternative purchasing channels — NOT about bodybuilding or side effects.
 
 PRESSURE RULES:
-- Higher pressure for: contradictions, unverified claims, critical gaps, surprising cross-domain connections
-- Lower pressure for: already-well-covered areas, minor details
-- Lateral/contrarian/cross-domain questions should get at least 0.6 pressure — they prevent tunnel vision
-- 0 questions is fine if the topic is truly saturated from ALL angles
+- Higher pressure for: contradictions, unverified claims, critical gaps directly relevant to the query
+- Lower pressure for: already-well-covered areas, tangential topics
+- 0 questions is fine if the topic is well-covered
 
 Other rules:
 - Generate 0-5 questions maximum

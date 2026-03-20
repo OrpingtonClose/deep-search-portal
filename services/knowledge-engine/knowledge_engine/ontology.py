@@ -380,7 +380,7 @@ def create_research_condition_node(
             id: $id,
             namespace: $ns,
             session_id: $session_id,
-            query: $query,
+            query: $research_query,
             fact: $fact,
             source_url: $source_url,
             confidence: $confidence,
@@ -393,7 +393,8 @@ def create_research_condition_node(
             created_at: $now
         })
         """,
-        id=cond_id, ns=namespace, session_id=session_id, query=query,
+        id=cond_id, ns=namespace, session_id=session_id,
+        research_query=query,
         fact=fact, source_url=source_url, confidence=confidence,
         trust_score=trust_score, angle=angle, domain=domain,
         is_serendipitous=is_serendipitous, serendipity_score=serendipity_score,

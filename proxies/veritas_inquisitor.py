@@ -56,6 +56,7 @@ from shared import (
     RequestTracker,
     create_app,
     env_int,
+    get_throttler,
     http_client,
     make_sse_chunk,
     register_standard_routes,
@@ -372,10 +373,12 @@ async def call_llm(
     lc_messages = _dicts_to_lc_messages(messages)
     config = _veritas_request_configs.get(req_id, {})
 
+    _mistral_throttle = get_throttler("mistral")
     last_error: Optional[str] = None
     for attempt in range(MAX_LLM_RETRIES + 1):
         try:
-            ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
+            async with _mistral_throttle.throttle():
+                ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
             return {
                 "content": ai_msg.content or "",
                 "finish_reason": ai_msg.response_metadata.get(
@@ -457,17 +460,18 @@ def _parse_json_from_llm(text: str) -> Optional[dict | list]:
 async def tool_web_search(query: str, num_results: int = 10) -> str:
     """Web search via SearXNG."""
     try:
-        client = http_client()
-        resp = await client.get(
-            f"{SEARXNG_URL}/search",
-            params={"q": query, "format": "json", "categories": "general"},
-            timeout=20.0,
-        )
-        if resp.status_code != 200:
-            return f"Search error: HTTP {resp.status_code}"
+        async with get_throttler("searxng").throttle():
+            client = http_client()
+            resp = await client.get(
+                f"{SEARXNG_URL}/search",
+                params={"q": query, "format": "json", "categories": "general"},
+                timeout=20.0,
+            )
+            if resp.status_code != 200:
+                return f"Search error: HTTP {resp.status_code}"
 
-        data = resp.json()
-        results = data.get("results", [])[:num_results]
+            data = resp.json()
+            results = data.get("results", [])[:num_results]
         if not results:
             return "No results found."
 
@@ -488,12 +492,13 @@ async def tool_browse_page(url: str, instructions: str = "") -> str:
     import html as html_mod
     import re
     try:
-        client = http_client()
-        resp = await client.get(
-            url,
-            timeout=20.0,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; VeritasBot/1.0)"},
-        )
+        async with get_throttler("web_fetch").throttle():
+            client = http_client()
+            resp = await client.get(
+                url,
+                timeout=20.0,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; VeritasBot/1.0)"},
+            )
         if resp.status_code != 200:
             return f"Fetch error: HTTP {resp.status_code}"
 

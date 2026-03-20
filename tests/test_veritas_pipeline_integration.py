@@ -389,9 +389,8 @@ class TestVerifyConditionsWithVeritas:
 
 class TestPdrNodeVerifyWithVeritas:
     @pytest.mark.asyncio
-    async def test_runs_both_stages_when_enabled(self):
-        """When VERITAS_VERIFY_ENABLED is True and enough conditions exist,
-        both self-eval and Veritas should run."""
+    async def test_runs_both_stages_when_forced(self):
+        """When VERITAS_FORCE_POST_HOC is set, both self-eval and Veritas run."""
         conditions = [
             _make_condition("Claim A", confidence=0.7),
             _make_condition("Claim B is hallucinated", confidence=0.6),
@@ -416,7 +415,8 @@ class TestPdrNodeVerifyWithVeritas:
              patch.object(pdr, "VERITAS_MIN_CONDITIONS", 3), \
              patch.object(pdr, "verify_conditions", new_callable=AsyncMock, return_value=conditions), \
              patch("veritas_inquisitor.verify_output", new_callable=AsyncMock, return_value=mock_veritas_result), \
-             patch.object(pdr, "_metrics_collectors", {}):
+             patch.object(pdr, "_metrics_collectors", {}), \
+             patch.dict("os.environ", {"VERITAS_FORCE_POST_HOC": "true"}):
 
             result = await pdr.pdr_node_verify(state)
 
@@ -426,10 +426,44 @@ class TestPdrNodeVerifyWithVeritas:
         facts = [c.fact for c in result_conditions]
         assert "Claim B is hallucinated" not in facts
 
-        # Progress should mention both stages and use "fabricated" terminology
+        # Progress should mention both stages
         progress_text = " ".join(result["progress_log"])
         assert "Phase 5a" in progress_text
         assert "Phase 5b" in progress_text or "Veritas" in progress_text
+
+    @pytest.mark.asyncio
+    async def test_skips_veritas_by_default_with_inline_verification(self):
+        """By default, Veritas is skipped because inline verification runs
+        during the tree phase. Progress log should mention this."""
+        conditions = [
+            _make_condition("Claim A", confidence=0.7),
+            _make_condition("Claim B", confidence=0.6),
+            _make_condition("Claim C", confidence=0.5),
+        ]
+
+        state = _pdr_state(all_conditions=conditions)
+
+        with patch.object(pdr, "VERITAS_VERIFY_ENABLED", True), \
+             patch.object(pdr, "VERITAS_MIN_CONDITIONS", 3), \
+             patch.object(pdr, "verify_conditions", new_callable=AsyncMock, return_value=conditions), \
+             patch("veritas_inquisitor.verify_output", new_callable=AsyncMock) as mock_veritas, \
+             patch.object(pdr, "_metrics_collectors", {}), \
+             patch.dict("os.environ", {}, clear=False):
+            # Ensure VERITAS_FORCE_POST_HOC is NOT set
+            import os
+            os.environ.pop("VERITAS_FORCE_POST_HOC", None)
+
+            result = await pdr.pdr_node_verify(state)
+
+        # Veritas should NOT have been called
+        mock_veritas.assert_not_called()
+
+        # All conditions preserved (only self-eval ran)
+        assert len(result["all_conditions"]) == 3
+
+        # Progress should mention inline verification
+        progress_text = " ".join(result["progress_log"])
+        assert "Inline Verification" in progress_text
 
     @pytest.mark.asyncio
     async def test_skips_veritas_when_disabled(self):
@@ -475,7 +509,8 @@ class TestPdrNodeVerifyWithVeritas:
 
     @pytest.mark.asyncio
     async def test_progress_log_shows_removal_count(self):
-        """Progress log should report how many conditions were removed."""
+        """Progress log should report how many conditions were removed
+        when Veritas is forced."""
         conditions = [
             _make_condition("Real claim A", confidence=0.8),
             _make_condition("Fake company XYZ Ltd", confidence=0.6),
@@ -502,7 +537,8 @@ class TestPdrNodeVerifyWithVeritas:
              patch.object(pdr, "VERITAS_MIN_CONDITIONS", 3), \
              patch.object(pdr, "verify_conditions", new_callable=AsyncMock, return_value=conditions), \
              patch("veritas_inquisitor.verify_output", new_callable=AsyncMock, return_value=mock_result), \
-             patch.object(pdr, "_metrics_collectors", {}):
+             patch.object(pdr, "_metrics_collectors", {}), \
+             patch.dict("os.environ", {"VERITAS_FORCE_POST_HOC": "true"}):
 
             result = await pdr.pdr_node_verify(state)
 
@@ -531,7 +567,7 @@ class TestPdrNodeVerifyWithVeritas:
 
     @pytest.mark.asyncio
     async def test_veritas_error_preserves_conditions(self):
-        """If Veritas crashes, self-eval results should still be preserved."""
+        """If Veritas crashes (when forced), self-eval results should still be preserved."""
         conditions = [
             _make_condition("Claim A", confidence=0.7),
             _make_condition("Claim B", confidence=0.6),
@@ -544,7 +580,8 @@ class TestPdrNodeVerifyWithVeritas:
              patch.object(pdr, "VERITAS_MIN_CONDITIONS", 3), \
              patch.object(pdr, "verify_conditions", new_callable=AsyncMock, return_value=conditions), \
              patch("veritas_inquisitor.verify_output", new_callable=AsyncMock, side_effect=RuntimeError("boom")), \
-             patch.object(pdr, "_metrics_collectors", {}):
+             patch.object(pdr, "_metrics_collectors", {}), \
+             patch.dict("os.environ", {"VERITAS_FORCE_POST_HOC": "true"}):
 
             result = await pdr.pdr_node_verify(state)
 

@@ -4597,10 +4597,24 @@ When you are done researching, output your findings in this exact JSON format:
 - If a tool call fails, try a different approach.
 - Use different tools for different needs (web search, arxiv for papers, wikidata for facts).
 
+**INLINE VERIFICATION (CRITICAL):**
+When you discover a CONCRETE ENTITY (a specific vendor, product, person, organization, website, or service):
+1. IMMEDIATELY search for that entity by name across at least 2 different source types
+   - Example: found "buysteroids.ws"? Search for `"buysteroids.ws" review`, `"buysteroids.ws" scam`, `"buysteroids.ws" reddit`
+   - Use forum_search, reddit_search, hackernews_search, twitter_search — not just web search
+2. Record what you find (or explicitly note "no independent mentions found")
+3. Adjust your confidence based on corroboration:
+   - Multiple independent mentions confirming = confidence 0.8-0.9
+   - Single mention only = confidence 0.5-0.6
+   - Zero independent mentions = confidence 0.2-0.3 (flag as unverified)
+   - Contradictory mentions ("scam", "fake") = confidence 0.1-0.2
+This is NOT optional. Every concrete entity MUST be cross-referenced before you stop.
+
 **WHEN TO STOP:**
 - You have found 3-10 distinct facts about your angle
 - Additional searches return information you already have (saturation)
-- You have verified key claims across sources"""
+- You have verified key claims across sources
+- Every concrete entity discovered has been cross-referenced via at least 2 source types"""
 
 SERENDIPITY_INSTRUCTION = """**SERENDIPITY HUNTING:**
 You are not just looking for direct answers. You are hunting for "happy accidents" --
@@ -5065,21 +5079,24 @@ Generate follow-up questions. For each, provide:
 - "question": a specific, searchable question
 - "context": one sentence on why this matters
 - "pressure": 0.0-1.0 importance score (1.0 = critical gap, 0.1 = minor curiosity)
-- "strategy": one of "deepen" | "lateral" | "contrarian" | "historical" | "cross-domain"
+- "strategy": one of "deepen" | "verify" | "lateral" | "contrarian" | "historical" | "cross-domain"
 
 STRATEGY RULES:
 - "deepen": drill further into a specific finding (preferred — most questions should be this)
+- "verify": cross-reference a specific entity/claim by searching for independent mentions (REQUIRED for any concrete entity discovered — vendor, person, product, website). Example: "Has anyone on Reddit/forums confirmed buying from [vendor X]?" or "What do reviews say about [product Y]?"
 - "lateral": explore a related angle that DIRECTLY helps answer the original query from a different perspective
 - "contrarian": investigate the opposite claim or a dissenting viewpoint ON THE SAME TOPIC
 - "historical": look at historical precedents directly relevant to the query
 - "cross-domain": ONLY use if there is a genuinely useful parallel — do NOT force random associations
+- "verify" questions are HIGH PRIORITY — they should be generated for EVERY concrete entity found. If findings mention specific vendors, products, organizations, or individuals, there MUST be verify questions for them.
 - Non-deepen strategies are optional. Only use them if they genuinely serve the user's question.
 - CRITICAL: "lateral" does NOT mean "free association with a keyword". If the user asks about buying insulin, a lateral question is about alternative purchasing channels — NOT about bodybuilding or side effects.
 
 PRESSURE RULES:
 - Higher pressure for: contradictions, unverified claims, critical gaps directly relevant to the query
+- HIGHEST pressure (0.9-1.0) for: verify questions about concrete entities that haven't been cross-referenced yet
 - Lower pressure for: already-well-covered areas, tangential topics
-- 0 questions is fine if the topic is well-covered
+- 0 questions is fine if the topic is well-covered AND all concrete entities have been verified
 
 Other rules:
 - Generate 0-5 questions maximum
@@ -5190,6 +5207,118 @@ async def _spawn_sub_questions(
             depth=node.depth + 1,
             pressure=pressure,
             parent_id=node.id,
+        )
+        children.append(child)
+
+    return children
+
+
+_ENTITY_EXTRACTION_PROMPT = """Extract CONCRETE ENTITIES from these research findings that need independent verification.
+
+A concrete entity is: a specific vendor/website, product name, person, organization, or service that was discovered during research and could be verified by searching for independent mentions.
+
+Do NOT include: general concepts, countries, well-known companies (Google, Amazon, etc.), or abstract ideas.
+
+Findings:
+{findings_text}
+
+Output ONLY valid JSON:
+{{"entities": [
+    {{"name": "exact entity name", "type": "vendor|product|person|organization|website|service", "fact_index": 0, "search_queries": ["entity_name review", "entity_name reddit"]}}
+]}}
+
+If no concrete entities need verification, return: {{"entities": []}}"""
+
+
+async def _extract_entities_for_verification(
+    conditions: list[AtomicCondition],
+    req_id: str,
+) -> list[dict]:
+    """Extract concrete entities from conditions that need cross-referencing.
+
+    Uses a lightweight LLM call to identify vendor names, product names,
+    specific websites, persons, or organizations mentioned in findings.
+    Returns a list of entity dicts with search queries for verification.
+    """
+    if not conditions:
+        return []
+
+    findings_text = "\n".join(
+        f"{i}. {c.fact} [source: {c.source_url or 'no source'}]"
+        for i, c in enumerate(conditions)
+    )
+
+    prompt = _ENTITY_EXTRACTION_PROMPT.format(findings_text=findings_text)
+
+    result = await call_llm(
+        [{"role": "user", "content": prompt}],
+        req_id,
+        model=SUBAGENT_MODEL,
+        max_tokens=1024,
+        temperature=0.1,
+    )
+
+    if "error" in result:
+        log.warning(f"[{req_id}] Entity extraction error: {result['error']}")
+        return []
+
+    content = result.get("content", "").strip()
+    try:
+        if content.startswith("```"):
+            content = re.sub(r'^```(?:json)?\s*', '', content)
+            content = re.sub(r'\s*```$', '', content)
+        data = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    return data.get("entities", [])
+
+
+def _spawn_verification_nodes(
+    entities: list[dict],
+    parent_node: ResearchNode,
+    existing_questions: list[str],
+    req_id: str,
+) -> list[ResearchNode]:
+    """Create verification ResearchNodes for concrete entities.
+
+    Each entity gets a dedicated tree node that will cross-reference it
+    across forums, reviews, and social media.  These nodes get high
+    pressure so the tree prioritizes them.
+    """
+    children: list[ResearchNode] = []
+    for ent in entities:
+        name = ent.get("name", "").strip()
+        ent_type = ent.get("type", "entity")
+        if not name:
+            continue
+
+        # Build verification question
+        question = (
+            f'Verify "{name}": search for independent mentions, reviews, '
+            f"complaints, or discussions about this {ent_type} across "
+            f"Reddit, forums, social media, and review sites"
+        )
+
+        # Skip if we already have a similar question
+        q_lower = question.lower()
+        if any(
+            name.lower() in eq.lower() and "verify" in eq.lower()
+            for eq in existing_questions
+        ):
+            continue
+
+        # Verification nodes get high pressure (0.85) and inherit
+        # parent depth + 1 so they can still spawn further branches
+        # based on what the verification discovers
+        child = ResearchNode(
+            id=f"{req_id}-verify-{uuid.uuid4().hex[:6]}",
+            question=question,
+            context=f"Cross-reference {ent_type} '{name}' found in parent research. "
+                    f"Search queries to try: {', '.join(ent.get('search_queries', []))}",
+            depth=parent_node.depth + 1,
+            pressure=_compute_pressure(0.85, parent_node.depth + 1, parent_node.pressure),
+            parent_id=parent_node.id,
         )
         children.append(child)
 
@@ -5422,9 +5551,35 @@ async def tree_research_reactor(
                     current_queued = total_queued
 
                 if current_queued < TREE_MAX_NODES and conditions:
+                    # 1. Regular sub-questions from LLM (includes
+                    #    "verify" strategy now)
                     children = await _spawn_sub_questions(
                         node, conditions, user_query, all_questions, req_id,
                     )
+
+                    # 2. Auto-spawn verification nodes for concrete
+                    #    entities discovered in this node's findings.
+                    #    This ensures every vendor/person/product gets
+                    #    cross-referenced even if the LLM doesn't
+                    #    explicitly ask for it.
+                    try:
+                        entities = await _extract_entities_for_verification(
+                            conditions, req_id,
+                        )
+                        if entities:
+                            verify_children = _spawn_verification_nodes(
+                                entities, node, all_questions, req_id,
+                            )
+                            children.extend(verify_children)
+                            log.info(
+                                f"[{req_id}] Auto-spawned {len(verify_children)} "
+                                f"verification nodes for {len(entities)} entities"
+                            )
+                    except Exception as e:
+                        log.warning(
+                            f"[{req_id}] Entity verification spawn failed "
+                            f"(non-fatal): {e}"
+                        )
 
                     async with lock:
                         actually_queued = 0
@@ -6375,13 +6530,19 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
 async def pdr_node_verify(state: PersistentResearchState) -> dict:
     """Phase 5: Citation verification.
 
-    Two-stage verification (anti-hallucination, pro-speculation):
+    With inline verification enabled (the tree reactor now cross-references
+    concrete entities during research), this phase is streamlined:
+
       1. Self-evaluation (fast, LLM-only): cross-checks conditions against each
          other for contradictions, source quality, and fabricated entities.
-      2. Veritas Inquisitor (thorough, web-search-backed): runs the full 5-agent
-         reactor to decompose claims, gather external evidence, debate, and
-         produce verdicts.  Only fabricated conditions are removed;
-         speculative findings are kept and labeled.
+      2. Veritas Inquisitor: SKIPPED by default because inline verification
+         already cross-referenced entities during the tree phase.  The tree's
+         verification nodes produce findings that get fed back into the tree
+         for deeper branching — something post-hoc Veritas cannot do.
+         Veritas can still be forced via VERITAS_FORCE_POST_HOC=true env var.
+
+    Philosophy: verify DURING research so verification findings can be
+    branched upon, not after the tree is closed.
     """
     req_id = state["req_id"]
     user_query = state["user_query"]
@@ -6396,7 +6557,7 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
     pre_count = len(all_conditions)
 
     if all_conditions and len(all_conditions) >= 2:
-        # Stage 1: fast self-evaluation
+        # Stage 1: fast self-evaluation (always runs — lightweight)
         progress.append("\n**[Phase 5a: Citation Cross-Check]**\n")
         progress.append("Cross-checking claims for contradictions...\n")
 
@@ -6411,10 +6572,14 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
             summary += f" {stage1_removed} fabricated removed."
         progress.append(summary + "\n")
 
-    # Stage 2: Veritas Inquisitor — external evidence-based verification
+    # Stage 2: Veritas Inquisitor — only runs if explicitly forced.
+    # Inline verification during the tree phase replaces this: each
+    # concrete entity gets its own verification node whose findings
+    # feed back into the tree for deeper branching.
+    force_veritas = os.getenv("VERITAS_FORCE_POST_HOC", "").lower() in ("1", "true", "yes")
     veritas_report: dict = {}
-    if VERITAS_VERIFY_ENABLED and len(all_conditions) >= VERITAS_MIN_CONDITIONS:
-        progress.append("\n**[Phase 5b: Veritas Fact-Check]**\n")
+    if force_veritas and VERITAS_VERIFY_ENABLED and len(all_conditions) >= VERITAS_MIN_CONDITIONS:
+        progress.append("\n**[Phase 5b: Veritas Fact-Check]** (forced via VERITAS_FORCE_POST_HOC)\n")
         progress.append(
             f"Running Veritas Inquisitor on {len(all_conditions)} conditions "
             f"(5-agent swarm with web search)...\n"
@@ -6454,6 +6619,12 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
 
         progress.append(
             f"{len(all_conditions)} conditions retained out of {pre_veritas_count}.\n"
+        )
+    elif VERITAS_VERIFY_ENABLED and not force_veritas:
+        progress.append(
+            "\n**[Phase 5b: Inline Verification]** "
+            "Entity cross-referencing was performed during the tree research phase. "
+            "Skipping post-hoc Veritas pass (set VERITAS_FORCE_POST_HOC=true to force).\n"
         )
 
     mc = _metrics_collectors.get(req_id)

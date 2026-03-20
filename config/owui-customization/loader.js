@@ -26,7 +26,8 @@
   const REPORT_PATH    = "/research/report/";   // + session_id
   const METRICS_PATH   = "/research/metrics/";   // + session_id
   const POLL_INTERVAL  = 60_000; // ms between report-list refreshes
-  const MATCH_PREFIX   = 50;     // chars of prefix used for fuzzy title match
+  const MATCH_PREFIX   = 60;     // chars of prefix used for fuzzy title match
+  const PROCESSED_ATTR  = "data-dsp-processed"; // marker to avoid re-processing
   const BADGE_CLASS    = "dsp-report-badge";
   const DROPDOWN_CLASS = "dsp-report-dropdown";
 
@@ -54,19 +55,30 @@
   /** Try to match a sidebar title to a report.  Returns report or null. */
   function matchReport(title) {
     const nt = norm(title);
-    if (!nt) return null;
+    if (!nt || nt.length < 10) return null;
 
     // Exact match first
     if (reportsByNorm.has(nt)) return reportsByNorm.get(nt);
 
     // Prefix match (Open WebUI truncates long titles)
+    // Only match if the prefix is long enough to be meaningful
     const prefix = nt.slice(0, MATCH_PREFIX);
+    if (prefix.length < 10) return null;
+
+    let bestMatch = null;
+    let bestLen = 0;
     for (const [q, r] of reportsByNorm) {
-      if (q.startsWith(prefix) || prefix.startsWith(q.slice(0, MATCH_PREFIX))) {
-        return r;
+      const qPrefix = q.slice(0, MATCH_PREFIX);
+      if (q.startsWith(prefix) || prefix.startsWith(qPrefix)) {
+        // Pick the longest overlap to avoid short-prefix false positives
+        const overlap = Math.min(prefix.length, qPrefix.length);
+        if (overlap > bestLen) {
+          bestLen = overlap;
+          bestMatch = r;
+        }
       }
     }
-    return null;
+    return bestMatch;
   }
 
   // ---- fetch reports -------------------------------------------------------
@@ -119,8 +131,8 @@
       : sidebar.querySelectorAll("a[href]");
 
     for (const el of items) {
-      // Skip items we've already processed
-      if (el.querySelector("." + BADGE_CLASS)) continue;
+      // Skip items we've already processed (use attribute on element itself)
+      if (el.hasAttribute(PROCESSED_ATTR)) continue;
 
       // Extract title text — try the most specific child first
       const titleEl =
@@ -134,7 +146,8 @@
       const report = matchReport(title);
       if (!report) continue;
 
-      // Inject the report badge
+      // Mark as processed BEFORE injecting to prevent MutationObserver loops
+      el.setAttribute(PROCESSED_ATTR, "1");
       injectBadge(el, report);
     }
   }
@@ -185,8 +198,8 @@
     badge.appendChild(toggle);
     badge.appendChild(dropdown);
 
-    // Insert after the chat item element (inside its parent)
-    chatEl.after(badge);
+    // Insert badge inside the chat element (not as sibling) to keep it contained
+    chatEl.appendChild(badge);
   }
 
   // ---- observer ------------------------------------------------------------

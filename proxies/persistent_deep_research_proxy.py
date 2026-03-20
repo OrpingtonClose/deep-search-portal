@@ -115,7 +115,6 @@ from research_metrics import (
     save_metrics,
 )
 import research_report
-import b2_publisher
 import langfuse_config
 
 from shared import (
@@ -143,6 +142,7 @@ UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "mistral-large-latest")
 SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "mistral-small-latest")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
 LISTEN_PORT = env_int("PERSISTENT_RESEARCH_PORT", 9300, minimum=1)
+PORTAL_PUBLIC_URL = os.getenv("PORTAL_PUBLIC_URL", "").rstrip("/")
 
 # --- LangChain Model Factories ---
 # Use ChatOpenAI pointing at the Mistral OpenAI-compatible endpoint.
@@ -5594,15 +5594,15 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
             )
             research_report.save_report(html_report, req_id)
 
-            # Publish to B2 if configured
-            if b2_publisher.is_configured():
-                try:
-                    report_url = await asyncio.to_thread(b2_publisher.publish_report, req_id, html_report)
-                    metrics_json = json.dumps(metrics_dict, indent=2, default=str)
-                    metrics_url = await asyncio.to_thread(b2_publisher.publish_metrics, req_id, metrics_json)
-                    log.info(f"[{req_id}] Published report to B2: {report_url}")
-                except Exception as e:
-                    log.error(f"[{req_id}] Failed to publish to B2: {e}")
+            # Save metrics JSON alongside report
+            metrics_json = json.dumps(metrics_dict, indent=2, default=str)
+            research_report.save_metrics_json(metrics_json, req_id)
+
+            # Build portal URLs for the report and metrics
+            base = PORTAL_PUBLIC_URL or f"http://localhost:{LISTEN_PORT}"
+            report_url = f"{base}/research/report/{req_id}"
+            metrics_url = f"{base}/research/metrics/{req_id}"
+            log.info(f"[{req_id}] Report available at: {report_url}")
         except Exception as e:
             log.error(f"[{req_id}] Failed to generate report: {e}")
 
@@ -5958,10 +5958,7 @@ _SAFE_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 @app.get("/research/report/{session_id}")
 async def get_research_report(session_id: str):
-    """Serve the HTML report for a research session.
-
-    First checks B2, then falls back to local file.
-    """
+    """Serve the HTML report for a research session."""
     if not _SAFE_SESSION_ID_RE.match(session_id):
         return JSONResponse({"error": "Invalid session_id"}, status_code=400)
 

@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "proxies"))
 from research_report import (
     generate_report,
     save_report,
+    save_metrics_json,
     _esc,
     _mini_svg_line_chart,
     _section_executive_summary,
@@ -352,4 +353,25 @@ class TestSaveReport:
         new_dir = str(tmp_path / "nested" / "reports")
         with patch("research_report.REPORTS_DIR", new_dir):
             path = save_report("<html/>", "save-test-2")
+            assert os.path.exists(path)
+
+
+# ---------------------------------------------------------------------------
+# Save Metrics JSON
+# ---------------------------------------------------------------------------
+
+class TestSaveMetricsJson:
+    def test_save_and_read(self, tmp_path):
+        with patch("research_report.REPORTS_DIR", str(tmp_path)):
+            json_str = '{"session_id": "test-1", "query": "hello"}'
+            path = save_metrics_json(json_str, "test-1")
+            assert os.path.exists(path)
+            assert path.endswith("_metrics.json")
+            with open(path) as f:
+                assert f.read() == json_str
+
+    def test_save_creates_directory(self, tmp_path):
+        new_dir = str(tmp_path / "nested" / "metrics")
+        with patch("research_report.REPORTS_DIR", new_dir):
+            path = save_metrics_json("{}", "test-2")
             assert os.path.exists(path)

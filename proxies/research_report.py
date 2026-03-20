@@ -150,6 +150,23 @@ def save_report(html_content: str, session_id: str) -> str:
     return path
 
 
+def save_metrics_json(metrics_json: str, session_id: str) -> str:
+    """Save metrics JSON to disk alongside the HTML report. Returns the file path."""
+    try:
+        Path(REPORTS_DIR).mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        log.warning(f"Failed to create reports dir {REPORTS_DIR}: {e}")
+
+    path = os.path.join(REPORTS_DIR, f"{session_id}_metrics.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(metrics_json)
+        log.info(f"Saved metrics to {path}")
+    except Exception as e:
+        log.error(f"Failed to save metrics: {e}")
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Section Builders
 # ---------------------------------------------------------------------------

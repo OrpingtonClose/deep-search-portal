@@ -43,6 +43,7 @@ from shared import (
     RequestTracker,
     create_app,
     env_int,
+    get_throttler,
     http_client,
     is_utility_request,
     make_sse_chunk,
@@ -256,17 +257,18 @@ Your final answer must be:
 async def tool_searxng_search(query: str) -> str:
     """Execute a SearXNG search and return formatted results."""
     try:
-        client = http_client()
-        resp = await client.get(
-            f"{SEARXNG_URL}/search",
-            params={"q": query, "format": "json", "categories": "general"},
-            timeout=20.0,
-        )
-        if resp.status_code != 200:
-            return f"Search error: HTTP {resp.status_code}"
+        async with get_throttler("searxng").throttle():
+            client = http_client()
+            resp = await client.get(
+                f"{SEARXNG_URL}/search",
+                params={"q": query, "format": "json", "categories": "general"},
+                timeout=20.0,
+            )
+            if resp.status_code != 200:
+                return f"Search error: HTTP {resp.status_code}"
 
-        data = resp.json()
-        results = data.get("results", [])[:10]
+            data = resp.json()
+            results = data.get("results", [])[:10]
 
         if not results:
             return "No results found."
@@ -289,12 +291,13 @@ async def tool_searxng_search(query: str) -> str:
 async def tool_fetch_webpage(url: str, extract_info: str = "") -> str:
     """Fetch a webpage and extract readable text."""
     try:
-        client = http_client()
-        resp = await client.get(
-            url,
-            timeout=20.0,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; DeepResearchBot/1.0)"},
-        )
+        async with get_throttler("searxng").throttle():
+            client = http_client()
+            resp = await client.get(
+                url,
+                timeout=20.0,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; DeepResearchBot/1.0)"},
+            )
         if resp.status_code != 200:
             return f"Fetch error: HTTP {resp.status_code}"
 
@@ -594,10 +597,12 @@ async def call_llm(messages: list[dict], req_id: str, turn: int, include_tools: 
     lc_messages = _dicts_to_lc_messages(messages)
     config = _deep_request_configs.get(req_id, {})
 
+    _mistral_throttle = get_throttler("mistral")
     last_error: Optional[str] = None
     for attempt in range(MAX_LLM_RETRIES + 1):
         try:
-            ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
+            async with _mistral_throttle.throttle():
+                ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
 
             content = ai_msg.content or ""
 

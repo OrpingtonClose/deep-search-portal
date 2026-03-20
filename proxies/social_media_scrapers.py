@@ -24,6 +24,8 @@ from typing import Any, Optional
 
 import httpx
 
+from shared import get_throttler
+
 log = logging.getLogger("social_media_scrapers")
 
 # ---------------------------------------------------------------------------
@@ -274,7 +276,7 @@ async def _bd_trigger_collection(
     if not BRIGHT_DATA_API_KEY:
         return None
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with get_throttler("bright_data").throttle(), httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 "https://api.brightdata.com/datasets/v3/trigger",
                 params={"dataset_id": dataset_id, "limit_multiple_results": MAX_RESULTS_PER_QUERY},
@@ -381,7 +383,7 @@ async def _apify_run_actor(
         # Use REST API directly to avoid requiring apify-client dependency
         # Apify REST API uses ~ as separator in actor IDs (e.g., "trudax~reddit-scraper-lite")
         api_actor_id = actor_id.replace("/", "~")
-        async with httpx.AsyncClient(timeout=httpx.Timeout(float(timeout_secs + 30), connect=15.0)) as client:
+        async with get_throttler("apify").throttle(), httpx.AsyncClient(timeout=httpx.Timeout(float(timeout_secs + 30), connect=15.0)) as client:
             # Start the actor run
             resp = await client.post(
                 f"https://api.apify.com/v2/acts/{api_actor_id}/runs",

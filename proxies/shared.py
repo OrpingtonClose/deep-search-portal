@@ -641,6 +641,175 @@ def register_ingest_routes(
 
 
 # ============================================================================
+# API Throttling — token-bucket rate limiter per external provider
+# ============================================================================
+
+class TokenBucketThrottler:
+    """Async token-bucket rate limiter.
+
+    Each bucket refills at *rate* tokens per second up to *capacity*.
+    ``acquire()`` waits until a token is available.  Multiple callers
+    are served in FIFO order so no request starves.
+
+    Also enforces a maximum number of concurrent in-flight requests via
+    *max_concurrent* (set to 0 to disable the concurrency cap).
+    """
+
+    def __init__(
+        self,
+        rate: float,
+        capacity: int,
+        max_concurrent: int = 0,
+        name: str = "",
+    ) -> None:
+        self.rate = rate
+        self.capacity = capacity
+        self.name = name or "unnamed"
+        self._tokens = float(capacity)
+        self._last_refill = time.monotonic()
+        self._lock = asyncio.Lock()
+        self._waiters: int = 0
+        self._total_acquired: int = 0
+        self._total_waited: float = 0.0
+        self._concurrent_sem: Optional[asyncio.Semaphore] = (
+            asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
+        )
+        self._active: int = 0
+
+    def _refill(self) -> None:
+        """Add tokens based on elapsed time since last refill."""
+        now = time.monotonic()
+        elapsed = now - self._last_refill
+        self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
+        self._last_refill = now
+
+    async def acquire(self) -> float:
+        """Wait for a token.  Returns the number of seconds waited."""
+        waited = 0.0
+        async with self._lock:
+            self._refill()
+            while self._tokens < 1.0:
+                deficit = 1.0 - self._tokens
+                sleep_time = deficit / self.rate
+                self._waiters += 1
+                # Release lock while sleeping so other callers can queue
+                self._lock.release()
+                try:
+                    await asyncio.sleep(sleep_time)
+                finally:
+                    await self._lock.acquire()
+                    self._waiters -= 1
+                waited += sleep_time
+                self._refill()
+            self._tokens -= 1.0
+            self._total_acquired += 1
+            self._total_waited += waited
+
+        # Concurrency cap (outside the token-bucket lock)
+        if self._concurrent_sem is not None:
+            await self._concurrent_sem.acquire()
+            self._active += 1
+
+        return waited
+
+    def release(self) -> None:
+        """Release a concurrency slot.  Call after the request completes."""
+        if self._concurrent_sem is not None:
+            self._concurrent_sem.release()
+            self._active = max(0, self._active - 1)
+
+    @asynccontextmanager
+    async def throttle(self):
+        """Context manager: acquire a token, yield, then release the slot."""
+        await self.acquire()
+        try:
+            yield
+        finally:
+            self.release()
+
+    def stats(self) -> dict:
+        """Return current throttler statistics."""
+        return {
+            "name": self.name,
+            "rate_per_sec": self.rate,
+            "capacity": self.capacity,
+            "tokens_available": round(self._tokens, 2),
+            "waiters": self._waiters,
+            "active": self._active,
+            "total_acquired": self._total_acquired,
+            "total_waited_sec": round(self._total_waited, 2),
+        }
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read an env var as float, returning *default* on missing/invalid."""
+    raw = os.getenv(name, "")
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+# Default rate limits per provider (requests per second).
+# Override via environment variables: THROTTLE_{PROVIDER}_RPS
+# and THROTTLE_{PROVIDER}_BURST for bucket capacity.
+_PROVIDER_DEFAULTS: dict[str, tuple[float, int, int]] = {
+    # (rps, burst_capacity, max_concurrent)
+    "mistral":       (5.0,  10,  10),
+    "bright_data":   (3.0,   5,   5),
+    "oxylabs":       (3.0,   5,   5),
+    "searxng":       (8.0,  15,   0),
+    "arxiv":         (1.0,   3,   3),
+    "wayback":       (2.0,   5,   5),
+    "wikidata":      (3.0,   5,   5),
+    "imageboard":    (2.0,   5,   5),
+    "nitter":        (2.0,   3,   3),
+    "apify":         (3.0,   5,   5),
+    "knowledge_engine": (10.0, 20, 0),
+}
+
+# Singleton registry — created lazily on first access.
+_throttlers: dict[str, TokenBucketThrottler] = {}
+_registry_lock: Optional[asyncio.Lock] = None
+
+
+def _get_registry_lock() -> asyncio.Lock:
+    """Return the module-level registry lock, creating it if needed."""
+    global _registry_lock
+    if _registry_lock is None:
+        _registry_lock = asyncio.Lock()
+    return _registry_lock
+
+
+def get_throttler(provider: str) -> TokenBucketThrottler:
+    """Return the throttler for *provider*, creating it from defaults/env on first call."""
+    if provider in _throttlers:
+        return _throttlers[provider]
+
+    upper = provider.upper()
+    defaults = _PROVIDER_DEFAULTS.get(provider, (5.0, 10, 0))
+    rps = _env_float(f"THROTTLE_{upper}_RPS", defaults[0])
+    burst = int(_env_float(f"THROTTLE_{upper}_BURST", defaults[1]))
+    max_conc = int(_env_float(f"THROTTLE_{upper}_MAX_CONCURRENT", defaults[2]))
+
+    throttler = TokenBucketThrottler(
+        rate=rps,
+        capacity=burst,
+        max_concurrent=max_conc,
+        name=provider,
+    )
+    _throttlers[provider] = throttler
+    return throttler
+
+
+def all_throttler_stats() -> list[dict]:
+    """Return stats for every registered throttler."""
+    return [t.stats() for t in _throttlers.values()]
+
+
+# ============================================================================
 # App factory with lifespan (manages shared httpx client)
 # ============================================================================
 

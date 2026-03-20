@@ -2892,7 +2892,7 @@ async def tool_hackernews_search(query: str, sort_by: str = "relevance", time_ra
             title = hit.get("title") or hit.get("story_title") or ""
             comment_text = hit.get("comment_text") or ""
             author = hit.get("author", "unknown")
-            points = hit.get("points") or hit.get("story_id", "")
+            points = hit.get("points") if hit.get("points") is not None else 0
             created = hit.get("created_at", "")[:10]
             obj_id = hit.get("objectID", "")
             url = hit.get("url") or f"https://news.ycombinator.com/item?id={obj_id}"
@@ -3415,7 +3415,7 @@ async def _retry_tool_call(
         try:
             result = await coro_factory()
             # Don't retry on valid "no results" — only on actual errors
-            if not result.startswith(("Search error", "Fetch error", "error:", "Error")):
+            if not any(marker in result.lower() for marker in ("error", "failed", "timed out")):
                 return result
             if attempt < max_retries:
                 last_error = result

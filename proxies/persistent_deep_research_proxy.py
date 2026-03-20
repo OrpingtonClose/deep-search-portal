@@ -352,6 +352,11 @@ class AtomicCondition:
     # Verification status set by Veritas: "verified", "speculative",
     # "fabricated", "overconfident", or "" (not yet checked).
     verification_status: str = ""
+    # Enrichment metadata
+    publication_date: str = ""   # ISO date string when available
+    author: str = ""             # Author or creator name
+    content_type: str = ""       # e.g. "academic_paper", "news", "forum_post", "video"
+    source_type: str = ""        # e.g. "pubmed", "arxiv", "hackernews", "substack"
 
     def to_text(self) -> str:
         parts = [f"- {self.fact}"]
@@ -371,6 +376,12 @@ class AtomicCondition:
             parts[0] += " [SERENDIPITOUS]"
         if self.serendipity_score_val > 0.3:
             parts[0] += f" [serendipity: {self.serendipity_score_val:.2f}]"
+        if self.source_type:
+            parts[0] += f" [via: {self.source_type}]"
+        if self.author:
+            parts[0] += f" [author: {self.author}]"
+        if self.publication_date:
+            parts[0] += f" [date: {self.publication_date}]"
         return parts[0]
 
 
@@ -452,6 +463,10 @@ def _log_conditions_jsonl(
             "domain": c.domain,
             "is_serendipitous": c.is_serendipitous,
             "serendipity_score": c.serendipity_score_val,
+            "publication_date": c.publication_date,
+            "author": c.author,
+            "content_type": c.content_type,
+            "source_type": c.source_type,
             "created_at": now,
         })
 
@@ -505,6 +520,10 @@ async def _store_conditions_neo4j(
             "domain": c.domain,
             "is_serendipitous": c.is_serendipitous,
             "serendipity_score": c.serendipity_score_val,
+            "publication_date": c.publication_date,
+            "author": c.author,
+            "content_type": c.content_type,
+            "source_type": c.source_type,
         }
         for c in conditions
     ]
@@ -1227,6 +1246,214 @@ NATIVE_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "hackernews_search",
+            "description": (
+                "Search Hacker News (news.ycombinator.com) via the Algolia API. "
+                "Covers stories, comments, Ask HN, and Show HN posts. Excellent for "
+                "tech industry discourse, startup culture, programming debates, "
+                "security incidents, and expert opinions from engineers/founders. "
+                "Free API, no authentication required."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "sort_by": {
+                        "type": "string",
+                        "enum": ["relevance", "date"],
+                        "description": "Sort by relevance (default) or date (newest first)",
+                    },
+                    "time_range": {
+                        "type": "string",
+                        "enum": ["day", "week", "month", "year"],
+                        "description": "Filter to posts within this time range (optional)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "stackexchange_search",
+            "description": (
+                "Search Stack Exchange Q&A sites for expert answers. Covers hundreds "
+                "of niche communities: stackoverflow, superuser, serverfault, askubuntu, "
+                "math, physics, chemistry, biology, electronics, diy, cooking, gaming, "
+                "rpg, worldbuilding, law, money, academia, etc. Returns questions with "
+                "body text, scores, and answer counts. Free API."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "site": {
+                        "type": "string",
+                        "description": (
+                            "Stack Exchange site to search (default: stackoverflow). "
+                            "Examples: superuser, serverfault, math, physics, chemistry, "
+                            "biology, electronics, diy, cooking, gaming, rpg, worldbuilding, "
+                            "law, money, academia, security, unix, apple, etc."
+                        ),
+                    },
+                    "sort": {
+                        "type": "string",
+                        "enum": ["relevance", "activity", "votes", "creation"],
+                        "description": "Sort order (default: relevance)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pubmed_search",
+            "description": (
+                "Search PubMed for biomedical and life science research papers. "
+                "Covers medical journals, clinical trials, pharmacology, biochemistry, "
+                "genetics, epidemiology, public health, toxicology, and more. Returns "
+                "paper titles, authors, journals, and DOIs. Free NCBI API."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "PubMed search query (supports MeSH terms and boolean operators)",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum results (default 10, max 15)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "wikipedia_search",
+            "description": (
+                "Search Wikipedia for encyclopedic knowledge. Returns article extracts "
+                "with text snippets, timestamps, and word counts. Use for background "
+                "context, definitions, historical facts, and general reference. "
+                "Free MediaWiki API."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results (default 8, max 15)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "archiveorg_search",
+            "description": (
+                "Search the Internet Archive's full-text index across all collections. "
+                "Covers books, magazines, government documents, academic papers, audio, "
+                "video, software, and web archives. NOT the Wayback Machine URL lookup — "
+                "this searches actual content of archived materials. Use for rare "
+                "historical documents, out-of-print books, government reports, and "
+                "primary sources. Free API."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "media_type": {
+                        "type": "string",
+                        "description": "Filter by media type: texts, audio, movies, software, image, etc.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum results (default 10, max 15)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "forum_search",
+            "description": (
+                "Search niche internet forums for first-hand experiences, hobbyist "
+                "knowledge, and discussions not found on mainstream platforms. Searches "
+                "across SomethingAwful, Bodybuilding.com, XDA-Developers, Head-Fi, "
+                "AVSForum, Overclock.net, ResetEra, KiwiFarms, HardwareZone, and more. "
+                "Optionally target a specific forum URL. Use for niche expertise, "
+                "product reviews, and underground knowledge."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "forum_url": {
+                        "type": "string",
+                        "description": (
+                            "Optional: specific forum URL to search within "
+                            "(e.g., 'forums.somethingawful.com', 'forum.bodybuilding.com')"
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scholar_search",
+            "description": (
+                "Search academic literature via SearXNG's science/scholar engines. "
+                "Broader than arXiv alone — covers Google Scholar, Semantic Scholar, "
+                "ResearchGate, Academia.edu, SSRN, JSTOR, and more. Use for journal "
+                "articles, conference papers, theses, patents, and court opinions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Academic search query"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "substack_search",
+            "description": (
+                "Search Substack newsletters for long-form independent analysis, "
+                "investigative journalism, and expert commentary. Covers niche topics "
+                "not found in mainstream media — geopolitics, finance, science, tech, "
+                "health, culture. Use fetch_webpage on results to get full article text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -1914,6 +2141,17 @@ async def enhanced_web_fetch(url: str, extract_info: str = "") -> str:
     censored/blocked, the next tier is tried.  If all tiers fail,
     we return whatever we got with a censorship warning.
     """
+    # Tier -1: PDF extraction (if URL looks like a PDF)
+    if url.lower().endswith(".pdf") or "/pdf/" in url.lower():
+        pdf_text = await _extract_pdf_text(url)
+        if pdf_text:
+            if len(pdf_text) > WEBPAGE_MAX_CHARS:
+                pdf_text = pdf_text[:WEBPAGE_MAX_CHARS] + "\n\n[... PDF content truncated ...]"
+            result = f"**PDF content from {url}:**\n\n{pdf_text}"
+            if extract_info:
+                result = f"**Looking for: {extract_info}**\n\n{result}"
+            return result
+
     # Tier 0: httpx fast path
     try:
         direct = await _fetch_via_httpx(url)
@@ -2604,6 +2842,669 @@ async def tool_web_search(query: str) -> str:
     return searxng_result
 
 
+# ============================================================================
+# Hacker News Search (Algolia API — free, no auth)
+# ============================================================================
+
+async def tool_hackernews_search(query: str, sort_by: str = "relevance", time_range: str = "") -> str:
+    """Search Hacker News via the Algolia API.
+
+    Covers stories, comments, and Ask HN / Show HN posts.
+    Free API, no authentication required.
+    """
+    try:
+        async with get_throttler("hackernews").throttle():
+            client = http_client()
+            endpoint = "search" if sort_by == "relevance" else "search_by_date"
+            params: dict[str, str | int] = {
+                "query": query,
+                "hitsPerPage": 15,
+                "tags": "(story,comment)",
+            }
+            # Time range filtering via numericFilters
+            if time_range:
+                now = int(time.time())
+                range_map = {
+                    "day": 86400,
+                    "week": 604800,
+                    "month": 2592000,
+                    "year": 31536000,
+                }
+                seconds = range_map.get(time_range, 0)
+                if seconds:
+                    params["numericFilters"] = f"created_at_i>{now - seconds}"
+
+            resp = await client.get(
+                f"https://hn.algolia.com/api/v1/{endpoint}",
+                params=params,
+                timeout=15.0,
+            )
+        if resp.status_code != 200:
+            return f"Hacker News search error: HTTP {resp.status_code}"
+
+        data = resp.json()
+        hits = data.get("hits", [])
+        if not hits:
+            return f"No Hacker News results for: {query}"
+
+        formatted = []
+        for i, hit in enumerate(hits[:15], 1):
+            title = hit.get("title") or hit.get("story_title") or ""
+            comment_text = hit.get("comment_text") or ""
+            author = hit.get("author", "unknown")
+            points = hit.get("points") if hit.get("points") is not None else 0
+            created = hit.get("created_at", "")[:10]
+            obj_id = hit.get("objectID", "")
+            url = hit.get("url") or f"https://news.ycombinator.com/item?id={obj_id}"
+            hn_url = f"https://news.ycombinator.com/item?id={obj_id}"
+
+            if comment_text:
+                # Strip HTML from comments
+                comment_text = re.sub(r'<[^>]+>', ' ', comment_text)
+                comment_text = html.unescape(comment_text).strip()
+                if len(comment_text) > 400:
+                    comment_text = comment_text[:400] + "..."
+                formatted.append(
+                    f"{i}. **Comment by {author}** [{created}] (on: {title or 'thread'})\n"
+                    f"   HN: {hn_url}\n"
+                    f"   {comment_text}"
+                )
+            else:
+                formatted.append(
+                    f"{i}. **{title}** by {author} [{created}] ({points} points)\n"
+                    f"   URL: {url}\n"
+                    f"   HN: {hn_url}"
+                )
+
+        return "\n\n".join(formatted)
+
+    except httpx.TimeoutException:
+        return "Hacker News search error: request timed out"
+    except Exception as e:
+        return f"Hacker News search error: {str(e)}"
+
+
+# ============================================================================
+# Stack Exchange Search (SE API v2.3 — free, no auth for read)
+# ============================================================================
+
+async def tool_stackexchange_search(query: str, site: str = "stackoverflow", sort: str = "relevance") -> str:
+    """Search Stack Exchange sites for Q&A content.
+
+    Covers hundreds of niche communities: stackoverflow, superuser, serverfault,
+    askubuntu, math, physics, chemistry, biology, electronics, diy, cooking,
+    gaming, rpg, worldbuilding, etc.
+
+    Free API, no authentication required for read access.
+    """
+    try:
+        async with get_throttler("stackexchange").throttle():
+            client = http_client()
+            resp = await client.get(
+                "https://api.stackexchange.com/2.3/search/advanced",
+                params={
+                    "q": query,
+                    "site": site,
+                    "sort": sort,
+                    "order": "desc",
+                    "pagesize": 10,
+                    "filter": "withbody",
+                },
+                timeout=15.0,
+                headers={"Accept-Encoding": "gzip"},
+            )
+        if resp.status_code != 200:
+            return f"Stack Exchange search error: HTTP {resp.status_code}"
+
+        data = resp.json()
+        items = data.get("items", [])
+        if not items:
+            return f"No results on {site} for: {query}"
+
+        formatted = []
+        for i, item in enumerate(items[:10], 1):
+            title = html.unescape(item.get("title", ""))
+            score = item.get("score", 0)
+            answers = item.get("answer_count", 0)
+            is_answered = item.get("is_answered", False)
+            link = item.get("link", "")
+            tags = ", ".join(item.get("tags", [])[:5])
+            creation = datetime.fromtimestamp(
+                item.get("creation_date", 0), tz=timezone.utc
+            ).strftime("%Y-%m-%d") if item.get("creation_date") else ""
+
+            # Extract body text (HTML -> plain text)
+            body = item.get("body", "")
+            if body:
+                body = re.sub(r'<[^>]+>', ' ', body)
+                body = html.unescape(body).strip()
+                if len(body) > 400:
+                    body = body[:400] + "..."
+
+            status = "ANSWERED" if is_answered else f"{answers} answers"
+            formatted.append(
+                f"{i}. **{title}** [score: {score}, {status}] [{creation}]\n"
+                f"   Tags: {tags}\n"
+                f"   URL: {link}\n"
+                f"   {body}"
+            )
+
+        quota_remaining = data.get("quota_remaining", "?")
+        return "\n\n".join(formatted) + f"\n\n[API quota remaining: {quota_remaining}]"
+
+    except httpx.TimeoutException:
+        return "Stack Exchange search error: request timed out"
+    except Exception as e:
+        return f"Stack Exchange search error: {str(e)}"
+
+
+# ============================================================================
+# PubMed / Biomedical Search (NCBI E-utilities — free, no auth)
+# ============================================================================
+
+async def tool_pubmed_search(query: str, max_results: int = 10) -> str:
+    """Search PubMed for biomedical and life science literature.
+
+    Uses NCBI E-utilities (esearch + efetch). Covers medical journals,
+    clinical trials, pharmacology, biochemistry, genetics, epidemiology,
+    public health, and more. Free API, no authentication required.
+    """
+    max_results = min(max_results, 15)
+    try:
+        client = http_client()
+
+        # Step 1: Search for PMIDs
+        async with get_throttler("pubmed").throttle():
+            search_resp = await client.get(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+                params={
+                    "db": "pubmed",
+                    "term": query,
+                    "retmax": max_results,
+                    "retmode": "json",
+                    "sort": "relevance",
+                },
+                timeout=15.0,
+            )
+        if search_resp.status_code != 200:
+            return f"PubMed search error: HTTP {search_resp.status_code}"
+
+        search_data = search_resp.json()
+        id_list = search_data.get("esearchresult", {}).get("idlist", [])
+        if not id_list:
+            return f"No PubMed results for: {query}"
+
+        # Step 2: Fetch article summaries
+        async with get_throttler("pubmed").throttle():
+            fetch_resp = await client.get(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
+                params={
+                    "db": "pubmed",
+                    "id": ",".join(id_list),
+                    "retmode": "json",
+                },
+                timeout=15.0,
+            )
+        if fetch_resp.status_code != 200:
+            return f"PubMed fetch error: HTTP {fetch_resp.status_code}"
+
+        fetch_data = fetch_resp.json()
+        results = fetch_data.get("result", {})
+
+        formatted = []
+        for i, pmid in enumerate(id_list, 1):
+            article = results.get(pmid, {})
+            if not article or isinstance(article, str):
+                continue
+
+            title = article.get("title", "No title")
+            authors_list = article.get("authors", [])
+            authors = ", ".join(
+                a.get("name", "") for a in authors_list[:3]
+            )
+            if len(authors_list) > 3:
+                authors += f" et al. ({len(authors_list)} authors)"
+
+            journal = article.get("fulljournalname") or article.get("source", "")
+            pub_date = article.get("pubdate", "")
+            doi = ""
+            for aid in article.get("articleids", []):
+                if aid.get("idtype") == "doi":
+                    doi = aid.get("value", "")
+                    break
+
+            url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+            doi_line = f"\n   DOI: https://doi.org/{doi}" if doi else ""
+
+            formatted.append(
+                f"{i}. **{title}**\n"
+                f"   Authors: {authors}\n"
+                f"   Journal: {journal} [{pub_date}]\n"
+                f"   PMID: {pmid} | URL: {url}{doi_line}"
+            )
+
+        return "\n\n".join(formatted)
+
+    except httpx.TimeoutException:
+        return "PubMed search error: request timed out"
+    except Exception as e:
+        return f"PubMed search error: {str(e)}"
+
+
+# ============================================================================
+# Wikipedia Full-Text Search (MediaWiki API — free, no auth)
+# ============================================================================
+
+async def tool_wikipedia_search(query: str, limit: int = 8) -> str:
+    """Search Wikipedia for article content via the MediaWiki API.
+
+    Returns article extracts with full text snippets, not just titles.
+    Covers the entire English Wikipedia. Free API, no authentication required.
+    """
+    limit = min(limit, 15)
+    try:
+        async with get_throttler("wikipedia").throttle():
+            client = http_client()
+            resp = await client.get(
+                "https://en.wikipedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": query,
+                    "srlimit": limit,
+                    "srprop": "snippet|timestamp|wordcount",
+                    "format": "json",
+                },
+                timeout=15.0,
+                headers={"User-Agent": "DeepSearchPortal/1.0 (research tool)"},
+            )
+        if resp.status_code != 200:
+            return f"Wikipedia search error: HTTP {resp.status_code}"
+
+        data = resp.json()
+        results = data.get("query", {}).get("search", [])
+        if not results:
+            return f"No Wikipedia results for: {query}"
+
+        formatted = []
+        for i, result in enumerate(results[:limit], 1):
+            title = result.get("title", "")
+            snippet = result.get("snippet", "")
+            # Strip HTML from snippet
+            snippet = re.sub(r'<[^>]+>', '', snippet)
+            snippet = html.unescape(snippet).strip()
+            wordcount = result.get("wordcount", 0)
+            timestamp = result.get("timestamp", "")[:10]
+            url = f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
+
+            formatted.append(
+                f"{i}. **{title}** [{timestamp}] ({wordcount:,} words)\n"
+                f"   URL: {url}\n"
+                f"   {snippet}"
+            )
+
+        return "\n\n".join(formatted)
+
+    except httpx.TimeoutException:
+        return "Wikipedia search error: request timed out"
+    except Exception as e:
+        return f"Wikipedia search error: {str(e)}"
+
+
+# ============================================================================
+# Archive.org Full-Text Search (Internet Archive — free, no auth)
+# ============================================================================
+
+async def tool_archiveorg_search(query: str, media_type: str = "", max_results: int = 10) -> str:
+    """Search the Internet Archive's full-text index across all collections.
+
+    Covers books, magazines, government documents, academic papers, audio,
+    video, software, and web archives. This is NOT the Wayback Machine URL
+    lookup — this searches the actual content of archived materials.
+
+    Free API, no authentication required.
+    """
+    max_results = min(max_results, 15)
+    try:
+        async with get_throttler("archiveorg").throttle():
+            client = http_client()
+            params: dict[str, str | int] = {
+                "q": query,
+                "rows": max_results,
+                "output": "json",
+                "fl[]": "identifier,title,creator,date,description,mediatype,downloads",
+            }
+            if media_type:
+                params["q"] = f"{query} AND mediatype:{media_type}"
+
+            resp = await client.get(
+                "https://archive.org/advancedsearch.php",
+                params=params,
+                timeout=20.0,
+                headers={"User-Agent": "DeepSearchPortal/1.0 (research tool)"},
+            )
+        if resp.status_code != 200:
+            return f"Archive.org search error: HTTP {resp.status_code}"
+
+        data = resp.json()
+        docs = data.get("response", {}).get("docs", [])
+        if not docs:
+            return f"No Archive.org results for: {query}"
+
+        formatted = []
+        for i, doc in enumerate(docs[:max_results], 1):
+            title = doc.get("title", "No title")
+            if isinstance(title, list):
+                title = title[0] if title else "No title"
+            creator = doc.get("creator", "Unknown")
+            if isinstance(creator, list):
+                creator = ", ".join(creator[:3])
+            date = doc.get("date", "")[:10] if doc.get("date") else ""
+            media = doc.get("mediatype", "")
+            identifier = doc.get("identifier", "")
+            downloads = doc.get("downloads", 0)
+            description = doc.get("description", "")
+            if isinstance(description, list):
+                description = " ".join(description)
+            if description:
+                description = re.sub(r'<[^>]+>', ' ', description)
+                description = html.unescape(description).strip()
+                if len(description) > 300:
+                    description = description[:300] + "..."
+
+            url = f"https://archive.org/details/{identifier}"
+            formatted.append(
+                f"{i}. **{title}** by {creator} [{date}] ({media}, {downloads} downloads)\n"
+                f"   URL: {url}\n"
+                f"   {description}"
+            )
+
+        return "\n\n".join(formatted)
+
+    except httpx.TimeoutException:
+        return "Archive.org search error: request timed out"
+    except Exception as e:
+        return f"Archive.org search error: {str(e)}"
+
+
+# ============================================================================
+# Niche Forum Search (SearXNG site-targeted)
+# ============================================================================
+
+# Common forum platforms and niche communities to target
+_FORUM_SITE_TARGETS = [
+    "site:forums.somethingawful.com",
+    "site:forum.bodybuilding.com",
+    "site:boards.straightdope.com",
+    "site:discourse.org",
+    "site:community.cloudflare.com",
+    "site:forum.xda-developers.com",
+    "site:forums.anandtech.com",
+    "site:arstechnica.com/civis",
+    "site:forums.hardwarezone.com.sg",
+    "site:kiwifarms.net",
+    "site:resetera.com",
+    "site:neogaf.com",
+    "site:overclock.net",
+    "site:head-fi.org",
+    "site:avsforum.com",
+    "site:forum.lowyat.net",
+]
+
+
+async def tool_forum_search(query: str, forum_url: str = "") -> str:
+    """Search niche internet forums via SearXNG with site-targeting.
+
+    If forum_url is provided, searches that specific forum.
+    Otherwise, searches across a curated list of popular niche forums
+    (SomethingAwful, Bodybuilding.com, XDA, Head-Fi, AVSForum, etc.)
+    plus general forum-targeted queries.
+
+    Use this for niche expertise, hobbyist knowledge, first-hand experiences,
+    and discussions not found on mainstream platforms.
+    """
+    try:
+        results_all: list[dict] = []
+
+        if forum_url:
+            # Search specific forum
+            site_query = f"site:{forum_url.replace('https://', '').replace('http://', '').rstrip('/')} {query}"
+            try:
+                results = await _searxng_query(site_query, categories="general")
+                results_all.extend(results)
+            except Exception:
+                pass
+        else:
+            # Search across curated forum list in batches
+            # Use 3 batches of forum site targets for breadth
+            batch_size = 5
+            for batch_start in range(0, min(len(_FORUM_SITE_TARGETS), 15), batch_size):
+                batch = _FORUM_SITE_TARGETS[batch_start:batch_start + batch_size]
+                site_clause = " OR ".join(batch)
+                forum_query = f"({site_clause}) {query}"
+                try:
+                    batch_results = await _searxng_query(forum_query, categories="general")
+                    results_all.extend(batch_results)
+                except Exception:
+                    continue
+
+            # Also try a generic forum query
+            try:
+                generic_results = await _searxng_query(
+                    f"{query} forum discussion thread",
+                    categories="general",
+                )
+                seen_urls = {r.get("url", "") for r in results_all}
+                for r in generic_results:
+                    if r.get("url", "") not in seen_urls:
+                        results_all.append(r)
+                        seen_urls.add(r.get("url", ""))
+            except Exception:
+                pass
+
+        if not results_all:
+            return f"No forum results for: {query}"
+
+        # Deduplicate by URL
+        seen: set[str] = set()
+        unique: list[dict] = []
+        for r in results_all:
+            url = r.get("url", "")
+            if url and url not in seen:
+                seen.add(url)
+                unique.append(r)
+
+        return _format_search_results(unique[:15], source_label="forum") or f"No forum results for: {query}"
+
+    except Exception as e:
+        return f"Forum search error: {str(e)}"
+
+
+# ============================================================================
+# Google Scholar Search (via SearXNG scholar engine)
+# ============================================================================
+
+async def tool_scholar_search(query: str) -> str:
+    """Search Google Scholar for academic papers, citations, and theses.
+
+    Uses SearXNG's scholar category which aggregates results from
+    Google Scholar, Semantic Scholar, and other academic search engines.
+    Broader coverage than arXiv alone — includes journals, conference
+    proceedings, theses, patents, and court opinions.
+    """
+    try:
+        results = await _searxng_query(query, categories="science")
+    except httpx.TimeoutException:
+        return "Scholar search error: request timed out"
+    except Exception as e:
+        return f"Scholar search error: {str(e)}"
+
+    if not results:
+        # Fallback: try general search with academic site targeting
+        try:
+            fallback_query = (
+                f"({query}) (site:scholar.google.com OR site:semanticscholar.org "
+                f"OR site:researchgate.net OR site:academia.edu OR site:ssrn.com "
+                f"OR site:jstor.org OR site:ncbi.nlm.nih.gov)"
+            )
+            results = await _searxng_query(fallback_query, categories="general")
+        except Exception:
+            pass
+
+    return _format_search_results(results[:15], source_label="scholar") or f"No scholar results for: {query}"
+
+
+# ============================================================================
+# Substack Search (SearXNG site-targeted)
+# ============================================================================
+
+async def tool_substack_search(query: str) -> str:
+    """Search Substack newsletters for long-form analysis and independent journalism.
+
+    Uses SearXNG with site:substack.com targeting. Covers investigative
+    journalism, expert commentary, niche analysis, and independent reporting
+    that doesn't appear in mainstream media. Use fetch_webpage on URLs
+    found here to get full article text.
+    """
+    try:
+        # Primary: site-targeted search
+        results = await _searxng_query(
+            f"site:substack.com {query}", categories="general"
+        )
+
+        # Supplement with site:*.substack.com for custom domains
+        try:
+            extra = await _searxng_query(
+                f"site:*.substack.com {query}", categories="general"
+            )
+            seen_urls = {r.get("url", "") for r in results}
+            for r in extra:
+                if r.get("url", "") not in seen_urls:
+                    results.append(r)
+                    seen_urls.add(r.get("url", ""))
+        except Exception:
+            pass
+
+        if not results:
+            return f"No Substack results for: {query}"
+
+        return _format_search_results(results[:15], source_label="substack") or f"No Substack results for: {query}"
+
+    except httpx.TimeoutException:
+        return "Substack search error: request timed out"
+    except Exception as e:
+        return f"Substack search error: {str(e)}"
+
+
+# ============================================================================
+# Retry Wrapper for Tool Execution
+# ============================================================================
+
+async def _retry_tool_call(
+    coro_factory,
+    max_retries: int = 2,
+    backoff_base: float = 1.0,
+) -> str:
+    """Retry a tool call with exponential backoff on transient failures.
+
+    coro_factory is a zero-arg callable that returns a new coroutine each time.
+    Only retries on timeout and server errors, not on valid empty results.
+    """
+    last_error = ""
+    for attempt in range(max_retries + 1):
+        try:
+            result = await coro_factory()
+            # Don't retry on valid "no results" — only on actual errors
+            prefix = result.lower()[:80]
+            if "error" not in prefix and "failed" not in prefix and "timed out" not in prefix:
+                return result
+            if attempt < max_retries:
+                last_error = result
+                await asyncio.sleep(backoff_base * (2 ** attempt))
+                continue
+            return result
+        except httpx.TimeoutException:
+            last_error = "request timed out"
+            if attempt < max_retries:
+                await asyncio.sleep(backoff_base * (2 ** attempt))
+                continue
+        except Exception as e:
+            last_error = str(e)
+            if attempt < max_retries:
+                await asyncio.sleep(backoff_base * (2 ** attempt))
+                continue
+
+    return f"Tool failed after {max_retries + 1} attempts: {last_error}"
+
+
+# ============================================================================
+# PDF Text Extraction
+# ============================================================================
+
+async def _extract_pdf_text(url: str) -> Optional[str]:
+    """Download and extract text from a PDF document.
+
+    Uses PyMuPDF (fitz) if available, falls back to pdfplumber.
+    Returns extracted text or None on failure.
+    """
+    try:
+        client = http_client()
+        resp = await client.get(
+            url,
+            timeout=30.0,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
+        )
+        if resp.status_code != 200:
+            return None
+
+        content_type = resp.headers.get("content-type", "")
+        if "pdf" not in content_type.lower() and not url.lower().endswith(".pdf"):
+            return None
+
+        pdf_bytes = resp.content
+
+        # Try PyMuPDF first (fastest)
+        try:
+            import fitz  # PyMuPDF
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            pages_text = []
+            for page_num in range(min(doc.page_count, 50)):  # Cap at 50 pages
+                page = doc[page_num]
+                pages_text.append(page.get_text())
+            doc.close()
+            text = "\n\n".join(pages_text).strip()
+            if text:
+                return text
+        except ImportError:
+            pass
+        except Exception as e:
+            log.debug(f"PyMuPDF extraction failed for {url}: {e}")
+
+        # Fallback: pdfplumber
+        try:
+            import pdfplumber
+            import io
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                pages_text = []
+                for page in pdf.pages[:50]:
+                    page_text = page.extract_text()
+                    if page_text:
+                        pages_text.append(page_text)
+                text = "\n\n".join(pages_text).strip()
+                if text:
+                    return text
+        except ImportError:
+            pass
+        except Exception as e:
+            log.debug(f"pdfplumber extraction failed for {url}: {e}")
+
+        return None
+    except Exception as e:
+        log.debug(f"PDF download failed for {url}: {e}")
+        return None
+
+
 async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
     """Route and execute a tool call (inner implementation)."""
     if tool_name == "searxng_search":
@@ -2682,6 +3583,43 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
             query=arguments.get("query", ""),
             result_type=arguments.get("result_type", "videos"),
         )
+    elif tool_name == "hackernews_search":
+        return await tool_hackernews_search(
+            arguments.get("query", ""),
+            arguments.get("sort_by", "relevance"),
+            arguments.get("time_range", ""),
+        )
+    elif tool_name == "stackexchange_search":
+        return await tool_stackexchange_search(
+            arguments.get("query", ""),
+            arguments.get("site", "stackoverflow"),
+            arguments.get("sort", "relevance"),
+        )
+    elif tool_name == "pubmed_search":
+        return await tool_pubmed_search(
+            arguments.get("query", ""),
+            arguments.get("max_results", 10),
+        )
+    elif tool_name == "wikipedia_search":
+        return await tool_wikipedia_search(
+            arguments.get("query", ""),
+            arguments.get("limit", 8),
+        )
+    elif tool_name == "archiveorg_search":
+        return await tool_archiveorg_search(
+            arguments.get("query", ""),
+            arguments.get("media_type", ""),
+            arguments.get("max_results", 10),
+        )
+    elif tool_name == "forum_search":
+        return await tool_forum_search(
+            arguments.get("query", ""),
+            arguments.get("forum_url", ""),
+        )
+    elif tool_name == "scholar_search":
+        return await tool_scholar_search(arguments.get("query", ""))
+    elif tool_name == "substack_search":
+        return await tool_substack_search(arguments.get("query", ""))
     else:
         return f"Unknown tool: {tool_name}"
 
@@ -3551,6 +4489,14 @@ Initial search query: {angle_query}
 - chan_b4k_search: /biz/ archive — cryptocurrency, DeFi, financial alpha, early-stage project sentiment.
 - chan_warosu_search: /g/ (tech), /sci/ (science), /lit/ (literature) archives. Niche technical and scientific discussion.
 - social_media_search: Instagram, TikTok, LinkedIn, YouTube via commercial scrapers.
+- hackernews_search: Tech industry discourse, startup culture, programming debates, security incidents, expert opinions from engineers/founders.
+- stackexchange_search: Expert Q&A from hundreds of niche communities (stackoverflow, math, physics, chemistry, biology, electronics, diy, cooking, gaming, rpg, worldbuilding, law, money, academia, etc.).
+- pubmed_search: Biomedical and life science research — medical journals, clinical trials, pharmacology, genetics, epidemiology, public health.
+- wikipedia_search: Encyclopedic background context, definitions, historical facts. Fast reference.
+- archiveorg_search: Internet Archive full-text search — rare historical documents, out-of-print books, government reports, primary sources.
+- forum_search: Niche internet forums (SomethingAwful, Bodybuilding.com, XDA, Head-Fi, AVSForum, Overclock.net, ResetEra, etc.). First-hand experiences and underground knowledge.
+- scholar_search: Academic literature beyond arXiv — Google Scholar, Semantic Scholar, SSRN, JSTOR. Journal articles, theses, patents, court opinions.
+- substack_search: Independent journalism and long-form analysis from Substack newsletters. Expert commentary not found in mainstream media.
 - DIVERSIFY your sources. Do NOT use only searxng_search. Each research node should use at least 2-3 different tool types.
 
 **CRITICAL RULES:**

@@ -6119,6 +6119,90 @@ async def get_research_metrics(session_id: str):
     return JSONResponse(metrics)
 
 
+@app.get("/research/dashboard")
+def research_dashboard(request: Request):
+    """Serve the observability dashboard for the research pipeline.
+
+    Queries Langfuse Metrics API (if configured) and local metrics files
+    to render a comprehensive HTML dashboard showing latency, cost, model
+    usage, error rates, and per-session research statistics.
+
+    Query params:
+      ?days=N  — lookback window (default: 7)
+    """
+    from fastapi.responses import HTMLResponse
+
+    days = 7
+    try:
+        days_param = request.query_params.get("days", "7")
+        days = max(1, min(90, int(days_param)))
+    except (ValueError, TypeError):
+        pass
+
+    try:
+        from langfuse_dashboards import render_dashboard_html
+        html_content = render_dashboard_html(days=days)
+        return HTMLResponse(content=html_content)
+    except Exception as exc:
+        log.error("Failed to render dashboard: %s", exc, exc_info=True)
+        return JSONResponse(
+            {"error": f"Dashboard rendering failed: {exc}"},
+            status_code=500,
+        )
+
+
+@app.get("/research/dashboard/data")
+def research_dashboard_data(request: Request):
+    """Return dashboard data as JSON for programmatic consumption.
+
+    Same data as the HTML dashboard but in machine-readable format.
+
+    Query params:
+      ?days=N  — lookback window (default: 7)
+    """
+    days = 7
+    try:
+        days_param = request.query_params.get("days", "7")
+        days = max(1, min(90, int(days_param)))
+    except (ValueError, TypeError):
+        pass
+
+    try:
+        from langfuse_dashboards import (
+            _langfuse_configured,
+            aggregate_local_metrics,
+            query_cost_over_time,
+            query_error_rates,
+            query_model_usage,
+            query_observation_latency_by_name,
+            query_trace_latency,
+            query_trace_volume,
+        )
+
+        langfuse_available = _langfuse_configured()
+        data = {
+            "langfuse_configured": langfuse_available,
+            "days": days,
+            "local_metrics": aggregate_local_metrics(),
+        }
+        if langfuse_available:
+            data["langfuse"] = {
+                "trace_volume": query_trace_volume(days),
+                "model_usage": query_model_usage(days),
+                "observation_latency": query_observation_latency_by_name(days),
+                "errors": query_error_rates(days),
+                "cost_over_time": query_cost_over_time(days),
+                "trace_latency": query_trace_latency(days),
+            }
+        return JSONResponse(data)
+    except Exception as exc:
+        log.error("Failed to get dashboard data: %s", exc, exc_info=True)
+        return JSONResponse(
+            {"error": f"Dashboard data failed: {exc}"},
+            status_code=500,
+        )
+
+
 @app.post("/v1/verify")
 async def verify_research(request: Request):
     """Verify an LLM output using the Veritas Inquisitor swarm.

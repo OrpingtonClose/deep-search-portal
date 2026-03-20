@@ -159,9 +159,9 @@ def _get_llm(
 ) -> ChatOpenAI:
     """Create a LangChain ChatOpenAI instance pointing at the Mistral API.
 
-    Uses extra_body to pass max_tokens because LangChain's ChatOpenAI
-    converts max_tokens to max_completion_tokens, which Mistral rejects
-    with a 422 error.
+    Note: We pass max_tokens via extra_body instead of the native parameter
+    because langchain-openai >=1.0 converts max_tokens to
+    max_completion_tokens, which the Mistral API rejects with a 422.
     """
     return ChatOpenAI(
         model=model or UPSTREAM_MODEL,

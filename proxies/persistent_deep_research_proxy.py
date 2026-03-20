@@ -6120,7 +6120,7 @@ async def get_research_metrics(session_id: str):
 
 
 @app.get("/research/dashboard")
-async def research_dashboard(request: Request):
+def research_dashboard(request: Request):
     """Serve the observability dashboard for the research pipeline.
 
     Queries Langfuse Metrics API (if configured) and local metrics files
@@ -6152,7 +6152,7 @@ async def research_dashboard(request: Request):
 
 
 @app.get("/research/dashboard/data")
-async def research_dashboard_data(request: Request):
+def research_dashboard_data(request: Request):
     """Return dashboard data as JSON for programmatic consumption.
 
     Same data as the HTML dashboard but in machine-readable format.

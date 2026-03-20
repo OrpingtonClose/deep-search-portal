@@ -30,7 +30,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+import html as html_mod
 
 import httpx
 
@@ -300,12 +300,7 @@ def aggregate_local_metrics() -> dict[str, Any]:
 
 def _safe(text: str) -> str:
     """HTML-escape a string."""
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
+    return html_mod.escape(text, quote=True)
 
 
 def _format_duration(secs: float) -> str:

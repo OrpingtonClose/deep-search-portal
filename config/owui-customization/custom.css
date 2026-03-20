@@ -1,0 +1,111 @@
+/* ==========================================================================
+   Deep Search Portal — Report Badge & Dropdown in Open WebUI Sidebar
+   Injected via Open WebUI's static/custom.css hook.
+   ========================================================================== */
+
+/* Badge container — sits directly after a chat item in the sidebar */
+.dsp-report-badge {
+  padding: 0 0.5rem 0.25rem 2.25rem; /* left-indent to align with chat title */
+  user-select: none;
+}
+
+/* Toggle button */
+.dsp-report-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.125rem 0.5rem;
+  border: none;
+  border-radius: 0.375rem;
+  font-size: 0.7rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+  background-color: rgba(99, 102, 241, 0.12);
+  color: rgb(129, 140, 248);
+}
+
+.dsp-report-toggle:hover {
+  background-color: rgba(99, 102, 241, 0.22);
+}
+
+.dsp-report-toggle.dsp-open {
+  background-color: rgba(99, 102, 241, 0.25);
+}
+
+.dsp-report-toggle svg {
+  flex-shrink: 0;
+}
+
+/* Dropdown panel */
+.dsp-report-dropdown {
+  margin-top: 0.25rem;
+  padding: 0.375rem 0.5rem;
+  border-radius: 0.5rem;
+  background-color: rgba(30, 30, 40, 0.6);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Light mode override */
+html.light .dsp-report-dropdown {
+  background-color: rgba(240, 240, 245, 0.9);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+html.light .dsp-report-toggle {
+  background-color: rgba(99, 102, 241, 0.1);
+  color: rgb(79, 70, 229);
+}
+
+html.light .dsp-report-toggle:hover {
+  background-color: rgba(99, 102, 241, 0.18);
+}
+
+/* Metadata line */
+.dsp-report-meta {
+  font-size: 0.65rem;
+  color: rgba(160, 160, 180, 0.9);
+  margin-bottom: 0.25rem;
+}
+
+html.light .dsp-report-meta {
+  color: rgba(80, 80, 100, 0.8);
+}
+
+/* Links */
+.dsp-report-link {
+  display: block;
+  padding: 0.2rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-decoration: none;
+  color: rgb(129, 140, 248);
+  transition: background-color 0.12s;
+}
+
+.dsp-report-link:hover {
+  background-color: rgba(99, 102, 241, 0.15);
+}
+
+.dsp-report-link--secondary {
+  color: rgba(160, 160, 180, 0.8);
+  font-weight: 400;
+}
+
+.dsp-report-link--secondary:hover {
+  color: rgb(129, 140, 248);
+}
+
+html.light .dsp-report-link {
+  color: rgb(79, 70, 229);
+}
+
+html.light .dsp-report-link--secondary {
+  color: rgba(80, 80, 100, 0.7);
+}
+
+html.light .dsp-report-link--secondary:hover {
+  color: rgb(79, 70, 229);
+}

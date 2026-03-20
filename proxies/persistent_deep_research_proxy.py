@@ -5301,7 +5301,6 @@ def _spawn_verification_nodes(
         )
 
         # Skip if we already have a similar question
-        q_lower = question.lower()
         if any(
             name.lower() in eq.lower() and "verify" in eq.lower()
             for eq in existing_questions
@@ -5562,24 +5561,27 @@ async def tree_research_reactor(
                     #    This ensures every vendor/person/product gets
                     #    cross-referenced even if the LLM doesn't
                     #    explicitly ask for it.
-                    try:
-                        entities = await _extract_entities_for_verification(
-                            conditions, req_id,
-                        )
-                        if entities:
-                            verify_children = _spawn_verification_nodes(
-                                entities, node, all_questions, req_id,
+                    #    Respects TREE_MAX_DEPTH to prevent unbounded
+                    #    depth cascading from verification → verification.
+                    if node.depth < TREE_MAX_DEPTH:
+                        try:
+                            entities = await _extract_entities_for_verification(
+                                conditions, req_id,
                             )
-                            children.extend(verify_children)
-                            log.info(
-                                f"[{req_id}] Auto-spawned {len(verify_children)} "
-                                f"verification nodes for {len(entities)} entities"
+                            if entities:
+                                verify_children = _spawn_verification_nodes(
+                                    entities, node, all_questions, req_id,
+                                )
+                                children.extend(verify_children)
+                                log.info(
+                                    f"[{req_id}] Auto-spawned {len(verify_children)} "
+                                    f"verification nodes for {len(entities)} entities"
+                                )
+                        except Exception as e:
+                            log.warning(
+                                f"[{req_id}] Entity verification spawn failed "
+                                f"(non-fatal): {e}"
                             )
-                    except Exception as e:
-                        log.warning(
-                            f"[{req_id}] Entity verification spawn failed "
-                            f"(non-fatal): {e}"
-                        )
 
                     async with lock:
                         actually_queued = 0

@@ -5689,7 +5689,7 @@ async def _pipeline_producer(
         # Emit report + trace links as the first visible lines
         report_url = final_state.get("report_url", "")
         metrics_url = final_state.get("metrics_url", "")
-        langfuse_url = final_state.get("_langfuse_trace_url", "")
+        langfuse_url = initial_state.get("_langfuse_trace_url", "")
         link_lines = []
         if report_url:
             link_lines.append(f"**[Full Report]({report_url})**")

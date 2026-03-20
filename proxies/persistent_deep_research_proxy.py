@@ -133,6 +133,72 @@ from shared import (
     stream_passthrough,
 )
 
+
+# ---------------------------------------------------------------------------
+# OWUI token validation — protects dashboard/report endpoints
+# ---------------------------------------------------------------------------
+
+_owui_auth_cache: dict[str, float] = {}  # token -> expiry timestamp
+_OWUI_CACHE_TTL = 300  # cache valid tokens for 5 minutes
+_OWUI_CACHE_MAX_SIZE = 1000  # max entries before forced cleanup
+
+
+def _evict_expired_tokens() -> None:
+    """Remove expired entries from the auth cache to prevent unbounded growth."""
+    now = time.monotonic()
+    expired = [k for k, v in _owui_auth_cache.items() if v <= now]
+    for k in expired:
+        del _owui_auth_cache[k]
+
+
+async def _validate_owui_token(request: Request) -> bool:
+    """Validate that the request carries a valid Open WebUI session token.
+
+    Checks the Authorization header (Bearer) or the ``token`` cookie, then
+    verifies against OWUI's ``/api/v1/auths/`` endpoint.  Results are cached
+    for 5 minutes to avoid hammering OWUI on every request.
+    """
+    token = None
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+    if not token:
+        token = request.cookies.get("token", "").strip()
+    if not token:
+        return False
+
+    # Evict expired entries to prevent unbounded memory growth
+    if len(_owui_auth_cache) > _OWUI_CACHE_MAX_SIZE:
+        _evict_expired_tokens()
+
+    # Check cache
+    now = time.monotonic()
+    if token in _owui_auth_cache and _owui_auth_cache[token] > now:
+        return True
+
+    # Validate against OWUI
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{OWUI_INTERNAL_URL}/api/v1/auths/",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        if resp.status_code == 200:
+            _owui_auth_cache[token] = now + _OWUI_CACHE_TTL
+            return True
+        return False
+    except Exception:
+        # If OWUI is unreachable, deny access
+        return False
+
+
+def _auth_denied() -> JSONResponse:
+    """Return a 401 response for unauthenticated dashboard requests."""
+    return JSONResponse(
+        {"error": "Authentication required. Please log in via the portal."},
+        status_code=401,
+    )
+
 # --- Logging ---
 LOG_DIR = os.getenv("PERSISTENT_RESEARCH_LOG_DIR", "/opt/persistent_research_logs")
 log = setup_logging("persistent-research", LOG_DIR)
@@ -145,6 +211,7 @@ SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "mistral-small-latest")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
 LISTEN_PORT = env_int("PERSISTENT_RESEARCH_PORT", 9300, minimum=1)
 PORTAL_PUBLIC_URL = os.getenv("PORTAL_PUBLIC_URL", "").rstrip("/")
+OWUI_INTERNAL_URL = os.getenv("OWUI_INTERNAL_URL", "http://localhost:3000")
 
 # --- LangChain Model Factories ---
 # Use ChatOpenAI pointing at the Mistral OpenAI-compatible endpoint.
@@ -6567,7 +6634,13 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
             research_report.save_metrics_json(metrics_json, req_id)
 
             # Build portal URLs for the report and metrics
-            base = PORTAL_PUBLIC_URL or f"http://localhost:{LISTEN_PORT}"
+            base = PORTAL_PUBLIC_URL
+            if not base:
+                log.warning(
+                    "[%s] PORTAL_PUBLIC_URL not set — report links will be relative",
+                    req_id,
+                )
+                base = ""
             report_url = f"{base}/research/report/{req_id}"
             metrics_url = f"{base}/research/metrics/{req_id}"
             log.info(f"[{req_id}] Report available at: {report_url}")
@@ -6918,8 +6991,10 @@ async def knowledge_stats():
 
 
 @app.get("/research/reports")
-async def get_research_reports():
+async def get_research_reports(request: Request):
     """List all available research reports with metadata."""
+    if not await _validate_owui_token(request):
+        return _auth_denied()
     try:
         reports = list_available_reports()
         return JSONResponse({"reports": reports, "count": len(reports)})
@@ -7005,13 +7080,15 @@ def _render_markdown_page(md_text: str) -> str:
 
 
 @app.get("/research/report/{session_id}")
-async def get_research_report(session_id: str):
+async def get_research_report(session_id: str, request: Request):
     """Serve the research report for a session.
 
     Reports are stored as Markdown.  The endpoint renders them as a
     clean HTML page for browser viewing.  Pass `?raw=1` to get the
     raw Markdown text instead.
     """
+    if not await _validate_owui_token(request):
+        return _auth_denied()
     if not _SAFE_SESSION_ID_RE.match(session_id):
         return JSONResponse({"error": "Invalid session_id"}, status_code=400)
 
@@ -7048,11 +7125,13 @@ async def get_research_report(session_id: str):
 
 
 @app.get("/research/metrics/{session_id}")
-async def get_research_metrics(session_id: str):
+async def get_research_metrics(session_id: str, request: Request):
     """Serve the metrics JSON for a research session.
 
     Designed for LLM consumption — structured data for performance analysis.
     """
+    if not await _validate_owui_token(request):
+        return _auth_denied()
     if not _SAFE_SESSION_ID_RE.match(session_id):
         return JSONResponse({"error": "Invalid session_id"}, status_code=400)
 
@@ -7066,7 +7145,7 @@ async def get_research_metrics(session_id: str):
 
 
 @app.get("/research/dashboard")
-def research_dashboard(request: Request):
+async def research_dashboard(request: Request):
     """Serve the observability dashboard for the research pipeline.
 
     Queries Langfuse Metrics API (if configured) and local metrics files
@@ -7078,6 +7157,8 @@ def research_dashboard(request: Request):
     """
     from fastapi.responses import HTMLResponse
 
+    if not await _validate_owui_token(request):
+        return _auth_denied()
     days = 7
     try:
         days_param = request.query_params.get("days", "7")
@@ -7087,7 +7168,7 @@ def research_dashboard(request: Request):
 
     try:
         from langfuse_dashboards import render_dashboard_html
-        html_content = render_dashboard_html(days=days)
+        html_content = await asyncio.to_thread(render_dashboard_html, days=days)
         return HTMLResponse(content=html_content)
     except Exception as exc:
         log.error("Failed to render dashboard: %s", exc, exc_info=True)
@@ -7098,7 +7179,7 @@ def research_dashboard(request: Request):
 
 
 @app.get("/research/dashboard/data")
-def research_dashboard_data(request: Request):
+async def research_dashboard_data(request: Request):
     """Return dashboard data as JSON for programmatic consumption.
 
     Same data as the HTML dashboard but in machine-readable format.
@@ -7106,6 +7187,8 @@ def research_dashboard_data(request: Request):
     Query params:
       ?days=N  — lookback window (default: 7)
     """
+    if not await _validate_owui_token(request):
+        return _auth_denied()
     days = 7
     try:
         days_param = request.query_params.get("days", "7")
@@ -7125,21 +7208,25 @@ def research_dashboard_data(request: Request):
             query_trace_volume,
         )
 
-        langfuse_available = _langfuse_configured()
-        data = {
-            "langfuse_configured": langfuse_available,
-            "days": days,
-            "local_metrics": aggregate_local_metrics(),
-        }
-        if langfuse_available:
-            data["langfuse"] = {
-                "trace_volume": query_trace_volume(days),
-                "model_usage": query_model_usage(days),
-                "observation_latency": query_observation_latency_by_name(days),
-                "errors": query_error_rates(days),
-                "cost_over_time": query_cost_over_time(days),
-                "trace_latency": query_trace_latency(days),
+        def _build_dashboard_data():
+            langfuse_available = _langfuse_configured()
+            data = {
+                "langfuse_configured": langfuse_available,
+                "days": days,
+                "local_metrics": aggregate_local_metrics(),
             }
+            if langfuse_available:
+                data["langfuse"] = {
+                    "trace_volume": query_trace_volume(days),
+                    "model_usage": query_model_usage(days),
+                    "observation_latency": query_observation_latency_by_name(days),
+                    "errors": query_error_rates(days),
+                    "cost_over_time": query_cost_over_time(days),
+                    "trace_latency": query_trace_latency(days),
+                }
+            return data
+
+        data = await asyncio.to_thread(_build_dashboard_data)
         return JSONResponse(data)
     except Exception as exc:
         log.error("Failed to get dashboard data: %s", exc, exc_info=True)

@@ -36,6 +36,16 @@
 
   // ---- helpers -------------------------------------------------------------
 
+  /** Escape HTML special characters to prevent XSS. */
+  function escHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
   /** Normalise text for matching: lowercase, collapse whitespace, trim. */
   function norm(s) {
     return (s || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -150,14 +160,18 @@
       : "?";
     const conds = report.total_conditions ?? "?";
 
+    const safeSid  = escHtml(report.session_id);
+    const safeConds = escHtml(String(conds));
+    const safeDur   = escHtml(String(dur));
+
     dropdown.innerHTML =
       '<div class="dsp-report-meta">' +
-        '<span>' + conds + " findings</span> &middot; <span>" + dur + "</span>" +
+        '<span>' + safeConds + " findings</span> &middot; <span>" + safeDur + "</span>" +
       "</div>" +
-      '<a class="dsp-report-link" href="' + REPORT_PATH + report.session_id +
+      '<a class="dsp-report-link" href="' + REPORT_PATH + safeSid +
         '" target="_blank" rel="noopener">Open Report</a>' +
       '<a class="dsp-report-link dsp-report-link--secondary" href="' +
-        METRICS_PATH + report.session_id +
+        METRICS_PATH + safeSid +
         '" target="_blank" rel="noopener">Metrics JSON</a>';
 
     toggle.addEventListener("click", function (e) {

@@ -232,7 +232,7 @@ VERITAS_HALLUCINATION_THRESHOLD = float(os.getenv("VERITAS_HALLUCINATION_THRESHO
 # immoral/dangerous queries to censored commercial services.
 COMMERCIAL_SEARCH_ENABLED = os.getenv("COMMERCIAL_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes")
 BRIGHT_DATA_SERP_ZONE = os.getenv("BRIGHT_DATA_SERP_ZONE", "serp")
-MODERATION_MODEL = os.getenv("MODERATION_MODEL", "mistral-moderation-latest")
+MODERATION_MODEL = os.getenv("MODERATION_MODEL", "mistral-small-latest")
 log.info(
     f"Config: synthesis_model={UPSTREAM_MODEL}, subagent_model={SUBAGENT_MODEL}, "
     f"upstream={UPSTREAM_BASE}, searxng={SEARXNG_URL}, port={LISTEN_PORT}, "
@@ -1280,7 +1280,7 @@ def _get_moderation_llm() -> ChatOpenAI:
         api_key=UPSTREAM_KEY,
         base_url=UPSTREAM_BASE,
         temperature=0.0,
-        max_tokens=100,
+        extra_body={"max_tokens": 100},
     )
 
 
@@ -3995,7 +3995,9 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
 # Tree Research Reactor
 # ============================================================================
 
-SPAWN_QUESTIONS_PROMPT = """You are a research strategist.  Given the findings so far from investigating a question, generate focused follow-up questions that would deepen understanding.
+SPAWN_QUESTIONS_PROMPT = """You are a research strategist who values LATERAL THINKING and CREATIVE EXPLORATION.
+
+Given the findings so far, generate follow-up questions that branch into DIVERSE directions — not just deeper into the same topic, but sideways into adjacent domains, contrarian perspectives, and unexpected connections.
 
 **Original user query:** {user_query}
 **Question just investigated:** {node_question}
@@ -4007,22 +4009,33 @@ SPAWN_QUESTIONS_PROMPT = """You are a research strategist.  Given the findings s
 **Questions already in the research tree (avoid duplicates):**
 {existing_questions}
 
-Generate follow-up questions.  For each, provide:
+Generate follow-up questions. For each, provide:
 - "question": a specific, searchable question
 - "context": one sentence on why this matters
 - "pressure": 0.0-1.0 importance score (1.0 = critical gap, 0.1 = minor curiosity)
+- "strategy": one of "deepen" | "lateral" | "contrarian" | "historical" | "cross-domain"
 
-Rules:
+STRATEGY DIVERSITY RULES:
+- At least ONE question must use a DIFFERENT strategy than "deepen"
+- "lateral": explore a related but different domain that could shed light on the topic
+- "contrarian": investigate the opposite claim or a dissenting viewpoint
+- "historical": look at historical precedents, analogies, or how similar situations played out before
+- "cross-domain": borrow concepts from an entirely different field (e.g., if researching economics, check biology, sociology, engineering for parallels)
+- "deepen": drill further into a specific finding
+
+PRESSURE RULES:
+- Higher pressure for: contradictions, unverified claims, critical gaps, surprising cross-domain connections
+- Lower pressure for: already-well-covered areas, minor details
+- Lateral/contrarian/cross-domain questions should get at least 0.6 pressure — they prevent tunnel vision
+- 0 questions is fine if the topic is truly saturated from ALL angles
+
+Other rules:
 - Generate 0-5 questions maximum
-- Only questions that would SIGNIFICANTLY improve the final answer
-- Higher pressure for: contradictions, unverified claims, critical gaps
-- Lower pressure for: tangential curiosity, already-well-covered areas
-- 0 questions is fine if the topic is saturated
 - Do NOT repeat questions already in the tree
 - Output ONLY valid JSON, no markdown fences
 
 Output format:
-{{"sub_questions": [{{"question": "...", "context": "...", "pressure": 0.8}}]}}"""
+{{"sub_questions": [{{"question": "...", "context": "...", "pressure": 0.8, "strategy": "lateral"}}]}}"""
 
 
 def _compute_pressure(

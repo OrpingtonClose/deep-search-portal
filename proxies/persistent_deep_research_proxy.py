@@ -157,14 +157,19 @@ def _get_llm(
     temperature: float = 0.3,
     timeout: float = 300.0,
 ) -> ChatOpenAI:
-    """Create a LangChain ChatOpenAI instance pointing at the Mistral API."""
+    """Create a LangChain ChatOpenAI instance pointing at the Mistral API.
+
+    Uses extra_body to pass max_tokens because LangChain's ChatOpenAI
+    converts max_tokens to max_completion_tokens, which Mistral rejects
+    with a 422 error.
+    """
     return ChatOpenAI(
         model=model or UPSTREAM_MODEL,
         api_key=UPSTREAM_KEY,
         base_url=UPSTREAM_BASE,
-        max_tokens=max_tokens,
         temperature=temperature,
         timeout=timeout,
+        extra_body={"max_tokens": max_tokens},
     )
 
 

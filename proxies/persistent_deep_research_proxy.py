@@ -3514,6 +3514,18 @@ Initial search query: {angle_query}
 7. Use wayback_fetch if a link is dead or unavailable.
 8. Use news_search (not searxng_search) for anything about current events, recent news, market movements, or time-sensitive topics.
 
+**USE THE FULL TOOL ECOSYSTEM — do NOT rely only on web search:**
+- knowledge_graph_search: Query the Neo4j knowledge graph FIRST for prior research, ingested documents, and known entities. This is your most valuable source for topics the system has seen before.
+- knowledge_discover: Run graph discovery algorithms (spreading_activation, swanson_abc, information_gaps) to find hidden connections and serendipitous links in prior knowledge.
+- twitter_search: Real-time signals, expert commentary, breaking news, public discourse. Use Twitter search operators (from:, since:, "exact phrase").
+- youtube_search: Video content, expert lectures, documentaries, tutorials, interviews. Often contains information not found in text-based sources.
+- reddit_search: Community discussions, niche expertise, first-hand experiences. Specify subreddits for targeted results.
+- chan_4plebs_search: Anonymous intelligence from /pol/, /sp/, /int/, /tv/. Early narrative tracking, political discourse, uncensored discussion.
+- chan_b4k_search: /biz/ archive — cryptocurrency, DeFi, financial alpha, early-stage project sentiment.
+- chan_warosu_search: /g/ (tech), /sci/ (science), /lit/ (literature) archives. Niche technical and scientific discussion.
+- social_media_search: Instagram, TikTok, LinkedIn, YouTube via commercial scrapers.
+- DIVERSIFY your sources. Do NOT use only searxng_search. Each research node should use at least 2-3 different tool types.
+
 **CRITICAL RULES:**
 - NEVER fabricate or invent source names. Only cite sources you actually fetched via tools.
 - NEVER claim you checked Bloomberg Terminal, Reuters, or any specific service unless a tool actually returned results from that service.
@@ -4260,6 +4272,48 @@ async def tree_research_reactor(
     nodes_by_id[root.id] = root
     await pending.put(root)
     total_queued = 1
+
+    # --- Pre-seed: decompose into parallel initial angles ---
+    # Generate 3-5 initial research angles so workers start in parallel
+    # instead of waiting for the single root node to finish first.
+    try:
+        seed_prompt = (
+            f"Decompose this research query into 3-5 DISTINCT research angles "
+            f"that can be investigated IN PARALLEL. Each angle should cover a "
+            f"different aspect, perspective, or source type.\n\n"
+            f"Query: {user_query}\n\n"
+            f"Output ONLY valid JSON:\n"
+            f'{{"angles": [{{"question": "specific searchable question", '
+            f'"context": "why this angle matters"}}]}}'
+        )
+        seed_result = await call_llm(
+            [{"role": "user", "content": seed_prompt}],
+            req_id, model=SUBAGENT_MODEL, max_tokens=1024, temperature=0.4,
+        )
+        if "error" not in seed_result:
+            seed_content = seed_result.get("content", "").strip()
+            if seed_content.startswith("```"):
+                seed_content = re.sub(r'^```(?:json)?\s*', '', seed_content)
+                seed_content = re.sub(r'\s*```$', '', seed_content)
+            seed_data = json.loads(seed_content)
+            for i, angle in enumerate(seed_data.get("angles", [])[:5]):
+                q = angle.get("question", "").strip()
+                if not q or q.lower() == user_query.lower():
+                    continue
+                seed_node = ResearchNode(
+                    id=f"{req_id}-seed{i}",
+                    question=q,
+                    context=angle.get("context", ""),
+                    depth=0,
+                    pressure=0.9,
+                    parent_id=root.id,
+                )
+                nodes_by_id[seed_node.id] = seed_node
+                all_questions.append(q)
+                await pending.put(seed_node)
+                total_queued += 1
+    except Exception as e:
+        log.warning(f"[{req_id}] Pre-seed decomposition failed (non-fatal): {e}")
 
     progress.append(
         f"\n**[Phase 2: Tree Research Reactor]** "
@@ -5624,8 +5678,23 @@ async def _pipeline_producer(
                 await output_queue.put(chunk_fn(msg))
             last_progress_idx = len(progress_list)
 
-        # Pipeline done — emit closing think tag and final answer
+        # Pipeline done — emit closing think tag, links header, and final answer
         await output_queue.put(chunk_fn("\n</think>\n\n"))
+
+        # Emit report + trace links as the first visible lines
+        report_url = final_state.get("report_url", "")
+        metrics_url = final_state.get("metrics_url", "")
+        langfuse_url = final_state.get("_langfuse_trace_url", "")
+        link_lines = []
+        if report_url:
+            link_lines.append(f"**[Full Report]({report_url})**")
+        if metrics_url:
+            link_lines.append(f"[Metrics JSON]({metrics_url})")
+        if langfuse_url:
+            link_lines.append(f"[Langfuse Trace]({langfuse_url})")
+        if link_lines:
+            await output_queue.put(chunk_fn(" | ".join(link_lines) + "\n\n"))
+
         final_answer = final_state.get("final_answer", "(No answer generated)")
         for i in range(0, len(final_answer), 200):
             await output_queue.put(chunk_fn(final_answer[i:i + 200]))
@@ -5709,6 +5778,7 @@ async def run_persistent_research(
         "phase": "retrieve",
         "report_url": "",
         "metrics_url": "",
+        "_langfuse_trace_url": langfuse_trace_url or "",
     }
 
     # Create the shared output queue, live findings collector, and curated queue
@@ -5731,9 +5801,6 @@ async def run_persistent_research(
         session_id=req_id,
         tags=["persistent-research"],
     )
-
-    if langfuse_trace_url:
-        yield chunk(f"[Langfuse trace]({langfuse_trace_url})\n\n")
 
     yield chunk("<think>\n")
 

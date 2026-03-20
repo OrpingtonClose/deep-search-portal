@@ -602,12 +602,7 @@ INTERROGATOR_PROMPT = (
     "Input: target output. Output JSON: {\"new_probe_questions\": [...]}. "
     "Goal: generate questions that force additional verifiable claims. "
     "Generate 3-7 probing questions that test the factual accuracy of the "
-    "claims in the target output.\n\n"
-    "DIVERSITY RULES:\n"
-    "- At least one question must challenge an ASSUMPTION (something taken for granted).\n"
-    "- At least one question must explore a CONTRARIAN angle (what if the opposite is true?).\n"
-    "- At least one question must check for MISSING PERSPECTIVES (whose viewpoint is absent?).\n"
-    "- Do NOT generate 7 variations of the same question. Each question must probe a DIFFERENT aspect."
+    "claims in the target output."
 )
 
 CLAIM_DECOMPOSER_PROMPT = (
@@ -626,13 +621,7 @@ EVIDENCE_GATHERER_PROMPT = (
     "For each claim, issue supporting and disproof search queries. "
     "You must search for BOTH evidence that supports AND evidence that contradicts each claim. "
     "Output JSON: {\"claim_id\": \"...\", \"supporting_queries\": [...], \"disproof_queries\": [...], "
-    "\"evidence_summary\": \"...\", \"conflicts_found\": 0}.\n\n"
-    "SEARCH DIVERSITY:\n"
-    "- Use DIFFERENT search strategies per claim: exact quotes, synonyms, domain-specific terms, "
-    "academic databases, news sources, government records, industry reports.\n"
-    "- For disproof queries, think laterally: search for contradicting case studies, "
-    "alternative explanations, debunking articles, or expert criticism.\n"
-    "- Do NOT just negate the claim text. Craft genuinely different search angles."
+    "\"evidence_summary\": \"...\", \"conflicts_found\": 0}."
 )
 
 CRITIC_DEBATER_PROMPT = (
@@ -641,13 +630,7 @@ CRITIC_DEBATER_PROMPT = (
     "\"key_conflicts\": [...], \"resolved_points\": [...]}. "
     "The prosecutor attacks claims with counter-evidence. "
     "The defender presents supporting evidence. "
-    "The examiner checks internal consistency and source validity.\n\n"
-    "DEBATE QUALITY:\n"
-    "- Each speaker must make a DISTINCT argument, not restate the same point differently.\n"
-    "- The prosecutor should find the STRONGEST counter-argument, not the most obvious one.\n"
-    "- The defender should cite SPECIFIC evidence, not just assert the claim is reasonable.\n"
-    "- The examiner should identify STRUCTURAL issues (circular reasoning, missing controls, "
-    "survivorship bias) not just surface-level consistency."
+    "The examiner checks internal consistency and source validity."
 )
 
 FINAL_JUDGE_PROMPT = (

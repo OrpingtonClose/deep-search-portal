@@ -120,8 +120,10 @@ import langfuse_config
 from shared import (
     ConcurrencyLimiter,
     RequestTracker,
+    all_throttler_stats,
     create_app,
     env_int,
+    get_throttler,
     http_client,
     is_utility_request,
     make_sse_chunk,
@@ -1308,7 +1310,8 @@ async def moderate_query(query: str) -> tuple[bool, dict]:
             SystemMessage(content=_MODERATION_PROMPT),
             HumanMessage(content=query),
         ]
-        ai_msg = await llm.ainvoke(messages)
+        async with get_throttler("mistral").throttle():
+            ai_msg = await llm.ainvoke(messages)
         content = ai_msg.content.strip()
 
         # Parse the JSON response
@@ -1354,21 +1357,22 @@ async def _search_bright_data_serp(query: str) -> list[dict]:
     if not BRIGHT_DATA_API_KEY:
         return []
     try:
-        client = http_client()
-        search_url = f"https://www.google.com/search?q={quote_plus(query)}&hl=en&gl=us"
-        resp = await client.post(
-            "https://api.brightdata.com/request",
-            headers={
-                "Authorization": f"Bearer {BRIGHT_DATA_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "zone": BRIGHT_DATA_SERP_ZONE,
-                "url": search_url,
-                "format": "json",
-            },
-            timeout=30.0,
-        )
+        async with get_throttler("bright_data").throttle():
+            client = http_client()
+            search_url = f"https://www.google.com/search?q={quote_plus(query)}&hl=en&gl=us"
+            resp = await client.post(
+                "https://api.brightdata.com/request",
+                headers={
+                    "Authorization": f"Bearer {BRIGHT_DATA_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "zone": BRIGHT_DATA_SERP_ZONE,
+                    "url": search_url,
+                    "format": "json",
+                },
+                timeout=30.0,
+            )
         if resp.status_code != 200:
             log.warning(f"Bright Data SERP: HTTP {resp.status_code}")
             return []
@@ -1396,17 +1400,18 @@ async def _search_oxylabs_serp(query: str) -> list[dict]:
     if not OXYLABS_USERNAME or not OXYLABS_PASSWORD:
         return []
     try:
-        client = http_client()
-        resp = await client.post(
-            "https://realtime.oxylabs.io/v1/queries",
-            auth=(OXYLABS_USERNAME, OXYLABS_PASSWORD),
-            json={
-                "source": "google_search",
-                "query": query,
-                "parse": True,
-            },
-            timeout=30.0,
-        )
+        async with get_throttler("oxylabs").throttle():
+            client = http_client()
+            resp = await client.post(
+                "https://realtime.oxylabs.io/v1/queries",
+                auth=(OXYLABS_USERNAME, OXYLABS_PASSWORD),
+                json={
+                    "source": "google_search",
+                    "query": query,
+                    "parse": True,
+                },
+                timeout=30.0,
+            )
         if resp.status_code != 200:
             log.warning(f"Oxylabs SERP: HTTP {resp.status_code}")
             return []
@@ -1477,26 +1482,27 @@ async def _searxng_query(
     Raises on HTTP errors and timeouts so callers can provide
     descriptive error messages to the subagent.
     """
-    client = http_client()
-    params: dict[str, str] = {
-        "q": query,
-        "format": "json",
-        "categories": categories,
-    }
-    if time_range:
-        params["time_range"] = time_range
+    async with get_throttler("searxng").throttle():
+        client = http_client()
+        params: dict[str, str] = {
+            "q": query,
+            "format": "json",
+            "categories": categories,
+        }
+        if time_range:
+            params["time_range"] = time_range
 
-    resp = await client.get(
-        f"{SEARXNG_URL}/search",
-        params=params,
-        timeout=20.0,
-    )
-    if resp.status_code != 200:
-        log.warning(f"SearXNG returned HTTP {resp.status_code} for categories={categories}")
-        raise RuntimeError(f"SearXNG HTTP {resp.status_code}")
+        resp = await client.get(
+            f"{SEARXNG_URL}/search",
+            params=params,
+            timeout=20.0,
+        )
+        if resp.status_code != 200:
+            log.warning(f"SearXNG returned HTTP {resp.status_code} for categories={categories}")
+            raise RuntimeError(f"SearXNG HTTP {resp.status_code}")
 
-    data = resp.json()
-    return data.get("results", [])[:10]
+        data = resp.json()
+        return data.get("results", [])[:10]
 
 
 # News-intent keywords: if a search query contains any of these, it likely
@@ -1772,32 +1778,33 @@ async def _fetch_via_bright_data(url: str) -> Optional[str]:
     if not BRIGHT_DATA_API_KEY:
         return None
     try:
-        proxy_url = (
-            f"https://brd-customer-{BRIGHT_DATA_CUSTOMER_ID}-zone-{BRIGHT_DATA_ZONE}"
-            f":{BRIGHT_DATA_API_KEY}@brd.superproxy.io:33335"
-        )
-        async with httpx.AsyncClient(
-            proxy=proxy_url,
-            verify=False,
-            timeout=httpx.Timeout(45.0, connect=15.0),
-            follow_redirects=True,
-        ) as client:
-            resp = await client.get(
-                url,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                },
+        async with get_throttler("bright_data").throttle():
+            proxy_url = (
+                f"https://brd-customer-{BRIGHT_DATA_CUSTOMER_ID}-zone-{BRIGHT_DATA_ZONE}"
+                f":{BRIGHT_DATA_API_KEY}@brd.superproxy.io:33335"
             )
-            if resp.status_code != 200:
-                return None
-            content_type = resp.headers.get("content-type", "")
-            if "text/html" not in content_type and "text/plain" not in content_type:
-                return None
-            text = _strip_html(resp.text)
-            return text if text and len(text.strip()) > 50 else None
+            async with httpx.AsyncClient(
+                proxy=proxy_url,
+                verify=False,
+                timeout=httpx.Timeout(45.0, connect=15.0),
+                follow_redirects=True,
+            ) as client:
+                resp = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        ),
+                    },
+                )
+                if resp.status_code != 200:
+                    return None
+                content_type = resp.headers.get("content-type", "")
+                if "text/html" not in content_type and "text/plain" not in content_type:
+                    return None
+                text = _strip_html(resp.text)
+                return text if text and len(text.strip()) > 50 else None
     except Exception as e:
         log.debug(f"Bright Data fetch failed for {url}: {e}")
         return None
@@ -1811,28 +1818,29 @@ async def _fetch_via_oxylabs(url: str) -> Optional[str]:
     if not OXYLABS_USERNAME or not OXYLABS_PASSWORD:
         return None
     try:
-        async with httpx.AsyncClient(
-            proxy=f"https://{OXYLABS_USERNAME}:{OXYLABS_PASSWORD}@unblock.oxylabs.io:60000",
-            verify=False,
-            timeout=httpx.Timeout(45.0, connect=15.0),
-            follow_redirects=True,
-        ) as client:
-            resp = await client.get(
-                url,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                },
-            )
-            if resp.status_code != 200:
-                return None
-            content_type = resp.headers.get("content-type", "")
-            if "text/html" not in content_type and "text/plain" not in content_type:
-                return None
-            text = _strip_html(resp.text)
-            return text if text and len(text.strip()) > 50 else None
+        async with get_throttler("oxylabs").throttle():
+            async with httpx.AsyncClient(
+                proxy=f"https://{OXYLABS_USERNAME}:{OXYLABS_PASSWORD}@unblock.oxylabs.io:60000",
+                verify=False,
+                timeout=httpx.Timeout(45.0, connect=15.0),
+                follow_redirects=True,
+            ) as client:
+                resp = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        ),
+                    },
+                )
+                if resp.status_code != 200:
+                    return None
+                content_type = resp.headers.get("content-type", "")
+                if "text/html" not in content_type and "text/plain" not in content_type:
+                    return None
+                text = _strip_html(resp.text)
+                return text if text and len(text.strip()) > 50 else None
     except Exception as e:
         log.debug(f"Oxylabs fetch failed for {url}: {e}")
         return None
@@ -1845,48 +1853,49 @@ async def _fetch_via_wayback_cdx(url: str) -> Optional[str]:
     Returns None if no archive is found.
     """
     try:
-        client = http_client()
-        # CDX API returns the most recent successful capture
-        cdx_resp = await client.get(
-            "https://web.archive.org/cdx/search/cdx",
-            params={
-                "url": url,
-                "output": "json",
-                "limit": 1,
-                "fl": "timestamp,statuscode",
-                "filter": "statuscode:200",
-                "sort": "reverse",
-            },
-            timeout=15.0,
-        )
-        if cdx_resp.status_code != 200:
+        async with get_throttler("wayback").throttle():
+            client = http_client()
+            # CDX API returns the most recent successful capture
+            cdx_resp = await client.get(
+                "https://web.archive.org/cdx/search/cdx",
+                params={
+                    "url": url,
+                    "output": "json",
+                    "limit": 1,
+                    "fl": "timestamp,statuscode",
+                    "filter": "statuscode:200",
+                    "sort": "reverse",
+                },
+                timeout=15.0,
+            )
+            if cdx_resp.status_code != 200:
+                return None
+
+            rows = cdx_resp.json()
+            # First row is header, second is data
+            if len(rows) < 2:
+                return None
+
+            timestamp = rows[1][0]
+            archive_url = f"https://web.archive.org/web/{timestamp}id_/{url}"
+
+            archive_resp = await client.get(
+                archive_url,
+                timeout=20.0,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                },
+            )
+            if archive_resp.status_code != 200:
+                return None
+
+            text = _strip_html(archive_resp.text)
+            if text and len(text.strip()) > 50:
+                return f"[ARCHIVED — Wayback Machine snapshot from {timestamp}]\n\n{text}"
             return None
-
-        rows = cdx_resp.json()
-        # First row is header, second is data
-        if len(rows) < 2:
-            return None
-
-        timestamp = rows[1][0]
-        archive_url = f"https://web.archive.org/web/{timestamp}id_/{url}"
-
-        archive_resp = await client.get(
-            archive_url,
-            timeout=20.0,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                ),
-            },
-        )
-        if archive_resp.status_code != 200:
-            return None
-
-        text = _strip_html(archive_resp.text)
-        if text and len(text.strip()) > 50:
-            return f"[ARCHIVED — Wayback Machine snapshot from {timestamp}]\n\n{text}"
-        return None
     except Exception as e:
         log.debug(f"Wayback CDX fetch failed for {url}: {e}")
         return None
@@ -1994,13 +2003,14 @@ async def tool_4plebs_search(query: str, board: str = "pol") -> str:
     """
     board = board.strip("/").lower()
     try:
-        client = http_client()
-        resp = await client.get(
-            f"https://archive.4plebs.org/_/api/chan/search/",
-            params={"boards": board, "text": query},
-            timeout=20.0,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
-        )
+        async with get_throttler("imageboard").throttle():
+            client = http_client()
+            resp = await client.get(
+                f"https://archive.4plebs.org/_/api/chan/search/",
+                params={"boards": board, "text": query},
+                timeout=20.0,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
+            )
         if resp.status_code != 200:
             return f"4plebs search error: HTTP {resp.status_code}"
 
@@ -2048,13 +2058,14 @@ async def tool_b4k_search(query: str) -> str:
     This is the only reliable /biz/ archive, covering 2017–present.
     """
     try:
-        client = http_client()
-        resp = await client.get(
-            f"https://arch.b4k.co/_/api/chan/search/",
-            params={"boards": "biz", "text": query},
-            timeout=20.0,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
-        )
+        async with get_throttler("imageboard").throttle():
+            client = http_client()
+            resp = await client.get(
+                f"https://arch.b4k.co/_/api/chan/search/",
+                params={"boards": "biz", "text": query},
+                timeout=20.0,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
+            )
         if resp.status_code != 200:
             return f"b4k search error: HTTP {resp.status_code}"
 
@@ -2102,19 +2113,20 @@ async def tool_warosu_search(query: str, board: str = "g") -> str:
     """
     board = board.strip("/").lower()
     try:
-        client = http_client()
-        # Warosu uses a GET search endpoint
-        resp = await client.get(
-            f"https://warosu.org/{board}/",
-            params={"task": "search2", "search_text": query, "offset": 0},
-            timeout=20.0,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                ),
-            },
-        )
+        async with get_throttler("imageboard").throttle():
+            client = http_client()
+            # Warosu uses a GET search endpoint
+            resp = await client.get(
+                f"https://warosu.org/{board}/",
+                params={"task": "search2", "search_text": query, "offset": 0},
+                timeout=20.0,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                },
+            )
         if resp.status_code != 200:
             return f"Warosu search error: HTTP {resp.status_code}"
 
@@ -2208,33 +2220,34 @@ async def _twitter_via_bright_data(query: str) -> Optional[str]:
             f"https://brd-customer-{BRIGHT_DATA_CUSTOMER_ID}-zone-{BRIGHT_DATA_ZONE}"
             f":{BRIGHT_DATA_API_KEY}@brd.superproxy.io:33335"
         )
-        async with httpx.AsyncClient(
-            proxy=proxy_url,
-            verify=False,
-            timeout=httpx.Timeout(45.0, connect=15.0),
-            follow_redirects=True,
-        ) as client:
-            resp = await client.get(
-                search_url,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                    "Accept": "text/html,application/xhtml+xml",
-                    "Accept-Language": "en-US,en;q=0.9",
-                },
-            )
-            if resp.status_code != 200:
-                return None
+        async with get_throttler("bright_data").throttle():
+            async with httpx.AsyncClient(
+                proxy=proxy_url,
+                verify=False,
+                timeout=httpx.Timeout(45.0, connect=15.0),
+                follow_redirects=True,
+            ) as client:
+                resp = await client.get(
+                    search_url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        ),
+                        "Accept": "text/html,application/xhtml+xml",
+                        "Accept-Language": "en-US,en;q=0.9",
+                    },
+                )
+                if resp.status_code != 200:
+                    return None
 
-            text = _strip_html(resp.text)
-            if not text or len(text.strip()) < 100:
-                return None
-            if _is_censored_response(text):
-                return None
+                text = _strip_html(resp.text)
+                if not text or len(text.strip()) < 100:
+                    return None
+                if _is_censored_response(text):
+                    return None
 
-            return f"**Twitter/X search results for: {query}**\n\n{text[:WEBPAGE_MAX_CHARS]}"
+                return f"**Twitter/X search results for: {query}**\n\n{text[:WEBPAGE_MAX_CHARS]}"
     except Exception as e:
         log.debug(f"Bright Data Twitter fetch failed: {e}")
         return None
@@ -2248,31 +2261,32 @@ async def _twitter_via_oxylabs(query: str) -> Optional[str]:
         from urllib.parse import quote
         encoded_query = quote(query, safe="")
         search_url = f"https://x.com/search?q={encoded_query}&src=typed_query&f=live"
-        async with httpx.AsyncClient(
-            proxy=f"https://{OXYLABS_USERNAME}:{OXYLABS_PASSWORD}@unblock.oxylabs.io:60000",
-            verify=False,
-            timeout=httpx.Timeout(45.0, connect=15.0),
-            follow_redirects=True,
-        ) as client:
-            resp = await client.get(
-                search_url,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                },
-            )
-            if resp.status_code != 200:
-                return None
+        async with get_throttler("oxylabs").throttle():
+            async with httpx.AsyncClient(
+                proxy=f"https://{OXYLABS_USERNAME}:{OXYLABS_PASSWORD}@unblock.oxylabs.io:60000",
+                verify=False,
+                timeout=httpx.Timeout(45.0, connect=15.0),
+                follow_redirects=True,
+            ) as client:
+                resp = await client.get(
+                    search_url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        ),
+                    },
+                )
+                if resp.status_code != 200:
+                    return None
 
-            text = _strip_html(resp.text)
-            if not text or len(text.strip()) < 100:
-                return None
-            if _is_censored_response(text):
-                return None
+                text = _strip_html(resp.text)
+                if not text or len(text.strip()) < 100:
+                    return None
+                if _is_censored_response(text):
+                    return None
 
-            return f"**Twitter/X search results for: {query}**\n\n{text[:WEBPAGE_MAX_CHARS]}"
+                return f"**Twitter/X search results for: {query}**\n\n{text[:WEBPAGE_MAX_CHARS]}"
     except Exception as e:
         log.debug(f"Oxylabs Twitter fetch failed: {e}")
         return None
@@ -2290,17 +2304,18 @@ async def _twitter_via_nitter(query: str) -> Optional[str]:
     client = http_client()
     for instance in _NITTER_INSTANCES:
         try:
-            resp = await client.get(
-                f"{instance}/search",
-                params={"f": "tweets", "q": query},
-                timeout=15.0,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                },
-            )
+            async with get_throttler("nitter").throttle():
+                resp = await client.get(
+                    f"{instance}/search",
+                    params={"f": "tweets", "q": query},
+                    timeout=15.0,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        ),
+                    },
+                )
             if resp.status_code != 200:
                 continue
 
@@ -2371,18 +2386,19 @@ async def tool_arxiv_search(query: str, max_results: int = 5) -> str:
     """Search arXiv for academic papers using the arXiv API."""
     try:
         max_results = min(max_results, 10)
-        client = http_client()
-        resp = await client.get(
-            "http://export.arxiv.org/api/query",
-            params={
-                "search_query": f"all:{query}",
-                "start": 0,
-                "max_results": max_results,
-                "sortBy": "relevance",
-                "sortOrder": "descending",
-            },
-            timeout=20.0,
-        )
+        async with get_throttler("arxiv").throttle():
+            client = http_client()
+            resp = await client.get(
+                "http://export.arxiv.org/api/query",
+                params={
+                    "search_query": f"all:{query}",
+                    "start": 0,
+                    "max_results": max_results,
+                    "sortBy": "relevance",
+                    "sortOrder": "descending",
+                },
+                timeout=20.0,
+            )
         if resp.status_code != 200:
             return f"arXiv search error: HTTP {resp.status_code}"
 
@@ -2459,18 +2475,20 @@ async def tool_wayback_fetch(url: str) -> str:
 async def tool_wikidata_query(entity: str) -> str:
     """Query Wikidata for structured facts about an entity."""
     try:
-        client = http_client()
-        search_resp = await client.get(
-            "https://www.wikidata.org/w/api.php",
-            params={
-                "action": "wbsearchentities",
-                "search": entity,
-                "language": "en",
-                "format": "json",
-                "limit": 3,
-            },
-            timeout=15.0,
-        )
+        _wikidata_throttle = get_throttler("wikidata")
+        async with _wikidata_throttle.throttle():
+            client = http_client()
+            search_resp = await client.get(
+                "https://www.wikidata.org/w/api.php",
+                params={
+                    "action": "wbsearchentities",
+                    "search": entity,
+                    "language": "en",
+                    "format": "json",
+                    "limit": 3,
+                },
+                timeout=15.0,
+            )
         if search_resp.status_code != 200:
             return f"Wikidata search error: HTTP {search_resp.status_code}"
 
@@ -2491,17 +2509,18 @@ async def tool_wikidata_query(entity: str) -> str:
 
         top_qid = results[0].get("id", "")
         if top_qid:
-            entity_resp = await client.get(
-                "https://www.wikidata.org/w/api.php",
-                params={
-                    "action": "wbgetentities",
-                    "ids": top_qid,
-                    "languages": "en",
-                    "format": "json",
-                    "props": "labels|descriptions|claims",
-                },
-                timeout=15.0,
-            )
+            async with _wikidata_throttle.throttle():
+                entity_resp = await client.get(
+                    "https://www.wikidata.org/w/api.php",
+                    params={
+                        "action": "wbgetentities",
+                        "ids": top_qid,
+                        "languages": "en",
+                        "format": "json",
+                        "props": "labels|descriptions|claims",
+                    },
+                    timeout=15.0,
+                )
             if entity_resp.status_code == 200:
                 entity_data = entity_resp.json()
                 ent_info = entity_data.get("entities", {}).get(top_qid, {})
@@ -2913,12 +2932,14 @@ async def call_llm(
     # ResearchMetricsCallback) so metrics fire automatically.
     config = _request_configs.get(req_id, {})
 
+    _mistral_throttle = get_throttler("mistral")
     last_error: Optional[str] = None
     for attempt in range(MAX_LLM_RETRIES + 1):
         try:
-            ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
+            async with _mistral_throttle.throttle():
+                ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
 
-            content = ai_msg.content or ""
+                content = ai_msg.content or ""
 
             # Extract tool_calls in OpenAI format for backward compat
             tool_calls_out = None
@@ -5908,6 +5929,12 @@ register_standard_routes(
         "tools": [t["function"]["name"] for t in NATIVE_TOOLS],
     },
 )
+
+
+@app.get("/v1/throttle_stats")
+async def throttle_stats():
+    """Return current throttling statistics for all external API providers."""
+    return JSONResponse({"throttlers": all_throttler_stats()})
 
 
 @app.get("/v1/models")

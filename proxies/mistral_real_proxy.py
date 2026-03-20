@@ -48,6 +48,7 @@ from shared import (
     RequestTracker,
     create_app,
     env_int,
+    get_throttler,
     http_client,
     is_utility_request,
     make_sse_chunk,
@@ -168,10 +169,12 @@ async def call_llm(
     lc_messages = _dicts_to_lc_messages(messages)
     config = _real_request_configs.get(req_id, {})
 
+    _mistral_throttle = get_throttler("mistral")
     last_error: Optional[str] = None
     for attempt in range(MAX_LLM_RETRIES + 1):
         try:
-            ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
+            async with _mistral_throttle.throttle():
+                ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
             usage = ai_msg.response_metadata.get("token_usage", {})
             return {
                 "content": ai_msg.content or "",
@@ -220,10 +223,11 @@ async def stream_llm(
     config = _real_request_configs.get(req_id, {})
 
     try:
-        async for chunk in llm.astream(lc_messages, config=config):
-            token = chunk.content
-            if token:
-                yield token
+        async with get_throttler("mistral").throttle():
+            async for chunk in llm.astream(lc_messages, config=config):
+                token = chunk.content
+                if token:
+                    yield token
     except Exception as e:
         log.error(f"[{req_id}] Stream LLM exception: {e}")
         yield f"[Error: {e}]"

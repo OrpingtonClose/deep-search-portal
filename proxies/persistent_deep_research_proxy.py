@@ -115,7 +115,6 @@ from research_metrics import (
     save_metrics,
 )
 import research_report
-import b2_publisher
 import langfuse_config
 
 from shared import (
@@ -145,6 +144,7 @@ UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "mistral-large-latest")
 SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "mistral-small-latest")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
 LISTEN_PORT = env_int("PERSISTENT_RESEARCH_PORT", 9300, minimum=1)
+PORTAL_PUBLIC_URL = os.getenv("PORTAL_PUBLIC_URL", "").rstrip("/")
 
 # --- LangChain Model Factories ---
 # Use ChatOpenAI pointing at the Mistral OpenAI-compatible endpoint.
@@ -3369,10 +3369,11 @@ Given the user's query, produce a JSON object with exactly this structure:
 
 Rules:
 1. Generate 3-7 angles covering: factual/technical, historical/context, contrarian/alternative views, practical/applied, and recent developments.
-2. Generate 1-3 bridge queries that look for unexpected cross-domain connections (serendipity). These should connect the topic to a seemingly unrelated field.
+2. Generate 0-2 bridge queries ONLY if a genuinely useful cross-domain insight exists. Do NOT force connections — if none are natural, output an empty array. Bridge queries must still directly help answer the user's original question.
 3. Each angle should be independent enough to research separately.
-4. Make search queries specific and actionable.
-5. Output ONLY valid JSON, no markdown fences or commentary."""
+4. Make search queries specific and actionable — they must be queries a human would type to answer the original question.
+5. STAY ON TOPIC: Every angle and bridge query must serve the user's actual intent. If the user asks about buying X, research buying X — do not research side effects, alternative uses, or tangential associations of X.
+6. Output ONLY valid JSON, no markdown fences or commentary."""
 
 
 async def plan_research(
@@ -4033,9 +4034,9 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
 # Tree Research Reactor
 # ============================================================================
 
-SPAWN_QUESTIONS_PROMPT = """You are a research strategist who values LATERAL THINKING and CREATIVE EXPLORATION.
+SPAWN_QUESTIONS_PROMPT = """You are a research strategist who generates focused follow-up questions.
 
-Given the findings so far, generate follow-up questions that branch into DIVERSE directions — not just deeper into the same topic, but sideways into adjacent domains, contrarian perspectives, and unexpected connections.
+Given the findings so far, generate follow-up questions that help answer the ORIGINAL USER QUERY more completely. Diversity is good, but every question must be directly useful for answering what the user actually asked.
 
 **Original user query:** {user_query}
 **Question just investigated:** {node_question}
@@ -4053,19 +4054,19 @@ Generate follow-up questions. For each, provide:
 - "pressure": 0.0-1.0 importance score (1.0 = critical gap, 0.1 = minor curiosity)
 - "strategy": one of "deepen" | "lateral" | "contrarian" | "historical" | "cross-domain"
 
-STRATEGY DIVERSITY RULES:
-- At least ONE question must use a DIFFERENT strategy than "deepen"
-- "lateral": explore a related but different domain that could shed light on the topic
-- "contrarian": investigate the opposite claim or a dissenting viewpoint
-- "historical": look at historical precedents, analogies, or how similar situations played out before
-- "cross-domain": borrow concepts from an entirely different field (e.g., if researching economics, check biology, sociology, engineering for parallels)
-- "deepen": drill further into a specific finding
+STRATEGY RULES:
+- "deepen": drill further into a specific finding (preferred — most questions should be this)
+- "lateral": explore a related angle that DIRECTLY helps answer the original query from a different perspective
+- "contrarian": investigate the opposite claim or a dissenting viewpoint ON THE SAME TOPIC
+- "historical": look at historical precedents directly relevant to the query
+- "cross-domain": ONLY use if there is a genuinely useful parallel — do NOT force random associations
+- Non-deepen strategies are optional. Only use them if they genuinely serve the user's question.
+- CRITICAL: "lateral" does NOT mean "free association with a keyword". If the user asks about buying insulin, a lateral question is about alternative purchasing channels — NOT about bodybuilding or side effects.
 
 PRESSURE RULES:
-- Higher pressure for: contradictions, unverified claims, critical gaps, surprising cross-domain connections
-- Lower pressure for: already-well-covered areas, minor details
-- Lateral/contrarian/cross-domain questions should get at least 0.6 pressure — they prevent tunnel vision
-- 0 questions is fine if the topic is truly saturated from ALL angles
+- Higher pressure for: contradictions, unverified claims, critical gaps directly relevant to the query
+- Lower pressure for: already-well-covered areas, tangential topics
+- 0 questions is fine if the topic is well-covered
 
 Other rules:
 - Generate 0-5 questions maximum
@@ -5605,25 +5606,25 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         metrics_dict = metrics_obj.to_dict()
         save_metrics(metrics_obj)
 
-        # Generate HTML report
+        # Generate Markdown report (user-readable)
         try:
-            html_report = research_report.generate_report(
+            md_report = research_report.generate_report(
                 metrics=metrics_dict,
                 conditions=condition_dicts,
                 final_answer=final_answer,
                 progress_log=list(state.get("progress_log", [])),
             )
-            research_report.save_report(html_report, req_id)
+            research_report.save_report(md_report, req_id)
 
-            # Publish to B2 if configured
-            if b2_publisher.is_configured():
-                try:
-                    report_url = await asyncio.to_thread(b2_publisher.publish_report, req_id, html_report)
-                    metrics_json = json.dumps(metrics_dict, indent=2, default=str)
-                    metrics_url = await asyncio.to_thread(b2_publisher.publish_metrics, req_id, metrics_json)
-                    log.info(f"[{req_id}] Published report to B2: {report_url}")
-                except Exception as e:
-                    log.error(f"[{req_id}] Failed to publish to B2: {e}")
+            # Save metrics JSON alongside report
+            metrics_json = json.dumps(metrics_dict, indent=2, default=str)
+            research_report.save_metrics_json(metrics_json, req_id)
+
+            # Build portal URLs for the report and metrics
+            base = PORTAL_PUBLIC_URL or f"http://localhost:{LISTEN_PORT}"
+            report_url = f"{base}/research/report/{req_id}"
+            metrics_url = f"{base}/research/metrics/{req_id}"
+            log.info(f"[{req_id}] Report available at: {report_url}")
         except Exception as e:
             log.error(f"[{req_id}] Failed to generate report: {e}")
 
@@ -5983,24 +5984,112 @@ async def get_research_reports():
 _SAFE_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
+def _render_markdown_page(md_text: str) -> str:
+    """Convert Markdown text to a clean, self-contained HTML page.
+
+    Uses a lightweight regex-based converter — no external dependencies.
+    Handles headings, bold, italic, links, lists, horizontal rules, and code.
+    """
+    import re as _re
+
+    body = html.escape(md_text)
+
+    # Horizontal rules
+    body = _re.sub(r"^---+$", "<hr>", body, flags=_re.MULTILINE)
+
+    # Headings (### before ## before #)
+    body = _re.sub(r"^### (.+)$", r"<h3>\1</h3>", body, flags=_re.MULTILINE)
+    body = _re.sub(r"^## (.+)$", r"<h2>\1</h2>", body, flags=_re.MULTILINE)
+    body = _re.sub(r"^# (.+)$", r"<h1>\1</h1>", body, flags=_re.MULTILINE)
+
+    # Bold and italic
+    body = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", body)
+    body = _re.sub(r"\*(.+?)\*", r"<em>\1</em>", body)
+
+    # Links: [text](url)
+    body = _re.sub(
+        r"\[([^\]]+)\]\(([^)]+)\)",
+        r'<a href="\2" target="_blank" rel="noopener">\1</a>',
+        body,
+    )
+
+    # Unordered list items (- item)
+    body = _re.sub(r"^- (.+)$", r"<li>\1</li>", body, flags=_re.MULTILINE)
+    # Wrap consecutive <li> in <ul>
+    body = _re.sub(
+        r"((?:<li>.*?</li>\n?)+)",
+        r"<ul>\1</ul>",
+        body,
+    )
+
+    # Paragraphs: convert double newlines to paragraph breaks
+    body = _re.sub(r"\n{2,}", "\n<br><br>\n", body)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Research Report</title>
+<style>
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    max-width: 800px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+    line-height: 1.6;
+    color: #1a1a1a;
+    background: #fafafa;
+  }}
+  h1 {{ font-size: 1.6rem; border-bottom: 2px solid #2563eb; padding-bottom: 0.4rem; }}
+  h2 {{ font-size: 1.3rem; color: #1e40af; margin-top: 1.5rem; }}
+  h3 {{ font-size: 1.1rem; color: #374151; margin-top: 1.2rem; }}
+  hr {{ border: none; border-top: 1px solid #d1d5db; margin: 1.5rem 0; }}
+  ul {{ padding-left: 1.2rem; }}
+  li {{ margin-bottom: 0.5rem; }}
+  a {{ color: #2563eb; text-decoration: none; }}
+  a:hover {{ text-decoration: underline; }}
+  em {{ color: #6b7280; }}
+</style>
+</head>
+<body>
+{body}
+</body>
+</html>"""
+
+
 @app.get("/research/report/{session_id}")
 async def get_research_report(session_id: str):
-    """Serve the HTML report for a research session.
+    """Serve the research report for a session.
 
-    First checks B2, then falls back to local file.
+    Reports are stored as Markdown.  The endpoint renders them as a
+    clean HTML page for browser viewing.  Pass `?raw=1` to get the
+    raw Markdown text instead.
     """
     if not _SAFE_SESSION_ID_RE.match(session_id):
         return JSONResponse({"error": "Invalid session_id"}, status_code=400)
 
-    from fastapi.responses import HTMLResponse
+    from fastapi.responses import HTMLResponse, PlainTextResponse
 
-    # Try local file first
-    report_path = os.path.join(
-        os.getenv("RESEARCH_REPORTS_DIR", "/opt/persistent_research_logs/reports"),
-        f"{session_id}.html",
+    reports_dir = os.getenv(
+        "RESEARCH_REPORTS_DIR", "/opt/persistent_research_logs/reports"
     )
+
+    # Try .md first (new format), fall back to .html (legacy)
+    md_path = os.path.join(reports_dir, f"{session_id}.md")
+    html_path = os.path.join(reports_dir, f"{session_id}.html")
+
     try:
-        with open(report_path, "r", encoding="utf-8") as f:
+        with open(md_path, "r", encoding="utf-8") as f:
+            md_content = f.read()
+        # Render Markdown as a simple HTML page for browser viewing
+        return HTMLResponse(content=_render_markdown_page(md_content))
+    except FileNotFoundError:
+        pass
+
+    # Legacy HTML fallback
+    try:
+        with open(html_path, "r", encoding="utf-8") as f:
             html_content = f.read()
         return HTMLResponse(content=html_content)
     except FileNotFoundError:

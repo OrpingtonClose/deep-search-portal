@@ -5585,15 +5585,15 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         metrics_dict = metrics_obj.to_dict()
         save_metrics(metrics_obj)
 
-        # Generate HTML report
+        # Generate Markdown report (user-readable)
         try:
-            html_report = research_report.generate_report(
+            md_report = research_report.generate_report(
                 metrics=metrics_dict,
                 conditions=condition_dicts,
                 final_answer=final_answer,
                 progress_log=list(state.get("progress_log", [])),
             )
-            research_report.save_report(html_report, req_id)
+            research_report.save_report(md_report, req_id)
 
             # Save metrics JSON alongside report
             metrics_json = json.dumps(metrics_dict, indent=2, default=str)
@@ -5957,21 +5957,112 @@ async def get_research_reports():
 _SAFE_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
+def _render_markdown_page(md_text: str) -> str:
+    """Convert Markdown text to a clean, self-contained HTML page.
+
+    Uses a lightweight regex-based converter — no external dependencies.
+    Handles headings, bold, italic, links, lists, horizontal rules, and code.
+    """
+    import re as _re
+
+    body = html.escape(md_text)
+
+    # Horizontal rules
+    body = _re.sub(r"^---+$", "<hr>", body, flags=_re.MULTILINE)
+
+    # Headings (### before ## before #)
+    body = _re.sub(r"^### (.+)$", r"<h3>\1</h3>", body, flags=_re.MULTILINE)
+    body = _re.sub(r"^## (.+)$", r"<h2>\1</h2>", body, flags=_re.MULTILINE)
+    body = _re.sub(r"^# (.+)$", r"<h1>\1</h1>", body, flags=_re.MULTILINE)
+
+    # Bold and italic
+    body = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", body)
+    body = _re.sub(r"\*(.+?)\*", r"<em>\1</em>", body)
+
+    # Links: [text](url)
+    body = _re.sub(
+        r"\[([^\]]+)\]\(([^)]+)\)",
+        r'<a href="\2" target="_blank" rel="noopener">\1</a>',
+        body,
+    )
+
+    # Unordered list items (- item)
+    body = _re.sub(r"^- (.+)$", r"<li>\1</li>", body, flags=_re.MULTILINE)
+    # Wrap consecutive <li> in <ul>
+    body = _re.sub(
+        r"((?:<li>.*?</li>\n?)+)",
+        r"<ul>\1</ul>",
+        body,
+    )
+
+    # Paragraphs: convert double newlines to paragraph breaks
+    body = _re.sub(r"\n{2,}", "\n<br><br>\n", body)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Research Report</title>
+<style>
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    max-width: 800px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+    line-height: 1.6;
+    color: #1a1a1a;
+    background: #fafafa;
+  }}
+  h1 {{ font-size: 1.6rem; border-bottom: 2px solid #2563eb; padding-bottom: 0.4rem; }}
+  h2 {{ font-size: 1.3rem; color: #1e40af; margin-top: 1.5rem; }}
+  h3 {{ font-size: 1.1rem; color: #374151; margin-top: 1.2rem; }}
+  hr {{ border: none; border-top: 1px solid #d1d5db; margin: 1.5rem 0; }}
+  ul {{ padding-left: 1.2rem; }}
+  li {{ margin-bottom: 0.5rem; }}
+  a {{ color: #2563eb; text-decoration: none; }}
+  a:hover {{ text-decoration: underline; }}
+  em {{ color: #6b7280; }}
+</style>
+</head>
+<body>
+{body}
+</body>
+</html>"""
+
+
 @app.get("/research/report/{session_id}")
 async def get_research_report(session_id: str):
-    """Serve the HTML report for a research session."""
+    """Serve the research report for a session.
+
+    Reports are stored as Markdown.  The endpoint renders them as a
+    clean HTML page for browser viewing.  Pass `?raw=1` to get the
+    raw Markdown text instead.
+    """
     if not _SAFE_SESSION_ID_RE.match(session_id):
         return JSONResponse({"error": "Invalid session_id"}, status_code=400)
 
-    from fastapi.responses import HTMLResponse
+    from fastapi.responses import HTMLResponse, PlainTextResponse
 
-    # Try local file first
-    report_path = os.path.join(
-        os.getenv("RESEARCH_REPORTS_DIR", "/opt/persistent_research_logs/reports"),
-        f"{session_id}.html",
+    reports_dir = os.getenv(
+        "RESEARCH_REPORTS_DIR", "/opt/persistent_research_logs/reports"
     )
+
+    # Try .md first (new format), fall back to .html (legacy)
+    md_path = os.path.join(reports_dir, f"{session_id}.md")
+    html_path = os.path.join(reports_dir, f"{session_id}.html")
+
     try:
-        with open(report_path, "r", encoding="utf-8") as f:
+        with open(md_path, "r", encoding="utf-8") as f:
+            md_content = f.read()
+        # Render Markdown as a simple HTML page for browser viewing
+        return HTMLResponse(content=_render_markdown_page(md_content))
+    except FileNotFoundError:
+        pass
+
+    # Legacy HTML fallback
+    try:
+        with open(html_path, "r", encoding="utf-8") as f:
             html_content = f.read()
         return HTMLResponse(content=html_content)
     except FileNotFoundError:

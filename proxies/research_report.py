@@ -1,18 +1,12 @@
-"""HTML Report Generator for research sessions.
+"""Report Generator for research sessions.
 
-Generates self-contained HTML reports with:
-  - Executive summary (query, duration, key stats)
-  - Research angles with findings per angle (collapsible)
-  - Source quality breakdown (trust tiers, confidence distribution)
-  - Tool usage summary
-  - Censorship/filtering warnings
-  - Cost breakdown
-  - Novelty curves per subagent (inline SVG)
-  - Full conditions list (searchable, filterable)
-  - LLM performance metrics for analyst consumption
-  - Timeline of pipeline phases
+Primary output is user-readable Markdown:
+  - Research question
+  - Final answer
+  - Key findings grouped by topic, with sources
+  - Warnings / caveats
 
-All CSS/JS is inlined — no external dependencies.
+Also supports the legacy self-contained HTML format for analyst consumption.
 """
 
 from __future__ import annotations
@@ -40,17 +34,162 @@ def generate_report(
     subagent_results: list[dict] | None = None,
     progress_log: list[str] | None = None,
 ) -> str:
-    """Generate a self-contained HTML report from metrics and conditions.
+    """Generate a user-readable Markdown report.
 
-    Args:
-        metrics: The metrics dict from ResearchMetrics.to_dict().
-        conditions: List of condition dicts (fact, confidence, trust_score, angle, source_url, ...).
-        final_answer: The final synthesised answer text.
-        subagent_results: Optional raw subagent result data.
-        progress_log: Optional progress log messages.
+    This is the primary report format — written for the person who
+    asked the research question.  Contains the answer, key findings
+    grouped by topic with inline source links, and caveats.
 
     Returns:
-        Complete HTML string.
+        Markdown string.
+    """
+    return generate_report_markdown(
+        metrics=metrics,
+        conditions=conditions,
+        final_answer=final_answer,
+    )
+
+
+def generate_report_markdown(
+    metrics: dict[str, Any],
+    conditions: list[dict],
+    final_answer: str = "",
+) -> str:
+    """Generate a clean, user-readable Markdown report.
+
+    Aimed at the person who formulated the prompt — no LLM metrics,
+    no subagent tables, no novelty curves.  Just the answer, the
+    evidence, and the sources.
+    """
+    query = metrics.get("query", "Unknown query")
+    started_at = metrics.get("started_at", "")
+    total_duration = metrics.get("total_duration_secs", 0)
+    quality = metrics.get("quality", {})
+    total_conditions = quality.get("total_conditions", len(conditions))
+    sources_data = metrics.get("sources", {})
+    n_domains = sources_data.get("domain_count", 0)
+
+    lines: list[str] = []
+
+    # --- Title ---
+    lines.append(f"# {query}\n")
+
+    # --- Summary line ---
+    duration_str = _format_duration(total_duration)
+    lines.append(
+        f"*Research completed in {duration_str} "
+        f"— {total_conditions} findings from {n_domains} sources*\n"
+    )
+    if started_at:
+        lines.append(f"*Date: {started_at[:10]}*\n")
+
+    lines.append("---\n")
+
+    # --- Answer ---
+    if final_answer:
+        lines.append("## Answer\n")
+        lines.append(final_answer.strip())
+        lines.append("\n")
+        lines.append("---\n")
+
+    # --- Key Findings by Angle ---
+    if conditions:
+        lines.append("## Key Findings\n")
+        by_angle = _group_by_angle(conditions)
+
+        for angle, conds in sorted(by_angle.items()):
+            lines.append(f"### {angle}\n")
+
+            # Sort by confidence descending — best findings first
+            sorted_conds = sorted(
+                conds, key=lambda c: c.get("confidence", 0), reverse=True
+            )
+
+            for c in sorted_conds:
+                fact = c.get("fact", "").strip()
+                if not fact:
+                    continue
+                conf = c.get("confidence", 0)
+                source_url = c.get("source_url", "")
+
+                # Confidence indicator
+                if conf >= 0.7:
+                    indicator = "\u2705"  # green check
+                elif conf >= 0.4:
+                    indicator = "\u26a0\ufe0f"  # warning
+                else:
+                    indicator = "\u2753"  # question mark
+
+                # Build the line
+                line = f"- {indicator} {fact}"
+                if source_url:
+                    line += f"  \n  *Source: [{_domain_from_url(source_url)}]({source_url})*"
+
+                lines.append(line)
+
+            lines.append("")  # blank line between angles
+
+        lines.append("---\n")
+
+    # --- Sources ---
+    unique_domains = sources_data.get("unique_domains", [])
+    if unique_domains:
+        lines.append("## Sources Consulted\n")
+        for domain in sorted(set(unique_domains)):
+            lines.append(f"- {domain}")
+        lines.append("\n")
+
+    # --- Caveats / Warnings ---
+    warnings = _collect_warnings(conditions, quality, metrics.get("recommendations", []))
+    if warnings:
+        lines.append("## Caveats\n")
+        for w in warnings:
+            lines.append(f"- {w}")
+        lines.append("\n")
+
+    return "\n".join(lines)
+
+
+def _format_duration(secs: float) -> str:
+    """Format seconds into a human-readable duration."""
+    if secs < 60:
+        return f"{secs:.0f} seconds"
+    minutes = int(secs // 60)
+    remaining = int(secs % 60)
+    if remaining:
+        return f"{minutes}m {remaining}s"
+    return f"{minutes} minutes"
+
+
+def _domain_from_url(url: str) -> str:
+    """Extract domain from URL for display."""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        return parsed.netloc or url[:50]
+    except Exception:
+        return url[:50]
+
+
+def _group_by_angle(conditions: list[dict]) -> dict[str, list[dict]]:
+    """Group conditions by research angle."""
+    by_angle: dict[str, list[dict]] = {}
+    for c in conditions:
+        angle = c.get("angle", "General")
+        by_angle.setdefault(angle, []).append(c)
+    return by_angle
+
+
+def generate_report_html(
+    metrics: dict[str, Any],
+    conditions: list[dict],
+    final_answer: str = "",
+    subagent_results: list[dict] | None = None,
+    progress_log: list[str] | None = None,
+) -> str:
+    """Generate the legacy self-contained HTML report (analyst view).
+
+    Kept for backward compatibility and detailed technical analysis.
     """
     session_id = metrics.get("session_id", "unknown")
     query = metrics.get("query", "")
@@ -60,8 +199,6 @@ def generate_report(
 
     pipeline = metrics.get("pipeline", {})
     node_timings = pipeline.get("node_timings", [])
-    slowest_node = pipeline.get("slowest_node", "")
-    slowest_dur = pipeline.get("slowest_node_duration", 0)
 
     llm_data = metrics.get("llm_calls", {})
     tool_data = metrics.get("tool_calls", {})
@@ -72,78 +209,47 @@ def generate_report(
     efficiency = metrics.get("efficiency", {})
     recommendations = metrics.get("recommendations", [])
 
-    # Build sections
     sections: list[str] = []
 
-    # --- Executive Summary ---
     sections.append(_section_executive_summary(
         session_id, query, started_at, finished_at, total_duration,
         quality, subagent_data, llm_data, tool_data, sources,
     ))
-
-    # --- Timeline ---
     sections.append(_section_timeline(node_timings, total_duration))
-
-    # --- Final Answer ---
     if final_answer:
         sections.append(_section_final_answer(final_answer))
-
-    # --- Research Angles & Findings ---
     sections.append(_section_findings_by_angle(conditions))
-
-    # --- Source Quality ---
     sections.append(_section_source_quality(quality, sources))
-
-    # --- Subagent Performance ---
     sections.append(_section_subagent_performance(subagent_data))
-
-    # --- Novelty Curves ---
     sections.append(_section_novelty_curves(subagent_data))
-
-    # --- Tool Usage ---
     sections.append(_section_tool_usage(tool_data))
-
-    # --- LLM Performance ---
     sections.append(_section_llm_performance(llm_data))
-
-    # --- Efficiency & Recommendations ---
     sections.append(_section_efficiency(efficiency, recommendations))
-
-    # --- Cost Breakdown ---
     if cost:
         sections.append(_section_cost(cost))
-
-    # --- Warnings ---
     warnings = _collect_warnings(conditions, quality, recommendations)
     if warnings:
         sections.append(_section_warnings(warnings))
-
-    # --- Full Conditions Table ---
     sections.append(_section_conditions_table(conditions))
-
-    # --- Progress Log ---
     if progress_log:
         sections.append(_section_progress_log(progress_log))
-
-    # --- Metrics JSON (embedded for LLM consumption) ---
     sections.append(_section_raw_metrics(metrics))
 
     body = "\n".join(sections)
-
     return _wrap_html(session_id, query, started_at, body)
 
 
-def save_report(html_content: str, session_id: str) -> str:
-    """Save HTML report to disk. Returns the file path."""
+def save_report(content: str, session_id: str) -> str:
+    """Save report to disk as Markdown. Returns the file path."""
     try:
         Path(REPORTS_DIR).mkdir(parents=True, exist_ok=True)
     except Exception as e:
         log.warning(f"Failed to create reports dir {REPORTS_DIR}: {e}")
 
-    path = os.path.join(REPORTS_DIR, f"{session_id}.html")
+    path = os.path.join(REPORTS_DIR, f"{session_id}.md")
     try:
         with open(path, "w", encoding="utf-8") as f:
-            f.write(html_content)
+            f.write(content)
         log.info(f"Saved report to {path}")
     except Exception as e:
         log.error(f"Failed to save report: {e}")

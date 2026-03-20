@@ -1,4 +1,4 @@
-"""Tests for research_report.py — HTML report generation."""
+"""Tests for research_report.py — Markdown + legacy HTML report generation."""
 
 import os
 import sys
@@ -11,8 +11,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "proxies"))
 
 from research_report import (
     generate_report,
+    generate_report_markdown,
+    generate_report_html,
     save_report,
     save_metrics_json,
+    _format_duration,
+    _domain_from_url,
+    _group_by_angle,
     _esc,
     _mini_svg_line_chart,
     _section_executive_summary,
@@ -270,41 +275,60 @@ class TestSvgChart:
 # ---------------------------------------------------------------------------
 
 class TestGenerateReport:
-    def test_full_report_is_valid_html(self):
+    """Tests for the primary Markdown report output."""
+
+    def test_report_is_markdown(self):
         metrics = _sample_metrics()
         conditions = _sample_conditions()
-        html = generate_report(
+        md = generate_report(
             metrics, conditions,
             final_answer="Paris is indeed the capital of France.",
             progress_log=["Started research", "Completed synthesis"],
         )
-        assert html.startswith("<!DOCTYPE html>")
-        assert "</html>" in html
-        assert "test-sess-001" in html
-        assert "Paris is indeed the capital" in html
+        # Markdown, not HTML
+        assert md.startswith("# ")
+        assert "Paris is indeed the capital" in md
 
-    def test_report_contains_all_sections(self):
+    def test_report_contains_answer_section(self):
         metrics = _sample_metrics()
         conditions = _sample_conditions()
-        html = generate_report(metrics, conditions)
-        assert "Executive Summary" in html
-        assert "Pipeline Timeline" in html
-        assert "Findings by Research Angle" in html
-        assert "Source Quality" in html
-        assert "Subagent Performance" in html
-        assert "Novelty Curves" in html
-        assert "Tool Usage" in html
-        assert "LLM Performance" in html
-        assert "Raw Metrics" in html
+        md = generate_report(
+            metrics, conditions,
+            final_answer="Paris is the capital.",
+        )
+        assert "## Answer" in md
+        assert "Paris is the capital." in md
 
-    def test_report_self_contained(self):
-        """Report should have no external CSS/JS references."""
+    def test_report_contains_key_findings(self):
         metrics = _sample_metrics()
-        html = generate_report(metrics, _sample_conditions())
-        assert "<style>" in html
-        # No external stylesheet links
-        assert 'rel="stylesheet"' not in html
-        assert "https://cdn" not in html
+        conditions = _sample_conditions()
+        md = generate_report(metrics, conditions)
+        assert "## Key Findings" in md
+        assert "Historical context" in md
+        assert "Economic impact" in md
+        assert "Paris is the capital of France" in md
+
+    def test_report_contains_sources(self):
+        metrics = _sample_metrics()
+        conditions = _sample_conditions()
+        md = generate_report(metrics, conditions)
+        assert "## Sources Consulted" in md
+        assert "wikipedia.org" in md
+
+    def test_report_contains_duration(self):
+        metrics = _sample_metrics()
+        md = generate_report(metrics, _sample_conditions())
+        assert "2m 30s" in md  # 150 seconds
+
+    def test_report_no_technical_sections(self):
+        """Markdown report should NOT have analyst-only sections."""
+        metrics = _sample_metrics()
+        md = generate_report(metrics, _sample_conditions())
+        assert "LLM Performance" not in md
+        assert "Subagent Performance" not in md
+        assert "Novelty Curves" not in md
+        assert "Tool Usage" not in md
+        assert "Raw Metrics" not in md
 
     def test_report_empty_metrics(self):
         """Should not crash with minimal/empty metrics."""
@@ -324,16 +348,75 @@ class TestGenerateReport:
             "efficiency": {"conditions_per_tool_call": 0, "avg_tool_call_duration_secs": 0, "avg_llm_call_duration_secs": 0, "saturation_curve": []},
             "recommendations": [],
         }
-        html = generate_report(metrics, [])
-        assert "<!DOCTYPE html>" in html
+        md = generate_report(metrics, [])
+        assert "# test" in md
 
-    def test_xss_protection(self):
-        """Malicious input should be escaped."""
+    def test_source_links_in_findings(self):
+        """Findings should include source links."""
         metrics = _sample_metrics()
-        metrics["query"] = '<script>alert("xss")</script>'
-        html = generate_report(metrics, [])
-        assert '<script>alert("xss")</script>' not in html
-        assert "&lt;script&gt;" in html
+        conditions = _sample_conditions()
+        md = generate_report(metrics, conditions)
+        assert "wikipedia.org" in md
+        assert "https://wikipedia.org/wiki/Paris" in md
+
+    def test_confidence_indicators(self):
+        """High/medium/low confidence findings get different indicators."""
+        metrics = _sample_metrics()
+        conditions = _sample_conditions()
+        md = generate_report(metrics, conditions)
+        # High confidence (0.95) should get check mark
+        assert "\u2705" in md
+
+
+class TestGenerateReportHtml:
+    """Tests for the legacy HTML report output."""
+
+    def test_html_report_is_valid(self):
+        metrics = _sample_metrics()
+        conditions = _sample_conditions()
+        html_out = generate_report_html(
+            metrics, conditions,
+            final_answer="Paris is indeed the capital of France.",
+            progress_log=["Started research", "Completed synthesis"],
+        )
+        assert html_out.startswith("<!DOCTYPE html>")
+        assert "</html>" in html_out
+        assert "test-sess-001" in html_out
+        assert "Paris is indeed the capital" in html_out
+
+    def test_html_contains_all_sections(self):
+        metrics = _sample_metrics()
+        conditions = _sample_conditions()
+        html_out = generate_report_html(metrics, conditions)
+        assert "Executive Summary" in html_out
+        assert "Findings by Research Angle" in html_out
+        assert "Source Quality" in html_out
+        assert "Subagent Performance" in html_out
+        assert "LLM Performance" in html_out
+
+
+class TestMarkdownHelpers:
+    def test_format_duration_seconds(self):
+        assert _format_duration(45) == "45 seconds"
+
+    def test_format_duration_minutes(self):
+        assert _format_duration(150) == "2m 30s"
+
+    def test_format_duration_exact_minutes(self):
+        assert _format_duration(120) == "2 minutes"
+
+    def test_domain_from_url(self):
+        assert _domain_from_url("https://en.wikipedia.org/wiki/Paris") == "en.wikipedia.org"
+
+    def test_domain_from_url_fallback(self):
+        assert len(_domain_from_url("not-a-url")) > 0
+
+    def test_group_by_angle(self):
+        conditions = _sample_conditions()
+        grouped = _group_by_angle(conditions)
+        assert "Historical context" in grouped
+        assert "Economic impact" in grouped
+        assert len(grouped["Historical context"]) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -343,17 +426,19 @@ class TestGenerateReport:
 class TestSaveReport:
     def test_save_and_read(self, tmp_path):
         with patch("research_report.REPORTS_DIR", str(tmp_path)):
-            html = "<html><body>Test</body></html>"
-            path = save_report(html, "save-test-1")
+            content = "# Test Report\n\nSome content."
+            path = save_report(content, "save-test-1")
             assert os.path.exists(path)
+            assert path.endswith(".md")
             with open(path) as f:
-                assert f.read() == html
+                assert f.read() == content
 
     def test_save_creates_directory(self, tmp_path):
         new_dir = str(tmp_path / "nested" / "reports")
         with patch("research_report.REPORTS_DIR", new_dir):
-            path = save_report("<html/>", "save-test-2")
+            path = save_report("# Report", "save-test-2")
             assert os.path.exists(path)
+            assert path.endswith(".md")
 
 
 # ---------------------------------------------------------------------------

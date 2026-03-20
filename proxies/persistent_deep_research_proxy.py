@@ -140,6 +140,15 @@ from shared import (
 
 _owui_auth_cache: dict[str, float] = {}  # token -> expiry timestamp
 _OWUI_CACHE_TTL = 300  # cache valid tokens for 5 minutes
+_OWUI_CACHE_MAX_SIZE = 1000  # max entries before forced cleanup
+
+
+def _evict_expired_tokens() -> None:
+    """Remove expired entries from the auth cache to prevent unbounded growth."""
+    now = time.monotonic()
+    expired = [k for k, v in _owui_auth_cache.items() if v <= now]
+    for k in expired:
+        del _owui_auth_cache[k]
 
 
 async def _validate_owui_token(request: Request) -> bool:
@@ -157,6 +166,10 @@ async def _validate_owui_token(request: Request) -> bool:
         token = request.cookies.get("token", "").strip()
     if not token:
         return False
+
+    # Evict expired entries to prevent unbounded memory growth
+    if len(_owui_auth_cache) > _OWUI_CACHE_MAX_SIZE:
+        _evict_expired_tokens()
 
     # Check cache
     now = time.monotonic()
@@ -7155,7 +7168,7 @@ async def research_dashboard(request: Request):
 
     try:
         from langfuse_dashboards import render_dashboard_html
-        html_content = render_dashboard_html(days=days)
+        html_content = await asyncio.to_thread(render_dashboard_html, days=days)
         return HTMLResponse(content=html_content)
     except Exception as exc:
         log.error("Failed to render dashboard: %s", exc, exc_info=True)
@@ -7195,21 +7208,25 @@ async def research_dashboard_data(request: Request):
             query_trace_volume,
         )
 
-        langfuse_available = _langfuse_configured()
-        data = {
-            "langfuse_configured": langfuse_available,
-            "days": days,
-            "local_metrics": aggregate_local_metrics(),
-        }
-        if langfuse_available:
-            data["langfuse"] = {
-                "trace_volume": query_trace_volume(days),
-                "model_usage": query_model_usage(days),
-                "observation_latency": query_observation_latency_by_name(days),
-                "errors": query_error_rates(days),
-                "cost_over_time": query_cost_over_time(days),
-                "trace_latency": query_trace_latency(days),
+        def _build_dashboard_data():
+            langfuse_available = _langfuse_configured()
+            data = {
+                "langfuse_configured": langfuse_available,
+                "days": days,
+                "local_metrics": aggregate_local_metrics(),
             }
+            if langfuse_available:
+                data["langfuse"] = {
+                    "trace_volume": query_trace_volume(days),
+                    "model_usage": query_model_usage(days),
+                    "observation_latency": query_observation_latency_by_name(days),
+                    "errors": query_error_rates(days),
+                    "cost_over_time": query_cost_over_time(days),
+                    "trace_latency": query_trace_latency(days),
+                }
+            return data
+
+        data = await asyncio.to_thread(_build_dashboard_data)
         return JSONResponse(data)
     except Exception as exc:
         log.error("Failed to get dashboard data: %s", exc, exc_info=True)

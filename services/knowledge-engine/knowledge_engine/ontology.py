@@ -428,7 +428,7 @@ def batch_create_research_conditions(
                 id: $id,
                 namespace: $ns,
                 session_id: $session_id,
-                query: $query,
+                query: $research_query,
                 fact: $fact,
                 source_url: $source_url,
                 confidence: $confidence,
@@ -441,7 +441,8 @@ def batch_create_research_conditions(
                 created_at: $now
             })
             """,
-            id=cond_id, ns=namespace, session_id=session_id, query=query,
+            id=cond_id, ns=namespace, session_id=session_id,
+            research_query=query,
             fact=fact,
             source_url=c.get("source_url", ""),
             confidence=float(c.get("confidence", 0.5)),

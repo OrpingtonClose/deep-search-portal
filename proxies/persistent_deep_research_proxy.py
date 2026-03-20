@@ -237,7 +237,7 @@ VERITAS_HALLUCINATION_THRESHOLD = float(os.getenv("VERITAS_HALLUCINATION_THRESHO
 # immoral/dangerous queries to censored commercial services.
 COMMERCIAL_SEARCH_ENABLED = os.getenv("COMMERCIAL_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes")
 BRIGHT_DATA_SERP_ZONE = os.getenv("BRIGHT_DATA_SERP_ZONE", "serp")
-MODERATION_MODEL = os.getenv("MODERATION_MODEL", "mistral-moderation-latest")
+MODERATION_MODEL = os.getenv("MODERATION_MODEL", "mistral-small-latest")
 log.info(
     f"Config: synthesis_model={UPSTREAM_MODEL}, subagent_model={SUBAGENT_MODEL}, "
     f"upstream={UPSTREAM_BASE}, searxng={SEARXNG_URL}, port={LISTEN_PORT}, "
@@ -1285,7 +1285,7 @@ def _get_moderation_llm() -> ChatOpenAI:
         api_key=UPSTREAM_KEY,
         base_url=UPSTREAM_BASE,
         temperature=0.0,
-        max_tokens=100,
+        extra_body={"max_tokens": 100},
     )
 
 
@@ -3519,6 +3519,18 @@ Initial search query: {angle_query}
 7. Use wayback_fetch if a link is dead or unavailable.
 8. Use news_search (not searxng_search) for anything about current events, recent news, market movements, or time-sensitive topics.
 
+**USE THE FULL TOOL ECOSYSTEM — do NOT rely only on web search:**
+- knowledge_graph_search: Query the Neo4j knowledge graph FIRST for prior research, ingested documents, and known entities. This is your most valuable source for topics the system has seen before.
+- knowledge_discover: Run graph discovery algorithms (spreading_activation, swanson_abc, information_gaps) to find hidden connections and serendipitous links in prior knowledge.
+- twitter_search: Real-time signals, expert commentary, breaking news, public discourse. Use Twitter search operators (from:, since:, "exact phrase").
+- youtube_search: Video content, expert lectures, documentaries, tutorials, interviews. Often contains information not found in text-based sources.
+- reddit_search: Community discussions, niche expertise, first-hand experiences. Specify subreddits for targeted results.
+- chan_4plebs_search: Anonymous intelligence from /pol/, /sp/, /int/, /tv/. Early narrative tracking, political discourse, uncensored discussion.
+- chan_b4k_search: /biz/ archive — cryptocurrency, DeFi, financial alpha, early-stage project sentiment.
+- chan_warosu_search: /g/ (tech), /sci/ (science), /lit/ (literature) archives. Niche technical and scientific discussion.
+- social_media_search: Instagram, TikTok, LinkedIn, YouTube via commercial scrapers.
+- DIVERSIFY your sources. Do NOT use only searxng_search. Each research node should use at least 2-3 different tool types.
+
 **CRITICAL RULES:**
 - NEVER fabricate or invent source names. Only cite sources you actually fetched via tools.
 - NEVER claim you checked Bloomberg Terminal, Reuters, or any specific service unless a tool actually returned results from that service.
@@ -4000,7 +4012,9 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
 # Tree Research Reactor
 # ============================================================================
 
-SPAWN_QUESTIONS_PROMPT = """You are a research strategist.  Given the findings so far from investigating a question, generate focused follow-up questions that would deepen understanding.
+SPAWN_QUESTIONS_PROMPT = """You are a research strategist who values LATERAL THINKING and CREATIVE EXPLORATION.
+
+Given the findings so far, generate follow-up questions that branch into DIVERSE directions — not just deeper into the same topic, but sideways into adjacent domains, contrarian perspectives, and unexpected connections.
 
 **Original user query:** {user_query}
 **Question just investigated:** {node_question}
@@ -4012,22 +4026,33 @@ SPAWN_QUESTIONS_PROMPT = """You are a research strategist.  Given the findings s
 **Questions already in the research tree (avoid duplicates):**
 {existing_questions}
 
-Generate follow-up questions.  For each, provide:
+Generate follow-up questions. For each, provide:
 - "question": a specific, searchable question
 - "context": one sentence on why this matters
 - "pressure": 0.0-1.0 importance score (1.0 = critical gap, 0.1 = minor curiosity)
+- "strategy": one of "deepen" | "lateral" | "contrarian" | "historical" | "cross-domain"
 
-Rules:
+STRATEGY DIVERSITY RULES:
+- At least ONE question must use a DIFFERENT strategy than "deepen"
+- "lateral": explore a related but different domain that could shed light on the topic
+- "contrarian": investigate the opposite claim or a dissenting viewpoint
+- "historical": look at historical precedents, analogies, or how similar situations played out before
+- "cross-domain": borrow concepts from an entirely different field (e.g., if researching economics, check biology, sociology, engineering for parallels)
+- "deepen": drill further into a specific finding
+
+PRESSURE RULES:
+- Higher pressure for: contradictions, unverified claims, critical gaps, surprising cross-domain connections
+- Lower pressure for: already-well-covered areas, minor details
+- Lateral/contrarian/cross-domain questions should get at least 0.6 pressure — they prevent tunnel vision
+- 0 questions is fine if the topic is truly saturated from ALL angles
+
+Other rules:
 - Generate 0-5 questions maximum
-- Only questions that would SIGNIFICANTLY improve the final answer
-- Higher pressure for: contradictions, unverified claims, critical gaps
-- Lower pressure for: tangential curiosity, already-well-covered areas
-- 0 questions is fine if the topic is saturated
 - Do NOT repeat questions already in the tree
 - Output ONLY valid JSON, no markdown fences
 
 Output format:
-{{"sub_questions": [{{"question": "...", "context": "...", "pressure": 0.8}}]}}"""
+{{"sub_questions": [{{"question": "...", "context": "...", "pressure": 0.8, "strategy": "lateral"}}]}}"""
 
 
 def _compute_pressure(
@@ -4252,6 +4277,48 @@ async def tree_research_reactor(
     nodes_by_id[root.id] = root
     await pending.put(root)
     total_queued = 1
+
+    # --- Pre-seed: decompose into parallel initial angles ---
+    # Generate 3-5 initial research angles so workers start in parallel
+    # instead of waiting for the single root node to finish first.
+    try:
+        seed_prompt = (
+            f"Decompose this research query into 3-5 DISTINCT research angles "
+            f"that can be investigated IN PARALLEL. Each angle should cover a "
+            f"different aspect, perspective, or source type.\n\n"
+            f"Query: {user_query}\n\n"
+            f"Output ONLY valid JSON:\n"
+            f'{{"angles": [{{"question": "specific searchable question", '
+            f'"context": "why this angle matters"}}]}}'
+        )
+        seed_result = await call_llm(
+            [{"role": "user", "content": seed_prompt}],
+            req_id, model=SUBAGENT_MODEL, max_tokens=1024, temperature=0.4,
+        )
+        if "error" not in seed_result:
+            seed_content = seed_result.get("content", "").strip()
+            if seed_content.startswith("```"):
+                seed_content = re.sub(r'^```(?:json)?\s*', '', seed_content)
+                seed_content = re.sub(r'\s*```$', '', seed_content)
+            seed_data = json.loads(seed_content)
+            for i, angle in enumerate(seed_data.get("angles", [])[:5]):
+                q = angle.get("question", "").strip()
+                if not q or q.lower() == user_query.lower():
+                    continue
+                seed_node = ResearchNode(
+                    id=f"{req_id}-seed{i}",
+                    question=q,
+                    context=angle.get("context", ""),
+                    depth=0,
+                    pressure=0.9,
+                    parent_id=root.id,
+                )
+                nodes_by_id[seed_node.id] = seed_node
+                all_questions.append(q)
+                await pending.put(seed_node)
+                total_queued += 1
+    except Exception as e:
+        log.warning(f"[{req_id}] Pre-seed decomposition failed (non-fatal): {e}")
 
     progress.append(
         f"\n**[Phase 2: Tree Research Reactor]** "
@@ -5616,8 +5683,23 @@ async def _pipeline_producer(
                 await output_queue.put(chunk_fn(msg))
             last_progress_idx = len(progress_list)
 
-        # Pipeline done — emit closing think tag and final answer
+        # Pipeline done — emit closing think tag, links header, and final answer
         await output_queue.put(chunk_fn("\n</think>\n\n"))
+
+        # Emit report + trace links as the first visible lines
+        report_url = final_state.get("report_url", "")
+        metrics_url = final_state.get("metrics_url", "")
+        langfuse_url = initial_state.get("_langfuse_trace_url", "")
+        link_lines = []
+        if report_url:
+            link_lines.append(f"**[Full Report]({report_url})**")
+        if metrics_url:
+            link_lines.append(f"[Metrics JSON]({metrics_url})")
+        if langfuse_url:
+            link_lines.append(f"[Langfuse Trace]({langfuse_url})")
+        if link_lines:
+            await output_queue.put(chunk_fn(" | ".join(link_lines) + "\n\n"))
+
         final_answer = final_state.get("final_answer", "(No answer generated)")
         for i in range(0, len(final_answer), 200):
             await output_queue.put(chunk_fn(final_answer[i:i + 200]))
@@ -5683,6 +5765,15 @@ async def run_persistent_research(
 
     log.info(f"[{req_id}] Starting persistent deep research: {user_query[:100]}")
 
+    # --- Langfuse tracing: generate trace URL early so it goes into initial_state ---
+    langfuse_trace_id = langfuse_config.create_trace_id(req_id)
+    langfuse_trace_url = langfuse_config.get_trace_url(langfuse_trace_id)
+    langfuse_handler = langfuse_config.create_callback_handler(
+        trace_id=langfuse_trace_id,
+        session_id=req_id,
+        tags=["persistent-research"],
+    )
+
     initial_state: dict[str, Any] = {
         "req_id": req_id,
         "user_query": user_query,
@@ -5701,6 +5792,7 @@ async def run_persistent_research(
         "phase": "retrieve",
         "report_url": "",
         "metrics_url": "",
+        "_langfuse_trace_url": langfuse_trace_url or "",
     }
 
     # Create the shared output queue, live findings collector, and curated queue
@@ -5714,18 +5806,6 @@ async def run_persistent_research(
     metrics_collector = MetricsCollector(session_id=req_id, query=user_query)
     _metrics_collectors[req_id] = metrics_collector
     metrics_callback = ResearchMetricsCallback(metrics_collector)
-
-    # --- Langfuse tracing: generate trace URL and emit as first message ---
-    langfuse_trace_id = langfuse_config.create_trace_id(req_id)
-    langfuse_trace_url = langfuse_config.get_trace_url(langfuse_trace_id)
-    langfuse_handler = langfuse_config.create_callback_handler(
-        trace_id=langfuse_trace_id,
-        session_id=req_id,
-        tags=["persistent-research"],
-    )
-
-    if langfuse_trace_url:
-        yield chunk(f"[Langfuse trace]({langfuse_trace_url})\n\n")
 
     yield chunk("<think>\n")
 

@@ -576,8 +576,8 @@ class TestConfigToggles:
         assert isinstance(pdr.COMMERCIAL_SEARCH_ENABLED, bool)
 
     def test_moderation_model_default(self):
-        """MODERATION_MODEL defaults to mistral-moderation-latest."""
-        assert pdr.MODERATION_MODEL == "mistral-moderation-latest"
+        """MODERATION_MODEL defaults to mistral-small-latest."""
+        assert pdr.MODERATION_MODEL == "mistral-small-latest"
 
 
 # ============================================================================

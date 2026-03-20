@@ -383,14 +383,15 @@ async def _apify_run_actor(
         # Use REST API directly to avoid requiring apify-client dependency
         # Apify REST API uses ~ as separator in actor IDs (e.g., "trudax~reddit-scraper-lite")
         api_actor_id = actor_id.replace("/", "~")
-        async with get_throttler("apify").throttle(), httpx.AsyncClient(timeout=httpx.Timeout(float(timeout_secs + 30), connect=15.0)) as client:
-            # Start the actor run
-            resp = await client.post(
-                f"https://api.apify.com/v2/acts/{api_actor_id}/runs",
-                params={"token": APIFY_API_TOKEN, "timeout": timeout_secs},
-                json=run_input,
-                headers={"Content-Type": "application/json"},
-            )
+        async with httpx.AsyncClient(timeout=httpx.Timeout(float(timeout_secs + 30), connect=15.0)) as client:
+            # Throttle only the trigger POST, not the polling loop
+            async with get_throttler("apify").throttle():
+                resp = await client.post(
+                    f"https://api.apify.com/v2/acts/{api_actor_id}/runs",
+                    params={"token": APIFY_API_TOKEN, "timeout": timeout_secs},
+                    json=run_input,
+                    headers={"Content-Type": "application/json"},
+                )
             if resp.status_code not in (200, 201):
                 log.debug(f"Apify run failed: HTTP {resp.status_code} — {resp.text[:200]}")
                 return None
@@ -400,7 +401,7 @@ async def _apify_run_actor(
             if not run_id:
                 return None
 
-            # Poll for completion
+            # Poll for completion (unthrottled — uses its own sleep interval)
             start = time.monotonic()
             while time.monotonic() - start < timeout_secs + 10:
                 status_resp = await client.get(

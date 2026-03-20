@@ -767,6 +767,7 @@ _PROVIDER_DEFAULTS: dict[str, tuple[float, int, int]] = {
     "imageboard":    (2.0,   5,   5),
     "nitter":        (2.0,   3,   3),
     "apify":         (3.0,   5,   5),
+    "web_fetch":     (15.0, 30,  20),
     "knowledge_engine": (10.0, 20, 0),
 }
 

@@ -492,7 +492,7 @@ async def tool_browse_page(url: str, instructions: str = "") -> str:
     import html as html_mod
     import re
     try:
-        async with get_throttler("searxng").throttle():
+        async with get_throttler("web_fetch").throttle():
             client = http_client()
             resp = await client.get(
                 url,

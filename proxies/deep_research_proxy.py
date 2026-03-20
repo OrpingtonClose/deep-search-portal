@@ -291,7 +291,7 @@ async def tool_searxng_search(query: str) -> str:
 async def tool_fetch_webpage(url: str, extract_info: str = "") -> str:
     """Fetch a webpage and extract readable text."""
     try:
-        async with get_throttler("searxng").throttle():
+        async with get_throttler("web_fetch").throttle():
             client = http_client()
             resp = await client.get(
                 url,

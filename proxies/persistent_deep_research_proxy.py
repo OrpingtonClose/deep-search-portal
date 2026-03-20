@@ -2475,7 +2475,8 @@ async def tool_wayback_fetch(url: str) -> str:
 async def tool_wikidata_query(entity: str) -> str:
     """Query Wikidata for structured facts about an entity."""
     try:
-        async with get_throttler("wikidata").throttle():
+        _wikidata_throttle = get_throttler("wikidata")
+        async with _wikidata_throttle.throttle():
             client = http_client()
             search_resp = await client.get(
                 "https://www.wikidata.org/w/api.php",
@@ -2508,17 +2509,18 @@ async def tool_wikidata_query(entity: str) -> str:
 
         top_qid = results[0].get("id", "")
         if top_qid:
-            entity_resp = await client.get(
-                "https://www.wikidata.org/w/api.php",
-                params={
-                    "action": "wbgetentities",
-                    "ids": top_qid,
-                    "languages": "en",
-                    "format": "json",
-                    "props": "labels|descriptions|claims",
-                },
-                timeout=15.0,
-            )
+            async with _wikidata_throttle.throttle():
+                entity_resp = await client.get(
+                    "https://www.wikidata.org/w/api.php",
+                    params={
+                        "action": "wbgetentities",
+                        "ids": top_qid,
+                        "languages": "en",
+                        "format": "json",
+                        "props": "labels|descriptions|claims",
+                    },
+                    timeout=15.0,
+                )
             if entity_resp.status_code == 200:
                 entity_data = entity_resp.json()
                 ent_info = entity_data.get("entities", {}).get(top_qid, {})

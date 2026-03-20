@@ -3415,7 +3415,8 @@ async def _retry_tool_call(
         try:
             result = await coro_factory()
             # Don't retry on valid "no results" — only on actual errors
-            if not any(marker in result.lower() for marker in ("error", "failed", "timed out")):
+            prefix = result.lower()[:80]
+            if "error" not in prefix and "failed" not in prefix and "timed out" not in prefix:
                 return result
             if attempt < max_retries:
                 last_error = result

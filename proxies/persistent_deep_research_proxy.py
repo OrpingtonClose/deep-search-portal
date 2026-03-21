@@ -1543,8 +1543,9 @@ NATIVE_TOOLS = [
             "description": (
                 "Search YouTube for video content — practitioner tutorials, teardowns, "
                 "conference talks, community discussions, investigative videos. YouTube "
-                "contains deep knowledge that rarely appears in text sources. Use "
-                "fetch_webpage on video URLs to get transcript/description text."
+                "contains deep knowledge that rarely appears in text sources. After "
+                "finding videos, use youtube_transcript to extract spoken content and "
+                "youtube_video_metadata for description/comments/chapters."
             ),
             "parameters": {
                 "type": "object",
@@ -1552,6 +1553,74 @@ NATIVE_TOOLS = [
                     "query": {"type": "string", "description": "Search query"},
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "youtube_transcript",
+            "description": (
+                "Extract the full transcript/subtitles from a YouTube video. Returns "
+                "timestamped spoken content — the actual knowledge: practitioner "
+                "explanations, lecture content, interview dialogue, tutorial steps. "
+                "No API key needed. Works with auto-generated and manual captions. "
+                "This is the PRIMARY way to extract knowledge from YouTube videos."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "YouTube video URL or video ID"},
+                    "lang": {
+                        "type": "string",
+                        "description": "Language code for transcript (default: en). Falls back to any available.",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "youtube_video_metadata",
+            "description": (
+                "Extract rich metadata from a YouTube video: title, channel, upload date, "
+                "view/like counts, full description, chapter markers, tags, categories, "
+                "and top comments. Comments contain corrections, additional knowledge, "
+                "and community reactions. Chapter markers help navigate long videos. "
+                "Description often has links, timestamps, and context not in spoken content."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "YouTube video URL or video ID"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "youtube_video_analyze",
+            "description": (
+                "Analyze a YouTube video's VISUAL content using Qwen Omni vision model. "
+                "Extracts key frames and sends to a vision-language model for in-depth "
+                "analysis. Use when the video contains diagrams, charts, code on screen, "
+                "product teardowns, demonstrations, or visual evidence that the transcript "
+                "alone cannot capture. Requires QWEN_OMNI_BASE_URL to be configured."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "YouTube video URL or video ID"},
+                    "question": {
+                        "type": "string",
+                        "description": "Specific question about the video visuals (optional). If empty, does general visual analysis.",
+                    },
+                },
+                "required": ["url"],
             },
         },
     },
@@ -3504,7 +3573,8 @@ async def tool_youtube_search(query: str) -> str:
     teardowns, community discussions, conference talks, investigative videos,
     and how-to content that rarely appears in text sources.  Uses SearXNG with
     site:youtube.com targeting.  Returns video titles, URLs, and descriptions.
-    Use fetch_webpage on video URLs to get transcript/description text.
+    Use youtube_transcript to get full spoken content from any video.
+    Use youtube_video_analyze to have a vision model evaluate video visuals.
     """
     try:
         results = await _searxng_query(
@@ -3532,6 +3602,438 @@ async def tool_youtube_search(query: str) -> str:
         return "YouTube search error: request timed out"
     except Exception as e:
         return f"YouTube search error: {str(e)}"
+
+
+# ============================================================================
+# YouTube Deep Extraction Pipeline
+# ============================================================================
+# Three layers of video content extraction:
+# 1. youtube_transcript — full spoken content via youtube-transcript-api
+# 2. youtube_video_metadata — title, description, chapters, comments via yt-dlp
+# 3. youtube_video_analyze — visual analysis of video frames via Qwen Omni
+
+
+def _extract_video_id(url_or_id: str) -> Optional[str]:
+    """Extract YouTube video ID from a URL or return it if already an ID."""
+    url_or_id = url_or_id.strip()
+    # Already a bare video ID (11 chars, alphanumeric + - _)
+    if re.match(r'^[A-Za-z0-9_-]{11}$', url_or_id):
+        return url_or_id
+    # Standard youtube.com/watch?v=ID
+    m = re.search(r'[?&]v=([A-Za-z0-9_-]{11})', url_or_id)
+    if m:
+        return m.group(1)
+    # Short youtu.be/ID
+    m = re.search(r'youtu\.be/([A-Za-z0-9_-]{11})', url_or_id)
+    if m:
+        return m.group(1)
+    # Embed youtube.com/embed/ID
+    m = re.search(r'youtube\.com/embed/([A-Za-z0-9_-]{11})', url_or_id)
+    if m:
+        return m.group(1)
+    # Shorts youtube.com/shorts/ID
+    m = re.search(r'youtube\.com/shorts/([A-Za-z0-9_-]{11})', url_or_id)
+    if m:
+        return m.group(1)
+    return None
+
+
+async def tool_youtube_transcript(url: str, lang: str = "en") -> str:
+    """Extract the full transcript/subtitles from a YouTube video.
+
+    Primary path uses LangChain's YoutubeLoader (wraps youtube-transcript-api).
+    Falls back to raw youtube-transcript-api with timestamped output if the
+    LangChain loader fails.  No API key needed, no browser needed.
+
+    This is the PRIMARY way to extract spoken content from YouTube videos.
+    Contains the actual knowledge — practitioner explanations, lecture content,
+    interview dialogue, tutorial steps.
+    """
+    video_id = _extract_video_id(url)
+    if not video_id:
+        return f"Could not extract video ID from: {url}"
+
+    loop = asyncio.get_running_loop()
+    yt_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    def _fetch_transcript() -> str:
+        # --- Primary: LangChain YoutubeLoader ---
+        try:
+            from langchain_community.document_loaders import YoutubeLoader
+
+            loader = YoutubeLoader.from_youtube_url(
+                yt_url,
+                add_video_info=True,
+                language=[lang, "en"],
+                continue_on_failure=True,
+            )
+            docs = loader.load()
+            if docs:
+                meta = docs[0].metadata
+                header_parts = []
+                if meta.get("title"):
+                    header_parts.append(f"TITLE: {meta['title']}")
+                if meta.get("author"):
+                    header_parts.append(f"CHANNEL: {meta['author']}")
+                if meta.get("publish_date"):
+                    header_parts.append(f"DATE: {meta['publish_date']}")
+                if meta.get("length"):
+                    m, s = divmod(int(meta["length"]), 60)
+                    header_parts.append(f"DURATION: {m}:{s:02d}")
+                if meta.get("view_count"):
+                    header_parts.append(f"VIEWS: {meta['view_count']:,}")
+
+                header = "\n".join(header_parts)
+                content = docs[0].page_content
+
+                # Cap output
+                max_chars = 30000
+                if len(content) > max_chars:
+                    content = content[:max_chars] + "\n\n[TRANSCRIPT TRUNCATED]"
+
+                return f"YOUTUBE TRANSCRIPT for {video_id}:\n{header}\n\n{content}"
+        except Exception as e:
+            log.debug(f"YoutubeLoader failed for {video_id}, falling back: {e}")
+
+        # --- Fallback: raw youtube-transcript-api with timestamps ---
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+        except ImportError:
+            return "youtube-transcript-api not installed"
+
+        ytt = YouTubeTranscriptApi()
+
+        try:
+            snippets = ytt.fetch(video_id, languages=[lang, "en"])
+        except Exception:
+            try:
+                transcript_list = ytt.list(video_id)
+                available = list(transcript_list)
+                if not available:
+                    return f"No transcripts available for video {video_id}"
+                snippets = available[0].fetch()
+            except Exception as e:
+                return f"Transcript fetch failed for {video_id}: {e}"
+
+        lines = []
+        for s in snippets:
+            start = s.start if hasattr(s, 'start') else s.get("start", 0)
+            text = s.text if hasattr(s, 'text') else s.get("text", "")
+            mins, secs = divmod(int(start), 60)
+            hours, mins = divmod(mins, 60)
+            if hours > 0:
+                ts = f"[{hours}:{mins:02d}:{secs:02d}]"
+            else:
+                ts = f"[{mins}:{secs:02d}]"
+            lines.append(f"{ts} {text}")
+
+        full_text = "\n".join(lines)
+        max_chars = 30000
+        if len(full_text) > max_chars:
+            full_text = full_text[:max_chars] + f"\n\n[TRANSCRIPT TRUNCATED — {len(lines)} segments total]"
+
+        return f"YOUTUBE TRANSCRIPT for {video_id}:\n{full_text}"
+
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _fetch_transcript),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError:
+        return f"Transcript extraction timed out for {video_id}"
+    except Exception as e:
+        return f"Transcript extraction error for {video_id}: {e}"
+
+
+async def tool_youtube_video_metadata(url: str) -> str:
+    """Extract rich metadata from a YouTube video using yt-dlp.
+
+    Returns: title, channel, upload date, view count, like count,
+    full description, chapter markers, tags, categories, duration,
+    and top comments (if available).
+
+    This complements youtube_transcript — the description often contains
+    links, timestamps, and context that the spoken content doesn't.
+    Comments contain corrections, additional knowledge, and community
+    reactions.
+    """
+    video_id = _extract_video_id(url)
+    if not video_id:
+        return f"Could not extract video ID from: {url}"
+
+    loop = asyncio.get_running_loop()
+
+    def _fetch_metadata() -> str:
+        try:
+            import yt_dlp
+        except ImportError:
+            return "yt-dlp not installed"
+
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "writesubtitles": False,
+            "getcomments": True,
+            "extractor_args": {"youtube": {"max_comments": ["30", "0", "0", "0"]}},
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(
+                    f"https://www.youtube.com/watch?v={video_id}",
+                    download=False,
+                )
+        except Exception as e:
+            return f"yt-dlp extraction failed for {video_id}: {e}"
+
+        if not info:
+            return f"No metadata returned for {video_id}"
+
+        parts = []
+        parts.append(f"TITLE: {info.get('title', 'Unknown')}")
+        parts.append(f"CHANNEL: {info.get('channel', info.get('uploader', 'Unknown'))}")
+        parts.append(f"UPLOAD DATE: {info.get('upload_date', 'Unknown')}")
+
+        duration = info.get("duration")
+        if duration:
+            m, s = divmod(int(duration), 60)
+            h, m = divmod(m, 60)
+            parts.append(f"DURATION: {h}:{m:02d}:{s:02d}" if h else f"DURATION: {m}:{s:02d}")
+
+        view_count = info.get("view_count")
+        if view_count is not None:
+            parts.append(f"VIEWS: {view_count:,}")
+
+        like_count = info.get("like_count")
+        if like_count is not None:
+            parts.append(f"LIKES: {like_count:,}")
+
+        tags = info.get("tags") or []
+        if tags:
+            parts.append(f"TAGS: {', '.join(tags[:20])}")
+
+        categories = info.get("categories") or []
+        if categories:
+            parts.append(f"CATEGORIES: {', '.join(categories)}")
+
+        description = info.get("description", "")
+        if description:
+            # Cap description at 3000 chars
+            desc_text = description[:3000]
+            if len(description) > 3000:
+                desc_text += "... [truncated]"
+            parts.append(f"\nDESCRIPTION:\n{desc_text}")
+
+        # Chapter markers — these are gold for navigating long videos
+        chapters = info.get("chapters") or []
+        if chapters:
+            parts.append("\nCHAPTERS:")
+            for ch in chapters:
+                start = ch.get("start_time", 0)
+                m, s = divmod(int(start), 60)
+                h, m = divmod(m, 60)
+                ts = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+                parts.append(f"  {ts} - {ch.get('title', 'Untitled')}")
+
+        # Comments — community knowledge, corrections, additional context
+        comments = info.get("comments") or []
+        if comments:
+            parts.append(f"\nTOP COMMENTS ({len(comments)}):")
+            for c in comments[:20]:
+                author = c.get("author", "Anonymous")
+                text = (c.get("text") or "")[:500]
+                likes = c.get("like_count", 0)
+                prefix = f"  [{likes} likes]" if likes else "  "
+                parts.append(f"{prefix} @{author}: {text}")
+
+        return "\n".join(parts)
+
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _fetch_metadata),
+            timeout=60.0,
+        )
+    except asyncio.TimeoutError:
+        return f"Metadata extraction timed out for {video_id}"
+    except Exception as e:
+        return f"Metadata extraction error for {video_id}: {e}"
+
+
+# --- Qwen Omni vision model endpoint for video analysis ---
+_QWEN_OMNI_BASE = os.getenv("QWEN_OMNI_BASE_URL", "")
+_QWEN_OMNI_KEY = os.getenv("QWEN_OMNI_API_KEY", "")
+_QWEN_OMNI_MODEL = os.getenv("QWEN_OMNI_MODEL", "qwen3-omni-30b-a3b-instruct")
+
+
+async def tool_youtube_video_analyze(
+    url: str,
+    question: str = "",
+) -> str:
+    """Analyze a YouTube video's visual content using a vision-capable model.
+
+    Downloads the video (or key frames) and sends to Qwen Omni or another
+    vision-language model for in-depth visual analysis.  Use this when:
+    - The video contains diagrams, charts, code on screen, product teardowns
+    - You need to understand what is SHOWN, not just what is SAID
+    - The transcript alone doesn't capture the visual information
+    - You want to evaluate the credibility of visual evidence
+
+    Parameters:
+        url: YouTube video URL or ID
+        question: Specific question about the video visuals (optional).
+                  If empty, does a general visual analysis.
+    """
+    video_id = _extract_video_id(url)
+    if not video_id:
+        return f"Could not extract video ID from: {url}"
+
+    if not _QWEN_OMNI_BASE:
+        return (
+            "Video visual analysis not available: QWEN_OMNI_BASE_URL not configured. "
+            "Set QWEN_OMNI_BASE_URL and QWEN_OMNI_API_KEY environment variables to "
+            "point at a Qwen Omni endpoint (vLLM, Ollama, or Alibaba Cloud API). "
+            "Use youtube_transcript for spoken content instead."
+        )
+
+    loop = asyncio.get_running_loop()
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    # Step 1: Extract key frames from the video using yt-dlp
+    def _extract_frames() -> list[str]:
+        """Download video and extract key frames as base64-encoded images."""
+        import base64
+
+        try:
+            import yt_dlp
+        except ImportError:
+            return []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = os.path.join(tmpdir, "video.mp4")
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "format": "worst[ext=mp4]/worst",  # Smallest quality for frame extraction
+                "outtmpl": video_path,
+                "max_filesize": 100 * 1024 * 1024,  # 100MB cap
+            }
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([video_url])
+            except Exception as e:
+                log.warning(f"Video download failed for {video_id}: {e}")
+                return []
+
+            if not os.path.exists(video_path):
+                return []
+
+            # Extract frames using ffmpeg at key intervals
+            frames_dir = os.path.join(tmpdir, "frames")
+            os.makedirs(frames_dir, exist_ok=True)
+            try:
+                # Extract 1 frame every 30 seconds, max 20 frames
+                subprocess.run(
+                    [
+                        "ffmpeg", "-i", video_path,
+                        "-vf", "fps=1/30,scale=768:-1",
+                        "-frames:v", "20",
+                        "-q:v", "3",
+                        os.path.join(frames_dir, "frame_%03d.jpg"),
+                    ],
+                    capture_output=True,
+                    timeout=60,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+                log.warning(f"Frame extraction failed for {video_id}: {e}")
+                return []
+
+            # Read frames as base64
+            frame_files = sorted(
+                f for f in os.listdir(frames_dir) if f.endswith(".jpg")
+            )
+            frames_b64 = []
+            for fname in frame_files[:20]:
+                fpath = os.path.join(frames_dir, fname)
+                with open(fpath, "rb") as f:
+                    frames_b64.append(base64.b64encode(f.read()).decode())
+            return frames_b64
+
+    try:
+        frames_b64 = await asyncio.wait_for(
+            loop.run_in_executor(None, _extract_frames),
+            timeout=120.0,
+        )
+    except asyncio.TimeoutError:
+        return f"Video frame extraction timed out for {video_id}"
+    except Exception as e:
+        return f"Video frame extraction error for {video_id}: {e}"
+
+    if not frames_b64:
+        return (
+            f"Could not extract frames from video {video_id}. "
+            "Use youtube_transcript for spoken content instead."
+        )
+
+    # Step 2: Send frames to Qwen Omni for visual analysis
+    prompt = question or (
+        "Analyze this video's visual content in detail. Describe what is shown: "
+        "diagrams, text on screen, code, products, demonstrations, charts, "
+        "environments, people, and any visual evidence relevant to understanding "
+        "the video's subject matter. Be specific and factual."
+    )
+
+    # Build multimodal message content
+    content_parts: list[dict] = []
+    content_parts.append({
+        "type": "text",
+        "text": (
+            f"These are {len(frames_b64)} key frames extracted from a YouTube video "
+            f"(ID: {video_id}), sampled every 30 seconds. {prompt}"
+        ),
+    })
+    for i, b64 in enumerate(frames_b64):
+        content_parts.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+        })
+
+    try:
+        client = http_client()
+        resp = await client.post(
+            f"{_QWEN_OMNI_BASE.rstrip('/')}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {_QWEN_OMNI_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": _QWEN_OMNI_MODEL,
+                "messages": [
+                    {"role": "user", "content": content_parts},
+                ],
+                "max_tokens": 4096,
+                "temperature": 0.3,
+            },
+            timeout=120.0,
+        )
+        if resp.status_code != 200:
+            return (
+                f"Qwen Omni API error ({resp.status_code}): {resp.text[:500]}. "
+                "Use youtube_transcript for spoken content instead."
+            )
+        data = resp.json()
+        analysis = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not analysis:
+            return f"Qwen Omni returned empty analysis for {video_id}"
+
+        return (
+            f"VISUAL ANALYSIS of YouTube video {video_id} "
+            f"({len(frames_b64)} frames analyzed):\n\n{analysis}"
+        )
+    except httpx.TimeoutException:
+        return f"Qwen Omni API timed out analyzing video {video_id}"
+    except Exception as e:
+        return f"Qwen Omni analysis error for {video_id}: {e}"
 
 
 # ============================================================================
@@ -3568,6 +4070,7 @@ _RARE_SOURCE_TOOLS = {
     "chan_4plebs_search", "chan_b4k_search", "chan_warosu_search",
     "forum_search", "telegram_search", "darknet_market_search",
     "twitter_search", "substack_search", "youtube_search",
+    "youtube_transcript", "youtube_video_metadata", "youtube_video_analyze",
 }
 
 
@@ -3833,6 +4336,18 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
         return await tool_substack_search(arguments.get("query", ""))
     elif tool_name == "youtube_search":
         return await tool_youtube_search(arguments.get("query", ""))
+    elif tool_name == "youtube_transcript":
+        return await tool_youtube_transcript(
+            arguments.get("url", ""),
+            arguments.get("lang", "en"),
+        )
+    elif tool_name == "youtube_video_metadata":
+        return await tool_youtube_video_metadata(arguments.get("url", ""))
+    elif tool_name == "youtube_video_analyze":
+        return await tool_youtube_video_analyze(
+            arguments.get("url", ""),
+            arguments.get("question", ""),
+        )
     else:
         return f"Unknown tool: {tool_name}"
 
@@ -4701,7 +5216,8 @@ _COMMUNITY_UNDERGROUND_TOOLS = [
     "reddit_search", "forum_search", "chan_4plebs_search", "chan_b4k_search",
     "chan_warosu_search", "twitter_search", "telegram_search",
     "substack_search", "hackernews_search", "stackexchange_search",
-    "youtube_search", "social_media_search", "darknet_market_search",
+    "youtube_search", "youtube_transcript", "youtube_video_metadata",
+    "youtube_video_analyze", "social_media_search", "darknet_market_search",
 ]
 _ACADEMIC_ARCHIVAL_TOOLS = [
     "scholar_search", "pubmed_search", "arxiv_search", "archiveorg_search",
@@ -4717,7 +5233,7 @@ _QUESTION_ROUTER_PROMPT = """You are a research question router. Given a researc
 3. What specific search queries should be tried?
 
 Available tool categories:
-- COMMUNITY: reddit_search, forum_search, chan_4plebs_search, chan_b4k_search, chan_warosu_search, twitter_search, hackernews_search, stackexchange_search, youtube_search, substack_search
+- COMMUNITY: reddit_search, forum_search, chan_4plebs_search, chan_b4k_search, chan_warosu_search, twitter_search, hackernews_search, stackexchange_search, youtube_search, youtube_transcript, youtube_video_metadata, youtube_video_analyze, substack_search
 - UNDERGROUND: telegram_search, darknet_market_search, social_media_search
 - ACADEMIC: scholar_search, pubmed_search, arxiv_search, archiveorg_search
 - SURFACE (use ONLY as last resort): searxng_search, news_search, wikipedia_search
@@ -5366,7 +5882,10 @@ PRIMARY (use these FIRST — real people, real discussions, real experiences):
 - substack_search: Independent journalism and long-form analysis from Substack newsletters.
 - hackernews_search: Tech industry discourse, startup culture, expert opinions from engineers/founders.
 - stackexchange_search: Expert Q&A from hundreds of niche communities.
-- youtube_search: Video content, expert lectures, documentaries, interviews.
+- youtube_search: Search YouTube for videos. After finding results, ALWAYS follow up with youtube_transcript and youtube_video_metadata.
+- youtube_transcript: Extract full spoken content (transcript/subtitles) from a YouTube video URL. This is the PRIMARY way to get knowledge from videos.
+- youtube_video_metadata: Extract title, description, chapters, comments, tags from a YouTube video. Comments contain corrections and community knowledge.
+- youtube_video_analyze: Analyze video VISUALS using Qwen Omni vision model — diagrams, code on screen, product teardowns, demonstrations. Use when transcript alone isn't enough.
 - social_media_search: Instagram, TikTok, LinkedIn via commercial scrapers.
 - telegram_search: Encrypted community channels, alternative discourse.
 - darknet_market_search: Underground marketplace intelligence.

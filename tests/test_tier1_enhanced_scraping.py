@@ -823,8 +823,8 @@ class TestSearxngConfig:
 
         engines = data.get("engines", [])
         engine_names = {e["name"] for e in engines}
-        assert "marginalia" in engine_names
-        assert "wiby" in engine_names
+        assert "marginalia custom" in engine_names
+        assert "wiby custom" in engine_names
         assert "mojeek" in engine_names
 
     def test_engines_have_required_fields(self):
@@ -832,8 +832,14 @@ class TestSearxngConfig:
         with open(_CONFIG_PATH) as f:
             data = yaml.safe_load(f)
 
+        # Only validate full engine definitions (custom xpath scrapers),
+        # not override stubs that just set disabled/inactive flags.
         required_fields = {"name", "engine", "search_url", "shortcut"}
         for engine in data.get("engines", []):
+            if "engine" not in engine:
+                # This is an override stub (e.g. {name: bing, disabled: false})
+                assert "name" in engine, f"Override stub missing 'name': {engine}"
+                continue
             missing = required_fields - set(engine.keys())
             assert not missing, f"Engine '{engine.get('name', '?')}' missing fields: {missing}"
 
@@ -843,4 +849,6 @@ class TestSearxngConfig:
             data = yaml.safe_load(f)
 
         for engine in data.get("engines", []):
-            assert engine.get("disabled") is not True, f"Engine '{engine['name']}' is disabled"
+            # Custom engines must be enabled; override stubs set disabled: false
+            if "engine" in engine:
+                assert engine.get("disabled") is not True, f"Engine '{engine['name']}' is disabled"

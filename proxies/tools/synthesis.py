@@ -849,11 +849,12 @@ class PersistentResearchState(TypedDict):
     targeted_questions: list[str]
     quality_score: float
     comprehension_data: dict
-    # Identity-based sets of condition fact hashes already processed,
+    # Identity-based lists of condition fact hashes already processed,
     # so re-loop iterations only process NEW conditions.  Using hashes
     # instead of positional counts is robust to verify removing conditions.
-    persisted_fact_hashes: set
-    extracted_fact_hashes: set
+    # Stored as list[int] (not set) for JSON/SQLite checkpoint serialisation.
+    persisted_fact_hashes: list[int]
+    extracted_fact_hashes: list[int]
 
 
 async def pdr_node_comprehend(state: PersistentResearchState) -> dict:
@@ -1131,7 +1132,7 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
     if mc:
         mc.start_node("entities")
     all_conditions = state["all_conditions"]
-    already_extracted = state.get("extracted_fact_hashes", set())
+    already_extracted = set(state.get("extracted_fact_hashes") or [])
     new_conditions = [c for c in all_conditions if hash(c.fact) not in already_extracted]
     progress: list[str] = []
 
@@ -1168,13 +1169,13 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
         mc.end_node("entities")
 
     # Track all conditions we've now extracted entities from by fact hash
-    updated_hashes = set(already_extracted) | {
+    updated_hashes = already_extracted | {
         hash(c.fact) for c in all_conditions
     }
     return {
         "progress_log": progress,
         "phase": "verify",
-        "extracted_fact_hashes": updated_hashes,
+        "extracted_fact_hashes": sorted(updated_hashes),
     }
 
 
@@ -1343,7 +1344,7 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
         mc.start_node("persist")
     user_query = state["user_query"]
     all_conditions = state["all_conditions"]
-    already_persisted = state.get("persisted_fact_hashes", set())
+    already_persisted = set(state.get("persisted_fact_hashes") or [])
     new_conditions = [c for c in all_conditions if hash(c.fact) not in already_persisted]
     progress: list[str] = []
 
@@ -1366,13 +1367,13 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
         mc.end_node("persist")
 
     # Track all conditions we've now persisted by fact hash
-    updated_hashes = set(already_persisted) | {
+    updated_hashes = already_persisted | {
         hash(c.fact) for c in all_conditions
     }
     return {
         "progress_log": progress,
         "phase": "synthesize",
-        "persisted_fact_hashes": updated_hashes,
+        "persisted_fact_hashes": sorted(updated_hashes),
     }
 
 
@@ -1874,9 +1875,9 @@ async def run_persistent_research(
         "targeted_questions": [],
         "quality_score": 0.0,
         "comprehension_data": {},
-        # Identity-based dedup sets (prevent duplicate persist/entity-extraction)
-        "persisted_fact_hashes": set(),
-        "extracted_fact_hashes": set(),
+        # Identity-based dedup lists (prevent duplicate persist/entity-extraction)
+        "persisted_fact_hashes": [],
+        "extracted_fact_hashes": [],
     }
 
     # Create the shared output queue, live findings collector, and curated queue

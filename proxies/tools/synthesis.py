@@ -1409,77 +1409,81 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         progress.append(f" + {total_children} recursive sub-explorations")
     progress.append(")\n")
 
-    # Generate report + metrics
+    # Only generate report + metrics on the final pass (not when looping
+    # back to tree_research).  Generating prematurely would produce
+    # duplicate "Report published" progress entries and call mc.finalise()
+    # before the research is actually complete.
     report_url = ""
     metrics_url = ""
-    mc = _metrics_collectors.get(req_id)
-    if mc:
-        mc.end_node("synthesize")
+    if not targeted:
+        mc = _metrics_collectors.get(req_id)
+        if mc:
+            mc.end_node("synthesize")
 
-        # Feed conditions into metrics collector
-        condition_dicts = [
-            {
-                "fact": c.fact,
-                "source_url": c.source_url,
-                "confidence": c.confidence,
-                "angle": c.angle,
-                "trust_score": c.trust_score,
-                "is_serendipitous": c.is_serendipitous,
-                "serendipity_score_val": c.serendipity_score_val,
-            }
-            for c in all_conditions
-        ]
-        mc.set_conditions(condition_dicts)
+            # Feed conditions into metrics collector
+            condition_dicts = [
+                {
+                    "fact": c.fact,
+                    "source_url": c.source_url,
+                    "confidence": c.confidence,
+                    "angle": c.angle,
+                    "trust_score": c.trust_score,
+                    "is_serendipitous": c.is_serendipitous,
+                    "serendipity_score_val": c.serendipity_score_val,
+                }
+                for c in all_conditions
+            ]
+            mc.set_conditions(condition_dicts)
 
-        # Try to get cost data from social media scrapers
-        try:
-            from social_media_scrapers import cost_tracker
-            if cost_tracker:
-                mc.set_cost_data({
-                    "session_total": cost_tracker.session_total(req_id),
-                    "monthly_total": cost_tracker.monthly_total(),
-                })
-        except Exception:
-            pass
+            # Try to get cost data from social media scrapers
+            try:
+                from social_media_scrapers import cost_tracker
+                if cost_tracker:
+                    mc.set_cost_data({
+                        "session_total": cost_tracker.session_total(req_id),
+                        "monthly_total": cost_tracker.monthly_total(),
+                    })
+            except Exception:
+                pass
 
-        # Finalise metrics
-        metrics_obj = mc.finalise()
-        metrics_dict = metrics_obj.to_dict()
-        save_metrics(metrics_obj)
+            # Finalise metrics
+            metrics_obj = mc.finalise()
+            metrics_dict = metrics_obj.to_dict()
+            save_metrics(metrics_obj)
 
-        # Generate Markdown report (user-readable)
-        try:
-            md_report = research_report.generate_report(
-                metrics=metrics_dict,
-                conditions=condition_dicts,
-                final_answer=final_answer,
-                progress_log=list(state.get("progress_log", [])),
-            )
-            research_report.save_report(md_report, req_id)
-
-            # Save metrics JSON alongside report
-            metrics_json = json.dumps(metrics_dict, indent=2, default=str)
-            research_report.save_metrics_json(metrics_json, req_id)
-
-            # Build portal URLs for the report and metrics
-            base = PORTAL_PUBLIC_URL
-            if not base:
-                log.warning(
-                    "[%s] PORTAL_PUBLIC_URL not set — report links will be relative",
-                    req_id,
+            # Generate Markdown report (user-readable)
+            try:
+                md_report = research_report.generate_report(
+                    metrics=metrics_dict,
+                    conditions=condition_dicts,
+                    final_answer=final_answer,
+                    progress_log=list(state.get("progress_log", [])),
                 )
-                base = ""
-            report_url = f"{base}/research/report/{req_id}"
-            metrics_url = f"{base}/research/metrics/{req_id}"
-            log.info(f"[{req_id}] Report available at: {report_url}")
-        except Exception as e:
-            log.error(f"[{req_id}] Failed to generate report: {e}")
+                research_report.save_report(md_report, req_id)
 
-    # Append report link to progress if available
-    if report_url:
-        progress.append(f"\n**Report published:** {report_url}\n")
-    if metrics_url:
-        progress.append(f"**Metrics published:** {metrics_url}\n")
+                # Save metrics JSON alongside report
+                metrics_json = json.dumps(metrics_dict, indent=2, default=str)
+                research_report.save_metrics_json(metrics_json, req_id)
+
+                # Build portal URLs for the report and metrics
+                base = PORTAL_PUBLIC_URL
+                if not base:
+                    log.warning(
+                        "[%s] PORTAL_PUBLIC_URL not set — report links will be relative",
+                        req_id,
+                    )
+                    base = ""
+                report_url = f"{base}/research/report/{req_id}"
+                metrics_url = f"{base}/research/metrics/{req_id}"
+                log.info(f"[{req_id}] Report available at: {report_url}")
+            except Exception as e:
+                log.error(f"[{req_id}] Failed to generate report: {e}")
+
+        # Append report link to progress if available
+        if report_url:
+            progress.append(f"\n**Report published:** {report_url}\n")
+        if metrics_url:
+            progress.append(f"**Metrics published:** {metrics_url}\n")
 
     return {
         "final_answer": final_answer,

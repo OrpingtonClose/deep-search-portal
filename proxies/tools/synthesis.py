@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, AsyncGenerator, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from research_metrics import (
     MetricsCollector,
@@ -59,6 +60,16 @@ from .planning import (
 from .search_tools import tool_searxng_search
 from .subagent import reflect_on_conditions
 from .tree_reactor import tree_research_reactor
+from .pipeline import comprehend_query
+
+# SQLite checkpoint DB path (configurable via env)
+_CHECKPOINT_DB_PATH = os.getenv(
+    "LANGGRAPH_CHECKPOINT_DB",
+    "/opt/persistent_research_logs/checkpoints.sqlite3",
+)
+
+# Maximum number of research iterations (reflect/synthesis feedback loops)
+MAX_RESEARCH_ITERATIONS = int(os.getenv("MAX_RESEARCH_ITERATIONS", "3"))
 
 
 # ============================================================================
@@ -798,7 +809,21 @@ def _pdr_append_log(left: list[str], right: list[str]) -> list[str]:
 
 
 class PersistentResearchState(TypedDict):
-    """LangGraph state for the persistent deep research pipeline."""
+    """LangGraph state for the persistent deep research pipeline.
+
+    This is the typed state object that flows through all graph nodes.
+    Each node receives the full state and returns a partial dict of
+    fields to update.  The ``progress_log`` field uses a custom reducer
+    so that each node *appends* to the log rather than replacing it.
+
+    Fields added for the conditional-edge / feedback-loop migration:
+      - research_iterations: how many times tree_research has run
+      - targeted_questions: extra questions injected by reflect/synthesis
+        feedback for the next research iteration
+      - quality_score: latest AoT reflection quality score
+      - comprehension_data: serialised QueryComprehension from the
+        ``comprehend`` node (dict form for checkpoint serialisation)
+    """
     req_id: str
     user_query: str
     start_time: float
@@ -819,6 +844,60 @@ class PersistentResearchState(TypedDict):
     # Report URLs (populated at end of pipeline)
     report_url: str
     metrics_url: str
+    # --- Feedback-loop / conditional-edge fields ---
+    research_iterations: int
+    targeted_questions: list[str]
+    quality_score: float
+    comprehension_data: dict
+
+
+async def pdr_node_comprehend(state: PersistentResearchState) -> dict:
+    """Phase 0: Deep query comprehension.
+
+    Runs a single LLM pass to produce a rich semantic understanding of
+    the user's query — entities, domains, implicit questions, adjacent
+    territories, and relevance keywords.  The result is stored in
+    ``comprehension_data`` (as a plain dict for serialisation) and
+    consumed by tree_research for seeding research angles.
+    """
+    req_id = state["req_id"]
+    user_query = state["user_query"]
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.start_node("comprehend")
+    progress: list[str] = ["**[Phase 0: Query Comprehension]**\n"]
+
+    comp = await comprehend_query(user_query, req_id)
+
+    # Serialise dataclass → dict for checkpoint compatibility
+    comp_dict = {
+        "entities": comp.entities,
+        "domains": comp.domains,
+        "implicit_questions": comp.implicit_questions,
+        "adjacent_territories": comp.adjacent_territories,
+        "relevance_keywords": comp.relevance_keywords,
+        "deep_knowledge_targets": comp.deep_knowledge_targets,
+        "semantic_summary": comp.semantic_summary,
+    }
+
+    progress.append(
+        f"Identified {len(comp.entities)} entities, "
+        f"{len(comp.domains)} domains, "
+        f"{len(comp.implicit_questions)} implicit questions, "
+        f"{len(comp.adjacent_territories)} adjacent territories.\n"
+    )
+    if comp.semantic_summary:
+        progress.append(f"Query essence: {comp.semantic_summary[:200]}\n")
+
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.end_node("comprehend")
+
+    return {
+        "comprehension_data": comp_dict,
+        "progress_log": progress,
+        "phase": "retrieve",
+    }
 
 
 async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
@@ -871,8 +950,15 @@ async def pdr_node_tree_research(state: PersistentResearchState) -> dict:
     Replaces the old plan-angles + parallel-subagents phases with a
     tree exploration that starts from the user query, researches it,
     and spawns focused sub-questions from each finding.
+
+    On re-research iterations (triggered by reflect or synthesis
+    feedback loops), ``targeted_questions`` from the previous iteration
+    are injected as high-priority seed questions so the reactor
+    focuses on known gaps instead of re-exploring covered ground.
     """
     req_id = state["req_id"]
+    iterations = state.get("research_iterations", 0)
+    targeted = state.get("targeted_questions", [])
     mc = _metrics_collectors.get(req_id)
     if mc:
         mc.start_node("tree_research")
@@ -889,14 +975,39 @@ async def pdr_node_tree_research(state: PersistentResearchState) -> dict:
         curated_queue = asyncio.Queue()
         _curated_queues[req_id] = curated_queue
 
+    progress: list[str] = []
+    if iterations > 0:
+        progress.append(
+            f"\n**[Re-research iteration {iterations + 1}]** "
+            f"Targeting {len(targeted)} gap questions...\n"
+        )
+
+    # Build the effective query: on re-research, prepend targeted
+    # questions so the reactor seeds its tree from the gaps.
+    effective_query = state["user_query"]
+    if targeted:
+        effective_query = (
+            f"{state['user_query']}\n\n"
+            f"PRIORITY INVESTIGATION AREAS (from previous analysis):\n"
+            + "\n".join(f"- {q}" for q in targeted)
+        )
+
     result = await tree_research_reactor(
-        user_query=state["user_query"],
+        user_query=effective_query,
         prior_conditions=state["prior_conditions"],
         graph_neighbors=state["graph_neighbors"],
         req_id=req_id,
         collector=collector,
         curated_queue=curated_queue,
     )
+
+    # Merge conditions from this iteration with any existing ones
+    # (on re-research, we want to accumulate, not replace).
+    existing_conditions = list(state.get("all_conditions", []))
+    new_conditions = result["all_conditions"]
+    merged_conditions = existing_conditions + [
+        c for c in new_conditions if c not in existing_conditions
+    ]
 
     # Record subagent metrics
     subagent_results = result["subagent_results"]
@@ -916,13 +1027,15 @@ async def pdr_node_tree_research(state: PersistentResearchState) -> dict:
         mc.end_node("tree_research")
 
     return {
-        "subagent_results": result["subagent_results"],
-        "all_conditions": result["all_conditions"],
-        "total_turns": result["total_turns"],
-        "total_tools": result["total_tools"],
-        "total_children": result["total_children"],
-        "nodes_explored": len(result["subagent_results"]),
-        "progress_log": result["progress_log"],
+        "subagent_results": list(state.get("subagent_results", [])) + result["subagent_results"],
+        "all_conditions": merged_conditions,
+        "total_turns": state.get("total_turns", 0) + result["total_turns"],
+        "total_tools": state.get("total_tools", 0) + result["total_tools"],
+        "total_children": state.get("total_children", 0) + result["total_children"],
+        "nodes_explored": state.get("nodes_explored", 0) + len(result["subagent_results"]),
+        "research_iterations": iterations + 1,
+        "targeted_questions": [],  # clear after consuming
+        "progress_log": progress + result["progress_log"],
         "phase": "entities",
     }
 
@@ -1047,7 +1160,13 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
 
 
 async def pdr_node_reflect(state: PersistentResearchState) -> dict:
-    """Phase 6: AoT Reflection."""
+    """Phase 6: AoT Reflection.
+
+    Evaluates research quality and populates ``quality_score`` and
+    ``targeted_questions``.  The downstream conditional edge
+    ``_should_reresearch`` uses these to decide whether to loop back
+    to tree_research or proceed to persist.
+    """
     req_id = state["req_id"]
     collector = _live_collectors.get(req_id)
     if collector:
@@ -1059,6 +1178,8 @@ async def pdr_node_reflect(state: PersistentResearchState) -> dict:
     user_query = state["user_query"]
     progress: list[str] = []
     reflection: dict = {}
+    quality: float = 0.5
+    targeted: list[str] = []
 
     if all_conditions:
         progress.append("\n**[Phase 6: AoT Reflection]**\n")
@@ -1072,8 +1193,20 @@ async def pdr_node_reflect(state: PersistentResearchState) -> dict:
                 progress.append(f"  - [{issue.get('type', '?')}] {issue.get('description', '')[:100]}\n")
 
         suggested = reflection.get("suggested_queries", [])
-        if quality < 0.5 and suggested:
-            progress.append("Quality below threshold -- running targeted additional research...\n")
+        iterations = state.get("research_iterations", 0)
+
+        if quality < 0.4 and suggested and iterations < MAX_RESEARCH_ITERATIONS:
+            # Instead of doing a tiny SearXNG patch here, we surface
+            # the suggested queries so the conditional edge can route
+            # back to tree_research for a full re-research pass.
+            targeted = suggested[:3]
+            progress.append(
+                f"Quality below threshold ({quality:.1f} < 0.4) — "
+                f"flagging {len(targeted)} targeted questions for re-research.\n"
+            )
+        elif quality < 0.5 and suggested:
+            # Moderate quality gap: do the lightweight SearXNG patch
+            progress.append("Quality below 0.5 -- running targeted micro-research...\n")
             extra_results = await asyncio.gather(
                 *[tool_searxng_search(q) for q in suggested[:2]],
                 return_exceptions=True,
@@ -1094,8 +1227,10 @@ async def pdr_node_reflect(state: PersistentResearchState) -> dict:
     return {
         "all_conditions": all_conditions,
         "reflection": reflection,
+        "quality_score": quality,
+        "targeted_questions": targeted,
         "progress_log": progress,
-        "phase": "persist",
+        "phase": "reflect",
     }
 
 
@@ -1125,8 +1260,91 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
     return {"progress_log": progress, "phase": "synthesize"}
 
 
+_INCOMPLETENESS_DETECT_PROMPT = """You are a research completeness evaluator. Given the user's original query and a synthesised research report, determine whether the report has critical gaps that would benefit from additional research.
+
+Original query: {query}
+
+Synthesised report (first 3000 chars):
+{report_excerpt}
+
+Number of research conditions gathered: {n_conditions}
+Research iterations completed: {iterations}
+
+Output ONLY valid JSON:
+{
+  "is_complete": true,
+  "completeness_score": 0.85,
+  "gaps": [
+    {"description": "gap description", "search_query": "specific query to fill this gap"}
+  ]
+}
+
+Rules:
+- is_complete = true if the report adequately answers the query (score >= 0.7)
+- is_complete = false ONLY if there are CRITICAL gaps that would significantly change the answer
+- Do NOT flag minor gaps or nice-to-haves — only critical missing information
+- Maximum 3 gaps
+- Output ONLY valid JSON, no markdown fences"""
+
+
+async def _detect_incompleteness(
+    final_answer: str,
+    user_query: str,
+    n_conditions: int,
+    iterations: int,
+    req_id: str,
+) -> tuple[bool, list[str]]:
+    """Detect critical gaps in the synthesised report.
+
+    Returns (is_complete, gap_queries) where gap_queries are specific
+    search queries to fill the identified gaps.
+    """
+    # Use .replace() instead of .format() to avoid KeyError if
+    # user_query or final_answer contain { or } characters.
+    prompt = _INCOMPLETENESS_DETECT_PROMPT.replace(
+        "{query}", user_query
+    ).replace(
+        "{report_excerpt}", final_answer[:3000]
+    ).replace(
+        "{n_conditions}", str(n_conditions)
+    ).replace(
+        "{iterations}", str(iterations)
+    )
+    try:
+        result = await call_llm(
+            [{"role": "user", "content": prompt}],
+            req_id,
+            model=SUBAGENT_MODEL,
+            max_tokens=512,
+            temperature=0.1,
+        )
+        if "error" not in result:
+            content = result.get("content", "").strip()
+            if content.startswith("```"):
+                content = re.sub(r'^```(?:json)?\s*', '', content)
+                content = re.sub(r'\s*```$', '', content)
+            data = json.loads(content)
+            is_complete = data.get("is_complete", True)
+            gaps = data.get("gaps", [])
+            gap_queries = [
+                g.get("search_query", "") for g in gaps[:3] if g.get("search_query")
+            ]
+            return is_complete, gap_queries
+    except Exception as e:
+        log.warning(f"[{req_id}] Incompleteness detection failed (non-fatal): {e}")
+
+    return True, []
+
+
 async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
-    """Final phase: Draft-Synthesis-Revision loop."""
+    """Final phase: Draft-Synthesis-Revision loop.
+
+    After synthesis, runs an incompleteness detection pass.  If critical
+    gaps are found AND we haven't exceeded MAX_RESEARCH_ITERATIONS, the
+    node populates ``targeted_questions`` so the downstream conditional
+    edge ``_should_reresearch_after_synthesis`` can route back to
+    tree_research.
+    """
     req_id = state["req_id"]
     collector = _live_collectors.get(req_id)
     if collector:
@@ -1154,10 +1372,34 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
     progress.append("Critic review complete.\n")
     progress.append("Final revision complete.\n")
 
+    # --- Incompleteness detection (synthesis → reresearch feedback) ---
+    iterations = state.get("research_iterations", 0)
+    all_conditions = state["all_conditions"]
+    targeted: list[str] = []
+
+    if iterations < MAX_RESEARCH_ITERATIONS:
+        is_complete, gap_queries = await _detect_incompleteness(
+            final_answer, state["user_query"],
+            n_conditions=len(all_conditions),
+            iterations=iterations,
+            req_id=req_id,
+        )
+        if not is_complete and gap_queries:
+            targeted = gap_queries
+            progress.append(
+                f"\n⚠ Incompleteness detected — {len(targeted)} critical gaps identified. "
+                f"Routing back to research (iteration {iterations + 1}/{MAX_RESEARCH_ITERATIONS}).\n"
+            )
+        else:
+            progress.append("\nCompleteness check passed.\n")
+    else:
+        progress.append(
+            f"\nMax research iterations ({MAX_RESEARCH_ITERATIONS}) reached — skipping completeness check.\n"
+        )
+
     elapsed = time.monotonic() - state["start_time"]
     nodes_explored = state.get("nodes_explored", 0)
-    all_conditions = state["all_conditions"]
-    total_children = state["total_children"]
+    total_children = state.get("total_children", 0)
 
     progress.append(
         f"\nResearch complete in {elapsed:.1f}s "
@@ -1167,97 +1409,153 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         progress.append(f" + {total_children} recursive sub-explorations")
     progress.append(")\n")
 
-    # Generate report + metrics
+    # Only generate report + metrics on the final pass (not when looping
+    # back to tree_research).  Generating prematurely would produce
+    # duplicate "Report published" progress entries and call mc.finalise()
+    # before the research is actually complete.
     report_url = ""
     metrics_url = ""
-    mc = _metrics_collectors.get(req_id)
-    if mc:
-        mc.end_node("synthesize")
+    if not targeted:
+        mc = _metrics_collectors.get(req_id)
+        if mc:
+            mc.end_node("synthesize")
 
-        # Feed conditions into metrics collector
-        condition_dicts = [
-            {
-                "fact": c.fact,
-                "source_url": c.source_url,
-                "confidence": c.confidence,
-                "angle": c.angle,
-                "trust_score": c.trust_score,
-                "is_serendipitous": c.is_serendipitous,
-                "serendipity_score_val": c.serendipity_score_val,
-            }
-            for c in all_conditions
-        ]
-        mc.set_conditions(condition_dicts)
+            # Feed conditions into metrics collector
+            condition_dicts = [
+                {
+                    "fact": c.fact,
+                    "source_url": c.source_url,
+                    "confidence": c.confidence,
+                    "angle": c.angle,
+                    "trust_score": c.trust_score,
+                    "is_serendipitous": c.is_serendipitous,
+                    "serendipity_score_val": c.serendipity_score_val,
+                }
+                for c in all_conditions
+            ]
+            mc.set_conditions(condition_dicts)
 
-        # Try to get cost data from social media scrapers
-        try:
-            from social_media_scrapers import cost_tracker
-            if cost_tracker:
-                mc.set_cost_data({
-                    "session_total": cost_tracker.session_total(req_id),
-                    "monthly_total": cost_tracker.monthly_total(),
-                })
-        except Exception:
-            pass
+            # Try to get cost data from social media scrapers
+            try:
+                from social_media_scrapers import cost_tracker
+                if cost_tracker:
+                    mc.set_cost_data({
+                        "session_total": cost_tracker.session_total(req_id),
+                        "monthly_total": cost_tracker.monthly_total(),
+                    })
+            except Exception:
+                pass
 
-        # Finalise metrics
-        metrics_obj = mc.finalise()
-        metrics_dict = metrics_obj.to_dict()
-        save_metrics(metrics_obj)
+            # Finalise metrics
+            metrics_obj = mc.finalise()
+            metrics_dict = metrics_obj.to_dict()
+            save_metrics(metrics_obj)
 
-        # Generate Markdown report (user-readable)
-        try:
-            md_report = research_report.generate_report(
-                metrics=metrics_dict,
-                conditions=condition_dicts,
-                final_answer=final_answer,
-                progress_log=list(state.get("progress_log", [])),
-            )
-            research_report.save_report(md_report, req_id)
-
-            # Save metrics JSON alongside report
-            metrics_json = json.dumps(metrics_dict, indent=2, default=str)
-            research_report.save_metrics_json(metrics_json, req_id)
-
-            # Build portal URLs for the report and metrics
-            base = PORTAL_PUBLIC_URL
-            if not base:
-                log.warning(
-                    "[%s] PORTAL_PUBLIC_URL not set — report links will be relative",
-                    req_id,
+            # Generate Markdown report (user-readable)
+            try:
+                md_report = research_report.generate_report(
+                    metrics=metrics_dict,
+                    conditions=condition_dicts,
+                    final_answer=final_answer,
+                    progress_log=list(state.get("progress_log", [])),
                 )
-                base = ""
-            report_url = f"{base}/research/report/{req_id}"
-            metrics_url = f"{base}/research/metrics/{req_id}"
-            log.info(f"[{req_id}] Report available at: {report_url}")
-        except Exception as e:
-            log.error(f"[{req_id}] Failed to generate report: {e}")
+                research_report.save_report(md_report, req_id)
 
-    # Append report link to progress if available
-    if report_url:
-        progress.append(f"\n**Report published:** {report_url}\n")
-    if metrics_url:
-        progress.append(f"**Metrics published:** {metrics_url}\n")
+                # Save metrics JSON alongside report
+                metrics_json = json.dumps(metrics_dict, indent=2, default=str)
+                research_report.save_metrics_json(metrics_json, req_id)
+
+                # Build portal URLs for the report and metrics
+                base = PORTAL_PUBLIC_URL
+                if not base:
+                    log.warning(
+                        "[%s] PORTAL_PUBLIC_URL not set — report links will be relative",
+                        req_id,
+                    )
+                    base = ""
+                report_url = f"{base}/research/report/{req_id}"
+                metrics_url = f"{base}/research/metrics/{req_id}"
+                log.info(f"[{req_id}] Report available at: {report_url}")
+            except Exception as e:
+                log.error(f"[{req_id}] Failed to generate report: {e}")
+
+        # Append report link to progress if available
+        if report_url:
+            progress.append(f"\n**Report published:** {report_url}\n")
+        if metrics_url:
+            progress.append(f"**Metrics published:** {metrics_url}\n")
 
     return {
         "final_answer": final_answer,
+        "targeted_questions": targeted,
         "progress_log": progress,
-        "phase": "done",
+        "phase": "done" if not targeted else "synthesize",
         "report_url": report_url,
         "metrics_url": metrics_url,
     }
 
 
-def build_persistent_research_graph() -> Any:
-    """Build the persistent research LangGraph.
+def _should_reresearch(state: PersistentResearchState) -> str:
+    """Conditional edge after reflect: loop back to tree_research if quality
+    is critically low and we have targeted questions, else proceed to persist.
 
-    Graph topology (tree reactor pipeline)::
+    This implements the reflect → tree_research feedback loop.
+    """
+    targeted = state.get("targeted_questions", [])
+    if targeted:
+        log.info(
+            "[%s] Reflect feedback loop: routing back to tree_research "
+            "with %d targeted questions (iteration %d)",
+            state["req_id"], len(targeted),
+            state.get("research_iterations", 0),
+        )
+        return "tree_research"
+    return "persist"
 
-        START -> retrieve -> tree_research -> entities -> verify
-              -> reflect -> persist -> synthesize -> END
+
+def _should_reresearch_after_synthesis(state: PersistentResearchState) -> str:
+    """Conditional edge after synthesize: if incompleteness was detected
+    and targeted_questions were populated, loop back to tree_research
+    for another research pass.  Otherwise proceed to END.
+
+    This implements the synthesis → tree_research feedback loop.
+    """
+    targeted = state.get("targeted_questions", [])
+    if targeted:
+        log.info(
+            "[%s] Synthesis feedback loop: routing back to tree_research "
+            "with %d gap questions (iteration %d)",
+            state["req_id"], len(targeted),
+            state.get("research_iterations", 0),
+        )
+        return "tree_research"
+    return "__end__"
+
+
+def build_persistent_research_graph(
+    checkpointer: Any = None,
+) -> Any:
+    """Build the persistent research LangGraph with conditional edges.
+
+    Graph topology (with feedback loops)::
+
+        START -> comprehend -> retrieve -> tree_research -> entities
+              -> verify -> reflect
+                  -> [_should_reresearch]
+                      -> tree_research  (if quality < 0.4 + targeted Qs)
+                      -> persist -> synthesize
+                          -> [_should_reresearch_after_synthesis]
+                              -> tree_research  (if incompleteness detected)
+                              -> END
+
+    Args:
+        checkpointer: Optional LangGraph checkpointer (e.g. AsyncSqliteSaver)
+            for state persistence.  If None, no checkpointing is used.
     """
     graph = StateGraph(PersistentResearchState)
 
+    # --- Nodes ---
+    graph.add_node("comprehend", pdr_node_comprehend)
     graph.add_node("retrieve", pdr_node_retrieve)
     graph.add_node("tree_research", pdr_node_tree_research)
     graph.add_node("entities", pdr_node_entities)
@@ -1266,18 +1564,36 @@ def build_persistent_research_graph() -> Any:
     graph.add_node("persist", pdr_node_persist)
     graph.add_node("synthesize", pdr_node_synthesize)
 
-    graph.add_edge(START, "retrieve")
+    # --- Edges ---
+    graph.add_edge(START, "comprehend")
+    graph.add_edge("comprehend", "retrieve")
     graph.add_edge("retrieve", "tree_research")
     graph.add_edge("tree_research", "entities")
     graph.add_edge("entities", "verify")
     graph.add_edge("verify", "reflect")
-    graph.add_edge("reflect", "persist")
+
+    # Conditional: reflect → tree_research (if low quality) OR persist
+    graph.add_conditional_edges(
+        "reflect",
+        _should_reresearch,
+        {"tree_research": "tree_research", "persist": "persist"},
+    )
+
     graph.add_edge("persist", "synthesize")
-    graph.add_edge("synthesize", END)
 
-    return graph.compile()
+    # Conditional: synthesize → tree_research (if incomplete) OR END
+    graph.add_conditional_edges(
+        "synthesize",
+        _should_reresearch_after_synthesis,
+        {"tree_research": "tree_research", "__end__": END},
+    )
+
+    return graph.compile(checkpointer=checkpointer)
 
 
+# Module-level graph (no checkpointer — tests and simple usage).
+# The run_persistent_research() function builds its own graph with
+# an AsyncSqliteSaver checkpointer for production use.
 _persistent_research_graph = build_persistent_research_graph()
 
 
@@ -1291,17 +1607,25 @@ async def _pipeline_producer(
     output_queue: asyncio.Queue,
     chunk_fn,
     req_id: str,
+    graph: Any = None,
 ) -> None:
     """Run the LangGraph pipeline and push SSE chunks to the output queue.
 
     This runs as a background task so the heartbeat can interleave its
     updates into the same queue.
+
+    Args:
+        graph: The compiled LangGraph to run.  Defaults to the module-level
+            ``_persistent_research_graph`` (no checkpointer) if not provided.
     """
+    if graph is None:
+        graph = _persistent_research_graph
+
     last_progress_idx = 0
     final_state = initial_state
 
     try:
-        async for state_update in _persistent_research_graph.astream(
+        async for state_update in graph.astream(
             initial_state, config=config, stream_mode="values",
         ):
             final_state = state_update
@@ -1357,6 +1681,12 @@ async def run_persistent_research(
 
     Uses an asyncio.Queue so the pipeline, heartbeat task, and keepalive
     comments can all push SSE chunks into a single ordered stream.
+
+    State is checkpointed to SQLite (at ``_CHECKPOINT_DB_PATH``) after
+    every node execution, enabling:
+      - Interrupted research to resume from the last completed node
+      - Conversation continuity (follow-up queries inherit prior state)
+      - Post-mortem inspection of intermediate states
     """
     model_id = original_body.get("model", "persistent-miroflow")
     request_id = f"chatcmpl-pdr-{uuid.uuid4().hex[:12]}"
@@ -1416,10 +1746,15 @@ async def run_persistent_research(
         "reflection": {},
         "final_answer": "",
         "progress_log": [],
-        "phase": "retrieve",
+        "phase": "comprehend",
         "report_url": "",
         "metrics_url": "",
         "_langfuse_trace_url": langfuse_trace_url or "",
+        # Feedback-loop fields
+        "research_iterations": 0,
+        "targeted_questions": [],
+        "quality_score": 0.0,
+        "comprehension_data": {},
     }
 
     # Create the shared output queue, live findings collector, and curated queue
@@ -1449,9 +1784,39 @@ async def run_persistent_research(
     # by req_id and fire callbacks on every LLM/tool invocation.
     _request_configs[req_id] = config
 
+    # --- Build a checkpointed graph for this request ---
+    # Each request gets its own AsyncSqliteSaver connection so that
+    # state is persisted to disk after every node execution.
+    checkpointer: Any = None
+    checkpointed_graph = _persistent_research_graph  # fallback: module-level (no checkpointer)
+    try:
+        # Ensure the checkpoint DB directory exists
+        db_dir = os.path.dirname(_CHECKPOINT_DB_PATH)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        checkpointer = AsyncSqliteSaver.from_conn_string(_CHECKPOINT_DB_PATH)
+        await checkpointer.setup()  # create tables if needed
+        checkpointed_graph = build_persistent_research_graph(
+            checkpointer=checkpointer,
+        )
+        log.info(
+            "[%s] SQLite checkpointing enabled at %s",
+            req_id, _CHECKPOINT_DB_PATH,
+        )
+    except Exception as e:
+        log.warning(
+            "[%s] SQLite checkpointing unavailable (%s); "
+            "running without state persistence",
+            req_id, e,
+        )
+        checkpointed_graph = _persistent_research_graph
+
     # Start the pipeline producer as a background task
     pipeline_task = asyncio.create_task(
-        _pipeline_producer(initial_state, config, output_queue, chunk, req_id)
+        _pipeline_producer(
+            initial_state, config, output_queue, chunk, req_id,
+            graph=checkpointed_graph,
+        )
     )
 
     # Start the heartbeat task with curated queue for tree reactor updates
@@ -1496,6 +1861,13 @@ async def run_persistent_research(
             try:
                 await pipeline_task
             except asyncio.CancelledError:
+                pass
+
+        # Close the checkpointer connection
+        if checkpointer is not None:
+            try:
+                await checkpointer.conn.close()
+            except Exception:
                 pass
 
         # Clean up the live collector, curated queue, metrics collector, and config

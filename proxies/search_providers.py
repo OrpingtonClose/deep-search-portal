@@ -327,6 +327,7 @@ async def multi_search(
     query: str,
     max_results: int = 10,
     include_news: bool = False,
+    time_range: str = "",
 ) -> list[SearchResult]:
     """Fan out to all available search providers and merge results.
 
@@ -342,7 +343,7 @@ async def multi_search(
         _search_duckduckgo(query, max_results),
         _search_brave(query, max_results),
         _search_mojeek(query, max_results),
-        _search_searxng(query, categories="general", max_results=max_results),
+        _search_searxng(query, categories="general", time_range=time_range, max_results=max_results),
     ]
 
     if include_news:
@@ -544,7 +545,7 @@ async def search_as_raw(
       - other     -> SearXNG fallback
     """
     if categories == "general":
-        results = await multi_search(query, max_results=max_results)
+        results = await multi_search(query, max_results=max_results, time_range=time_range)
     elif categories == "news":
         results = await multi_search_news(query, time_range=time_range, max_results=max_results)
     elif categories == "science":

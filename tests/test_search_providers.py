@@ -422,6 +422,19 @@ class TestMultiSearch:
         assert len(results) == 5
 
     @pytest.mark.asyncio
+    async def test_time_range_passed_to_searxng(self):
+        """time_range must propagate to the SearXNG sub-call inside multi_search."""
+        with patch("search_providers._search_duckduckgo", AsyncMock(return_value=[])), \
+             patch("search_providers._search_brave", AsyncMock(return_value=[])), \
+             patch("search_providers._search_mojeek", AsyncMock(return_value=[])), \
+             patch("search_providers._search_searxng", AsyncMock(return_value=[])) as mock_sx:
+            await sp.multi_search("test", time_range="month")
+
+        mock_sx.assert_called_once_with(
+            "test", categories="general", time_range="month", max_results=10,
+        )
+
+    @pytest.mark.asyncio
     async def test_include_news_flag(self):
         ddg_news_called = False
 
@@ -583,6 +596,14 @@ class TestSearchAsRaw:
         mock_ms.assert_called_once()
         assert len(raw) == 1
         assert raw[0]["title"] == "R1"
+
+    @pytest.mark.asyncio
+    async def test_general_passes_time_range(self):
+        """time_range must propagate through multi_search to SearXNG."""
+        with patch("search_providers.multi_search", AsyncMock(return_value=[])) as mock_ms:
+            await sp.search_as_raw("test", categories="general", time_range="week")
+
+        mock_ms.assert_called_once_with("test", max_results=10, time_range="week")
 
     @pytest.mark.asyncio
     async def test_news_routes_to_multi_search_news(self):

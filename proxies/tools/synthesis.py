@@ -947,11 +947,17 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
 
         if entities or relationships:
             _log_entities_jsonl(req_id, entities, relationships)
-            ent_stored, rel_stored = await _store_entities_neo4j(req_id, entities, relationships)
-            progress.append(
-                f"Extracted {len(entities)} entities, {len(relationships)} relationships. "
-                f"Stored {ent_stored} new entities, {rel_stored} new edges.\n"
-            )
+            ent_stored, rel_stored, err = await _store_entities_neo4j(req_id, entities, relationships)
+            if err:
+                progress.append(
+                    f"Extracted {len(entities)} entities, {len(relationships)} relationships. "
+                    f"⚠ Neo4j entity storage failed ({err}); logged to JSONL only.\n"
+                )
+            else:
+                progress.append(
+                    f"Extracted {len(entities)} entities, {len(relationships)} relationships. "
+                    f"Stored {ent_stored} new entities, {rel_stored} new edges.\n"
+                )
         else:
             progress.append("No entities extracted.\n")
 
@@ -1106,8 +1112,11 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
     if all_conditions:
         progress.append("\n**[Phase 7: Persisting Knowledge]**\n")
         _log_conditions_jsonl(req_id, user_query, all_conditions)
-        stored = await _store_conditions_neo4j(req_id, user_query, all_conditions)
-        progress.append(f"Stored {stored} conditions to persistent knowledge base.\n")
+        stored, err = await _store_conditions_neo4j(req_id, user_query, all_conditions)
+        if err:
+            progress.append(f"⚠ Neo4j storage failed ({err}); {len(all_conditions)} conditions saved to JSONL only.\n")
+        else:
+            progress.append(f"Stored {stored} conditions to persistent knowledge base.\n")
 
     mc = _metrics_collectors.get(req_id)
     if mc:

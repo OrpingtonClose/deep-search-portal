@@ -5,6 +5,7 @@ LangGraph state & pipeline graph, and main research orchestrator.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -852,9 +853,10 @@ class PersistentResearchState(TypedDict):
     # Identity-based lists of condition fact hashes already processed,
     # so re-loop iterations only process NEW conditions.  Using hashes
     # instead of positional counts is robust to verify removing conditions.
-    # Stored as list[int] (not set) for JSON/SQLite checkpoint serialisation.
-    persisted_fact_hashes: list[int]
-    extracted_fact_hashes: list[int]
+    # Stored as list[str] (not set) for JSON/SQLite checkpoint serialisation.
+    # Uses SHA-256 truncated hex for determinism across process restarts.
+    persisted_fact_hashes: list[str]
+    extracted_fact_hashes: list[str]
 
 
 async def pdr_node_comprehend(state: PersistentResearchState) -> dict:
@@ -1133,7 +1135,7 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
         mc.start_node("entities")
     all_conditions = state["all_conditions"]
     already_extracted = set(state.get("extracted_fact_hashes") or [])
-    new_conditions = [c for c in all_conditions if hash(c.fact) not in already_extracted]
+    new_conditions = [c for c in all_conditions if hashlib.sha256(c.fact.encode()).hexdigest()[:16] not in already_extracted]
     progress: list[str] = []
 
     if new_conditions:
@@ -1170,7 +1172,7 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
 
     # Track all conditions we've now extracted entities from by fact hash
     updated_hashes = already_extracted | {
-        hash(c.fact) for c in all_conditions
+        hashlib.sha256(c.fact.encode()).hexdigest()[:16] for c in all_conditions
     }
     return {
         "progress_log": progress,
@@ -1345,7 +1347,7 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
     user_query = state["user_query"]
     all_conditions = state["all_conditions"]
     already_persisted = set(state.get("persisted_fact_hashes") or [])
-    new_conditions = [c for c in all_conditions if hash(c.fact) not in already_persisted]
+    new_conditions = [c for c in all_conditions if hashlib.sha256(c.fact.encode()).hexdigest()[:16] not in already_persisted]
     progress: list[str] = []
 
     if new_conditions:
@@ -1358,7 +1360,7 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
         _log_conditions_jsonl(req_id, user_query, new_conditions)
         stored, err = await _store_conditions_neo4j(req_id, user_query, new_conditions)
         if err:
-            progress.append(f"⚠ Neo4j storage failed ({err}); {len(all_conditions)} conditions saved to JSONL only.\n")
+            progress.append(f"⚠ Neo4j storage failed ({err}); {len(new_conditions)} conditions saved to JSONL only.\n")
         else:
             progress.append(f"Stored {stored} conditions to persistent knowledge base.\n")
 
@@ -1368,7 +1370,7 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
 
     # Track all conditions we've now persisted by fact hash
     updated_hashes = already_persisted | {
-        hash(c.fact) for c in all_conditions
+        hashlib.sha256(c.fact.encode()).hexdigest()[:16] for c in all_conditions
     }
     return {
         "progress_log": progress,

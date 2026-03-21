@@ -116,6 +116,7 @@ from research_metrics import (
 )
 import research_report
 import langfuse_config
+import search_providers
 
 from shared import (
     ConcurrencyLimiter,
@@ -1771,32 +1772,20 @@ async def _searxng_query(
     categories: str = "general",
     time_range: str = "",
 ) -> list[dict]:
-    """Low-level SearXNG query.  Returns raw result dicts.
+    """Multi-source search — delegates to search_providers module.
 
-    Raises on HTTP errors and timeouts so callers can provide
-    descriptive error messages to the subagent.
+    Routes queries to DuckDuckGo, Brave, Mojeek, and SearXNG concurrently,
+    deduplicates results by URL, and returns raw dicts in the same format
+    as the old SearXNG-only path for backward compatibility.
+
+    Raises on total failure so callers can provide descriptive error messages.
     """
-    async with get_throttler("searxng").throttle():
-        client = http_client()
-        params: dict[str, str] = {
-            "q": query,
-            "format": "json",
-            "categories": categories,
-        }
-        if time_range:
-            params["time_range"] = time_range
-
-        resp = await client.get(
-            f"{SEARXNG_URL}/search",
-            params=params,
-            timeout=20.0,
-        )
-        if resp.status_code != 200:
-            log.warning(f"SearXNG returned HTTP {resp.status_code} for categories={categories}")
-            raise RuntimeError(f"SearXNG HTTP {resp.status_code}")
-
-        data = resp.json()
-        return data.get("results", [])[:10]
+    results = await search_providers.search_as_raw(
+        query, categories=categories, time_range=time_range, max_results=10,
+    )
+    if not results:
+        log.debug(f"multi-source search returned 0 results for categories={categories}")
+    return results
 
 
 # News-intent keywords: if a search query contains any of these, it likely

@@ -217,11 +217,16 @@ async def synthesize_with_revision(
         )
 
     # --- Phase 1: Draft Synthesis ---
-    draft_prompt = DRAFT_SYNTHESIS_PROMPT.format(
-        date=today,
-        n_subagents=len(subagent_results),
-        conditions_text=conditions_text,
-        prior_knowledge_text=prior_text,
+    # Use .replace() instead of .format() to avoid KeyError when
+    # web-scraped conditions_text contains { or } characters.
+    draft_prompt = DRAFT_SYNTHESIS_PROMPT.replace(
+        "{date}", today
+    ).replace(
+        "{n_subagents}", str(len(subagent_results))
+    ).replace(
+        "{conditions_text}", conditions_text
+    ).replace(
+        "{prior_knowledge_text}", prior_text
     )
 
     draft_messages = [
@@ -298,11 +303,16 @@ async def synthesize_with_revision(
             pass
 
     # --- Phase 4: Final Revision ---
-    revision_prompt = REVISION_PROMPT.format(
-        date=today,
-        draft=draft,
-        issues=issues_text,
-        additional_findings=additional_findings,
+    # Use .replace() instead of .format() to avoid KeyError when
+    # draft/issues contain { or } (especially JSON from the critic).
+    revision_prompt = REVISION_PROMPT.replace(
+        "{date}", today
+    ).replace(
+        "{draft}", draft
+    ).replace(
+        "{issues}", issues_text
+    ).replace(
+        "{additional_findings}", additional_findings
     )
 
     revision_messages = [

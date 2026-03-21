@@ -112,12 +112,18 @@ async def _spawn_sub_questions(
 
     existing_text = "\n".join(f"- {q}" for q in existing_questions[-30:]) or "(none yet)"
 
-    prompt = SPAWN_QUESTIONS_PROMPT.format(
-        user_query=user_query,
-        node_question=node.question,
-        node_context=node.context,
-        findings_text=findings_text,
-        existing_questions=existing_text,
+    # Use .replace() instead of .format() to avoid KeyError when
+    # web-scraped findings_text contains { or } characters.
+    prompt = SPAWN_QUESTIONS_PROMPT.replace(
+        "{user_query}", user_query
+    ).replace(
+        "{node_question}", node.question
+    ).replace(
+        "{node_context}", node.context
+    ).replace(
+        "{findings_text}", findings_text
+    ).replace(
+        "{existing_questions}", existing_text
     )
 
     result = await call_llm(

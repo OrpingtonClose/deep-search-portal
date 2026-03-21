@@ -181,12 +181,18 @@ async def run_subagent(
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     serendipity_inst = SERENDIPITY_INSTRUCTION if is_bridge else ""
-    system_prompt = SUBAGENT_PROMPT_TEMPLATE.format(
-        date=today,
-        angle_title=angle_title,
-        angle_description=angle_desc,
-        angle_query=angle_query,
-        serendipity_instruction=serendipity_inst,
+    # Use .replace() instead of .format() to avoid KeyError when
+    # angle_query or angle_desc contains { or } characters.
+    system_prompt = SUBAGENT_PROMPT_TEMPLATE.replace(
+        "{date}", today
+    ).replace(
+        "{angle_title}", angle_title
+    ).replace(
+        "{angle_description}", angle_desc
+    ).replace(
+        "{angle_query}", angle_query
+    ).replace(
+        "{serendipity_instruction}", serendipity_inst
     )
 
     agent_messages: list[dict] = [
@@ -413,8 +419,10 @@ async def run_subagent(
                 and result.novelty_history[-1] > NOVELTY_EXPAND_THRESHOLD):
             findings_text = "\n".join(c.to_text() for c in result.conditions[:15])
             gap_messages = [
-                {"role": "system", "content": GAP_ANALYSIS_PROMPT.format(
-                    findings=findings_text, query=angle_query
+                {"role": "system", "content": GAP_ANALYSIS_PROMPT.replace(
+                    "{findings}", findings_text
+                ).replace(
+                    "{query}", angle_query
                 )},
                 {"role": "user", "content": "Identify research gaps."},
             ]

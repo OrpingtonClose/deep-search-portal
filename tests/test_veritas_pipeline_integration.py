@@ -392,7 +392,7 @@ class TestPdrNodeVerifyWithVeritas:
     async def test_runs_cross_check_only_veritas_deprecated(self):
         """Veritas is deprecated in favor of admission-time verification.
         Only the self-eval cross-check stage should run; Veritas is skipped
-        even when VERITAS_VERIFY_ENABLED is True."""
+        even when VERITAS_VERIFY_ENABLED is True (unless forced)."""
         conditions = [
             _make_condition("Claim A", confidence=0.7),
             _make_condition("Claim B is hallucinated", confidence=0.6),
@@ -419,6 +419,40 @@ class TestPdrNodeVerifyWithVeritas:
         # Progress should mention the cross-check phase
         progress_text = " ".join(result["progress_log"])
         assert "Phase 5" in progress_text or "Cross-Check" in progress_text
+
+    @pytest.mark.asyncio
+    async def test_skips_veritas_by_default_with_inline_verification(self):
+        """By default, Veritas is skipped because inline verification runs
+        during the tree phase. Progress log should mention this."""
+        conditions = [
+            _make_condition("Claim A", confidence=0.7),
+            _make_condition("Claim B", confidence=0.6),
+            _make_condition("Claim C", confidence=0.5),
+        ]
+
+        state = _pdr_state(all_conditions=conditions)
+
+        with patch.object(pdr, "VERITAS_VERIFY_ENABLED", True), \
+             patch.object(pdr, "VERITAS_MIN_CONDITIONS", 3), \
+             patch.object(pdr, "verify_conditions", new_callable=AsyncMock, return_value=conditions), \
+             patch("veritas_inquisitor.verify_output", new_callable=AsyncMock) as mock_veritas, \
+             patch.object(pdr, "_metrics_collectors", {}), \
+             patch.dict("os.environ", {}, clear=False):
+            # Ensure VERITAS_FORCE_POST_HOC is NOT set
+            import os
+            os.environ.pop("VERITAS_FORCE_POST_HOC", None)
+
+            result = await pdr.pdr_node_verify(state)
+
+        # Veritas should NOT have been called
+        mock_veritas.assert_not_called()
+
+        # All conditions preserved (only self-eval ran)
+        assert len(result["all_conditions"]) == 3
+
+        # Progress should mention inline verification
+        progress_text = " ".join(result["progress_log"])
+        assert "Inline Verification" in progress_text
 
     @pytest.mark.asyncio
     async def test_skips_veritas_when_disabled(self):

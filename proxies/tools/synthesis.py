@@ -849,10 +849,11 @@ class PersistentResearchState(TypedDict):
     targeted_questions: list[str]
     quality_score: float
     comprehension_data: dict
-    # Tracks how many conditions have already been persisted/extracted
-    # so re-loop iterations only process NEW conditions.
-    persisted_condition_count: int
-    extracted_entity_count: int
+    # Identity-based sets of condition fact hashes already processed,
+    # so re-loop iterations only process NEW conditions.  Using hashes
+    # instead of positional counts is robust to verify removing conditions.
+    persisted_fact_hashes: set
+    extracted_fact_hashes: set
 
 
 async def pdr_node_comprehend(state: PersistentResearchState) -> dict:
@@ -1130,16 +1131,16 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
     if mc:
         mc.start_node("entities")
     all_conditions = state["all_conditions"]
-    already_extracted = state.get("extracted_entity_count", 0)
-    new_conditions = all_conditions[already_extracted:]
+    already_extracted = state.get("extracted_fact_hashes", set())
+    new_conditions = [c for c in all_conditions if hash(c.fact) not in already_extracted]
     progress: list[str] = []
 
     if new_conditions:
         progress.append("\n**[Phase 4: Knowledge Graph Update]**\n")
-        if already_extracted > 0:
+        if already_extracted:
             progress.append(
                 f"Processing {len(new_conditions)} new conditions "
-                f"(skipping {already_extracted} already-extracted)...\n"
+                f"(skipping {len(already_extracted)} already-extracted)...\n"
             )
         else:
             progress.append("Extracting entities and relationships...\n")
@@ -1166,10 +1167,14 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
     if mc:
         mc.end_node("entities")
 
+    # Track all conditions we've now extracted entities from by fact hash
+    updated_hashes = set(already_extracted) | {
+        hash(c.fact) for c in all_conditions
+    }
     return {
         "progress_log": progress,
         "phase": "verify",
-        "extracted_entity_count": len(all_conditions),
+        "extracted_fact_hashes": updated_hashes,
     }
 
 
@@ -1338,16 +1343,16 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
         mc.start_node("persist")
     user_query = state["user_query"]
     all_conditions = state["all_conditions"]
-    already_persisted = state.get("persisted_condition_count", 0)
-    new_conditions = all_conditions[already_persisted:]
+    already_persisted = state.get("persisted_fact_hashes", set())
+    new_conditions = [c for c in all_conditions if hash(c.fact) not in already_persisted]
     progress: list[str] = []
 
     if new_conditions:
         progress.append("\n**[Phase 7: Persisting Knowledge]**\n")
-        if already_persisted > 0:
+        if already_persisted:
             progress.append(
                 f"Persisting {len(new_conditions)} new conditions "
-                f"(skipping {already_persisted} already-persisted)...\n"
+                f"(skipping {len(already_persisted)} already-persisted)...\n"
             )
         _log_conditions_jsonl(req_id, user_query, new_conditions)
         stored, err = await _store_conditions_neo4j(req_id, user_query, new_conditions)
@@ -1360,10 +1365,14 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
     if mc:
         mc.end_node("persist")
 
+    # Track all conditions we've now persisted by fact hash
+    updated_hashes = set(already_persisted) | {
+        hash(c.fact) for c in all_conditions
+    }
     return {
         "progress_log": progress,
         "phase": "synthesize",
-        "persisted_condition_count": len(all_conditions),
+        "persisted_fact_hashes": updated_hashes,
     }
 
 
@@ -1865,9 +1874,9 @@ async def run_persistent_research(
         "targeted_questions": [],
         "quality_score": 0.0,
         "comprehension_data": {},
-        # Re-loop dedup counters (prevent duplicate persist/entity-extraction)
-        "persisted_condition_count": 0,
-        "extracted_entity_count": 0,
+        # Identity-based dedup sets (prevent duplicate persist/entity-extraction)
+        "persisted_fact_hashes": set(),
+        "extracted_fact_hashes": set(),
     }
 
     # Create the shared output queue, live findings collector, and curated queue

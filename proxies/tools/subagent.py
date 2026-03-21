@@ -90,10 +90,10 @@ Initial search query: {angle_query}
 After gathering information, you must output your findings as atomic conditions.
 When you are done researching, output your findings in this exact JSON format:
 ```json
-{{"conditions": [
-    {{"fact": "clear factual statement", "source_url": "url", "confidence": 0.8}},
+{"conditions": [
+    {"fact": "clear factual statement", "source_url": "url", "confidence": 0.8},
     ...
-]}}
+]}
 ```
 
 **TOOL USAGE:**
@@ -143,12 +143,12 @@ Current findings:
 Original query: {query}
 
 Output ONLY a JSON object:
-{{
+{
   "gaps": [
-    {{"title": "gap description", "query": "specific search query to fill this gap", "priority": "high|medium|low"}}
+    {"title": "gap description", "query": "specific search query to fill this gap", "priority": "high|medium|low"}
   ],
   "saturation_estimate": 0.7
-}}
+}
 
 Rules:
 - Identify 1-3 gaps maximum

@@ -72,7 +72,7 @@ Other rules:
 - Output ONLY valid JSON, no markdown fences
 
 Output format:
-{{"sub_questions": [{{"question": "...", "context": "...", "pressure": 0.8, "strategy": "lateral"}}]}}"""
+{"sub_questions": [{"question": "...", "context": "...", "pressure": 0.8, "strategy": "lateral"}]}"""
 
 
 def _compute_pressure(

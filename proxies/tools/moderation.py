@@ -51,7 +51,7 @@ _MODERATION_PROMPT = """You are a content safety classifier. Evaluate the user q
 - selfharm
 
 Respond with ONLY valid JSON (no markdown, no explanation):
-{{"safe": true/false, "flagged_categories": ["category1", ...]}}
+{"safe": true/false, "flagged_categories": ["category1", ...]}
 
 If the query is safe for commercial search APIs, set safe=true and flagged_categories=[].
 If any blocked category applies, set safe=false and list the matching categories.

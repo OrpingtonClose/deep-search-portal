@@ -584,64 +584,68 @@ class TestConfigToggles:
 # Test: Mistral Moderation Gate
 # ============================================================================
 
-class TestModerateQuery:
+class TestClassifyQuery:
+    """Tests for classify_query (advisory content classifier).
+
+    classify_query returns a list of category strings.  It does NOT block
+    any search or tool — the categories are advisory only, used for model
+    routing (e.g. choosing uncensored vs censored LLM).
+    """
+
     @pytest.mark.asyncio
-    async def test_safe_query_passes(self):
-        """Normal research query should pass moderation via LangChain."""
+    async def test_clean_query_returns_empty(self):
+        """Normal research query should return no categories."""
         mock_ai_msg = MagicMock()
-        mock_ai_msg.content = '{"safe": true, "flagged_categories": []}'
+        mock_ai_msg.content = '{"categories": []}'
 
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(return_value=mock_ai_msg)
 
         with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
              patch.object(pdr, "UPSTREAM_KEY", "test-key"):
-            is_safe, details = await pdr.moderate_query("used Technogym Biostrength price")
+            categories = await pdr.classify_query("used Technogym Biostrength price")
 
-        assert is_safe is True
-        assert "flagged_categories" in details
+        assert categories == []
 
     @pytest.mark.asyncio
-    async def test_dangerous_query_blocked(self):
-        """Query flagged as dangerous should be blocked from commercial APIs."""
+    async def test_sensitive_query_returns_categories(self):
+        """Sensitive query should return matching categories (but NOT block anything)."""
         mock_ai_msg = MagicMock()
-        mock_ai_msg.content = '{"safe": false, "flagged_categories": ["violence_and_threats", "dangerous_and_criminal_content"]}'
+        mock_ai_msg.content = '{"categories": ["violence_and_threats", "dangerous_and_criminal_content"]}'
 
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(return_value=mock_ai_msg)
 
         with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
              patch.object(pdr, "UPSTREAM_KEY", "test-key"):
-            is_safe, details = await pdr.moderate_query("how to make explosives")
+            categories = await pdr.classify_query("how to make explosives")
 
-        assert is_safe is False
-        assert "flagged" in details
-        assert "violence_and_threats" in details["flagged"]
+        assert "violence_and_threats" in categories
+        assert "dangerous_and_criminal_content" in categories
 
     @pytest.mark.asyncio
-    async def test_moderation_api_failure_fails_closed(self):
-        """If moderation LLM call fails, should fail closed (no commercial APIs)."""
+    async def test_api_failure_returns_empty(self):
+        """If classifier LLM call fails, return empty (fail open — never block)."""
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(side_effect=Exception("API timeout"))
 
         with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
              patch.object(pdr, "UPSTREAM_KEY", "test-key"):
-            is_safe, details = await pdr.moderate_query("normal query")
+            categories = await pdr.classify_query("normal query")
 
-        assert is_safe is False
-        assert "error" in details
+        assert categories == []
 
     @pytest.mark.asyncio
-    async def test_no_api_key_fails_closed(self):
-        """Without an API key, moderation should fail closed."""
+    async def test_no_api_key_returns_empty(self):
+        """Without an API key, classifier should return empty (never block)."""
         with patch.object(pdr, "UPSTREAM_KEY", ""):
-            is_safe, details = await pdr.moderate_query("any query")
+            categories = await pdr.classify_query("any query")
 
-        assert is_safe is False
+        assert categories == []
 
     @pytest.mark.asyncio
-    async def test_moderation_unparseable_response_fails_closed(self):
-        """Unparseable LLM response from moderation should fail closed."""
+    async def test_unparseable_response_returns_empty(self):
+        """Unparseable LLM response should return empty (never block)."""
         mock_ai_msg = MagicMock()
         mock_ai_msg.content = "I cannot classify this query."
 
@@ -650,10 +654,46 @@ class TestModerateQuery:
 
         with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
              patch.object(pdr, "UPSTREAM_KEY", "test-key"):
+            categories = await pdr.classify_query("normal query")
+
+        assert categories == []
+
+
+class TestModerateQueryLegacy:
+    """Tests for moderate_query legacy wrapper.
+
+    moderate_query always returns is_safe=True now.  It exists only for
+    backward compatibility.  The moderation gate no longer blocks searches.
+    """
+
+    @pytest.mark.asyncio
+    async def test_always_returns_safe(self):
+        """moderate_query should always return is_safe=True regardless of classification."""
+        mock_ai_msg = MagicMock()
+        mock_ai_msg.content = '{"categories": ["dangerous_and_criminal_content"]}'
+
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=mock_ai_msg)
+
+        with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
+             patch.object(pdr, "UPSTREAM_KEY", "test-key"):
+            is_safe, details = await pdr.moderate_query("buy insulin without prescription")
+
+        assert is_safe is True
+        assert "categories" in details
+        assert "dangerous_and_criminal_content" in details["categories"]
+
+    @pytest.mark.asyncio
+    async def test_safe_on_api_failure(self):
+        """moderate_query should still return is_safe=True even on API failure."""
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=Exception("API timeout"))
+
+        with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
+             patch.object(pdr, "UPSTREAM_KEY", "test-key"):
             is_safe, details = await pdr.moderate_query("normal query")
 
-        assert is_safe is False
-        assert "error" in details
+        assert is_safe is True
 
 
 # ============================================================================
@@ -787,8 +827,8 @@ class TestCommercialSearch:
 
 class TestToolWebSearch:
     @pytest.mark.asyncio
-    async def test_merges_commercial_results_when_safe(self):
-        """When moderation passes, commercial results should be merged with SearXNG."""
+    async def test_merges_commercial_results(self):
+        """Commercial results should always be merged with SearXNG (no moderation gate)."""
         searxng_output = (
             "1. **SearXNG Result** [trust: 0.5]\n"
             "   URL: https://searx.example.com\n   SearXNG snippet"
@@ -799,7 +839,6 @@ class TestToolWebSearch:
 
         with patch.object(pdr, "tool_searxng_search", new_callable=AsyncMock, return_value=searxng_output), \
              patch.object(pdr, "COMMERCIAL_SEARCH_ENABLED", True), \
-             patch.object(pdr, "moderate_query", new_callable=AsyncMock, return_value=(True, {"categories": {}})), \
              patch.object(pdr, "_commercial_search", new_callable=AsyncMock, return_value=commercial_results):
             result = await pdr.tool_web_search("test query")
 
@@ -808,18 +847,20 @@ class TestToolWebSearch:
         assert "bright_data" in result
 
     @pytest.mark.asyncio
-    async def test_skips_commercial_when_moderation_blocks(self):
-        """When moderation flags the query, only SearXNG results should be returned."""
+    async def test_commercial_runs_for_sensitive_queries(self):
+        """Commercial search should run even for sensitive/flagged queries (no moderation gate)."""
         searxng_output = "1. **SearXNG Result** [trust: 0.5]\n   URL: https://searx.example.com\n   snippet"
+        commercial_results = [
+            {"title": "Vendor Info", "url": "https://vendor.example.com", "snippet": "vendor details", "source": "bright_data"},
+        ]
 
         with patch.object(pdr, "tool_searxng_search", new_callable=AsyncMock, return_value=searxng_output), \
              patch.object(pdr, "COMMERCIAL_SEARCH_ENABLED", True), \
-             patch.object(pdr, "moderate_query", new_callable=AsyncMock, return_value=(False, {"flagged": ["violence_and_threats"]})), \
-             patch.object(pdr, "_commercial_search", new_callable=AsyncMock) as mock_commercial:
-            result = await pdr.tool_web_search("dangerous query")
+             patch.object(pdr, "_commercial_search", new_callable=AsyncMock, return_value=commercial_results) as mock_commercial:
+            result = await pdr.tool_web_search("buy insulin without prescription poland")
 
-        mock_commercial.assert_not_called()
-        assert result == searxng_output
+        mock_commercial.assert_called_once()
+        assert "Vendor Info" in result
 
     @pytest.mark.asyncio
     async def test_skips_commercial_when_disabled(self):
@@ -828,10 +869,10 @@ class TestToolWebSearch:
 
         with patch.object(pdr, "tool_searxng_search", new_callable=AsyncMock, return_value=searxng_output), \
              patch.object(pdr, "COMMERCIAL_SEARCH_ENABLED", False), \
-             patch.object(pdr, "moderate_query", new_callable=AsyncMock) as mock_mod:
+             patch.object(pdr, "_commercial_search", new_callable=AsyncMock) as mock_commercial:
             result = await pdr.tool_web_search("test query")
 
-        mock_mod.assert_not_called()
+        mock_commercial.assert_not_called()
         assert result == searxng_output
 
     @pytest.mark.asyncio
@@ -848,7 +889,6 @@ class TestToolWebSearch:
 
         with patch.object(pdr, "tool_searxng_search", new_callable=AsyncMock, return_value=searxng_output), \
              patch.object(pdr, "COMMERCIAL_SEARCH_ENABLED", True), \
-             patch.object(pdr, "moderate_query", new_callable=AsyncMock, return_value=(True, {})), \
              patch.object(pdr, "_commercial_search", new_callable=AsyncMock, return_value=commercial_results):
             result = await pdr.tool_web_search("test query")
 

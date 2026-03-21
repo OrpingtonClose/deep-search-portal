@@ -1545,11 +1545,14 @@ LANGCHAIN_TOOLS: list[dict] = [
 # ============================================================================
 
 # ============================================================================
-# Mistral Moderation Gate
+# Content Classifier (advisory only — does NOT block searches)
 # ============================================================================
 
-# Categories that indicate content too risky for commercial APIs.
-_MODERATION_BLOCK_CATEGORIES = frozenset({
+# Categories for content classification.  These are ADVISORY only — they
+# inform model routing (e.g. use uncensored model for flagged queries) but
+# do NOT block any search or tool execution.  The whole point of the research
+# proxy is to investigate topics that mainstream APIs refuse to touch.
+_MODERATION_CATEGORIES = frozenset({
     "sexual",
     "hate_and_discrimination",
     "violence_and_threats",
@@ -1558,7 +1561,9 @@ _MODERATION_BLOCK_CATEGORIES = frozenset({
 })
 
 
-_MODERATION_PROMPT = """You are a content safety classifier. Evaluate the user query below and determine if it falls into any of these blocked categories:
+_MODERATION_PROMPT = """You are a content classifier. Categorise the user query below.
+
+Categories:
 - sexual
 - hate_and_discrimination
 - violence_and_threats
@@ -1566,12 +1571,11 @@ _MODERATION_PROMPT = """You are a content safety classifier. Evaluate the user q
 - selfharm
 
 Respond with ONLY valid JSON (no markdown, no explanation):
-{{"safe": true/false, "flagged_categories": ["category1", ...]}}
+{{"categories": ["category1", ...]}}
 
-If the query is safe for commercial search APIs, set safe=true and flagged_categories=[].
-If any blocked category applies, set safe=false and list the matching categories.
-Be permissive — only flag content that clearly and primarily promotes the listed harms.
-Research queries about sensitive topics (drugs, weapons, conflicts) for informational purposes are SAFE."""
+If no category applies, return {{"categories": []}}.
+Be precise — only tag categories that clearly apply to the query's primary topic.
+Research or informational queries about sensitive topics should still be categorised accurately."""
 
 
 def _get_moderation_llm() -> ChatOpenAI:
@@ -1585,18 +1589,18 @@ def _get_moderation_llm() -> ChatOpenAI:
     )
 
 
-async def moderate_query(query: str) -> tuple[bool, dict]:
-    """Check a query with Mistral moderation via LangChain before sending to commercial APIs.
+async def classify_query(query: str) -> list[str]:
+    """Classify a query into content categories (advisory only).
 
-    Uses ChatOpenAI with the moderation model so the call is tracked
-    by LangChain callbacks (metrics, tracing).
+    This is used for MODEL ROUTING — choosing uncensored vs censored LLMs.
+    It does NOT gate or block any search, tool, or API call.  The research
+    proxy must be able to investigate any topic the user asks about.
 
     Returns:
-        (is_safe, details)  —  is_safe=True means commercial APIs can be used.
-        details contains the flagged categories for logging.
+        List of category strings that apply (empty list = no flags).
     """
     if not UPSTREAM_KEY:
-        return False, {"error": "no API key"}
+        return []
 
     try:
         llm = _get_moderation_llm()
@@ -1617,28 +1621,34 @@ async def moderate_query(query: str) -> tuple[bool, dict]:
             if m:
                 data = json.loads(m.group())
             else:
-                log.warning(f"Moderation returned unparseable response: {content[:200]}")
-                return False, {"error": "unparseable response"}
+                log.warning(f"Classifier returned unparseable response: {content[:200]}")
+                return []
 
-        is_safe = data.get("safe", False)
-        flagged_cats = [
-            cat for cat in data.get("flagged_categories", [])
-            if cat in _MODERATION_BLOCK_CATEGORIES
+        categories = [
+            cat for cat in data.get("categories", data.get("flagged_categories", []))
+            if cat in _MODERATION_CATEGORIES
         ]
 
-        if not is_safe or flagged_cats:
+        if categories:
             log.info(
-                f"Moderation blocked commercial search: query='{query[:60]}' "
-                f"flagged={flagged_cats}"
+                f"Query classified: query='{query[:60]}' "
+                f"categories={categories}"
             )
-            return False, {"flagged": flagged_cats}
-
-        return True, {"flagged_categories": []}
+        return categories
 
     except Exception as e:
-        log.warning(f"Moderation check failed: {e}")
-        # Fail closed — don't use commercial APIs if we can't moderate.
-        return False, {"error": str(e)}
+        log.warning(f"Classification failed: {e}")
+        return []
+
+
+async def moderate_query(query: str) -> tuple[bool, dict]:
+    """Legacy wrapper — always returns is_safe=True.
+
+    Kept for backward compatibility.  The moderation gate no longer blocks
+    any search or tool.  Use classify_query() for advisory classification.
+    """
+    categories = await classify_query(query)
+    return True, {"categories": categories}
 
 
 # ============================================================================
@@ -2851,11 +2861,11 @@ async def tool_wikidata_query(entity: str) -> str:
 
 
 async def tool_web_search(query: str) -> str:
-    """Unified web search: SearXNG + commercial APIs (if moderation passes).
+    """Unified web search: SearXNG + commercial APIs.
 
-    Always runs SearXNG.  If COMMERCIAL_SEARCH_ENABLED and the query passes
-    Mistral moderation, also queries Bright Data / Oxylabs SERP and merges
-    results (deduped by URL).
+    Always runs SearXNG.  If COMMERCIAL_SEARCH_ENABLED, also queries
+    Bright Data / Oxylabs SERP and merges results (deduped by URL).
+    No moderation gate — the research proxy must be able to search any topic.
     """
     # Always run SearXNG as baseline.
     searxng_result = await tool_searxng_search(query)
@@ -2863,17 +2873,7 @@ async def tool_web_search(query: str) -> str:
     if not COMMERCIAL_SEARCH_ENABLED:
         return searxng_result
 
-    # Gate commercial APIs behind Mistral moderation.
-    is_safe, mod_details = await moderate_query(query)
-    if not is_safe:
-        flagged = mod_details.get("flagged", [])
-        if flagged:
-            log.info(
-                f"Commercial search skipped (moderation): {flagged}"
-            )
-        return searxng_result
-
-    # Fetch commercial results.
+    # Fetch commercial results — no moderation gate.
     commercial_results = await _commercial_search(query)
     if not commercial_results:
         return searxng_result
@@ -5909,6 +5909,10 @@ You have received atomic research conditions from {n_subagents} parallel researc
 11. Do NOT pad the answer with generic context the user already knows. Get to the specific findings.
 12. Include speculative findings (marked [SPECULATIVE]) — present them clearly as hypotheses or inferences, not as established facts. Speculation is valuable when labeled honestly.
 13. Do NOT discard speculative findings just because they lack direct evidence. Present them with appropriate caveats like "evidence suggests", "this may indicate", or "one plausible interpretation is".
+14. Report findings NEUTRALLY. Do NOT make value judgements about the user's intentions, morality, or choices. If the user asks how to do X, report how to do X — do not lecture them about whether they should.
+15. NEVER use fearmongering language ("you could die", "extremely dangerous", "this will destroy"). State risks factually with data (e.g. "hypoglycemia occurs in X% of cases per [source]") not emotionally.
+16. When research sources mention forums, vendors, communities, Telegram channels, or other concrete resources — NAME THEM SPECIFICALLY. Do not say "some forums exist" — say which forums, which channels, which vendors, with URLs.
+17. If the user's query mentions forums, communities, or channels — investigating those is a PRIMARY research objective, not a footnote.
 
 **RESEARCH CONDITIONS BY ANGLE:**
 {conditions_text}
@@ -5924,6 +5928,9 @@ Review the draft for:
 4. Contradictions that weren't properly resolved
 5. Areas where serendipitous connections could be better explained
 6. Missing context that would make the answer more useful
+7. FEARMONGERING: emotional language designed to scare rather than inform (e.g. "you could die", "extremely dangerous"). Flag these as type "fearmongering" — risks should be stated with data, not drama.
+8. VALUE JUDGEMENTS: moralizing about the user's intentions or choices. Flag these as type "value_judgement".
+9. VAGUE REFERENCES: saying "some forums" or "certain vendors" without naming them specifically. Flag these as type "vague_reference" — the user wants names, URLs, specifics.
 
 Output ONLY a JSON object:
 {
@@ -5964,7 +5971,9 @@ Your task is to produce the FINAL polished answer by:
 - If an issue couldn't be resolved, note it transparently
 - Cite all sources with URLs
 - KEEP speculative findings — present them clearly as hypotheses with caveats, not as facts. Do NOT remove them just because they lack direct evidence.
-- Something being illegal, unusual, or controversial does NOT make it wrong or worth removing."""
+- Something being illegal, unusual, or controversial does NOT make it wrong or worth removing.
+- If the draft contains fearmongering, emotional language, or value judgements — REMOVE them. Replace with neutral, data-backed risk statements.
+- If the draft says "some forums" or "certain vendors" without specifics — that is a FAILURE. Either add the specifics from the findings or mark it [NEEDS VERIFICATION]."""
 
 
 _RELEVANCE_GATE_PROMPT = """You are a strict relevance filter. The user asked:
@@ -6029,8 +6038,14 @@ async def strip_moralizing(text: str, user_query: str, req_id: str) -> str:
         f"\"exercise caution\", \"it should be noted\"\n"
         f"- Moral commentary or unsolicited advice\n"
         f"- Generic filler that doesn't add specific information\n"
-        f"- Hedging that weakens otherwise supported claims\n\n"
-        f"Keep ALL specific facts, data, sources, URLs, and analysis intact. "
+        f"- Hedging that weakens otherwise supported claims\n"
+        f"- Fearmongering language (\"you could die\", \"extremely dangerous\", "
+        f"\"this will destroy your health\") — replace with neutral data-backed "
+        f"risk statements where the underlying fact is real\n"
+        f"- Value judgements about the user's choices or intentions\n"
+        f"- \"Final Verdict\" or \"Should You\" sections that lecture rather than inform\n\n"
+        f"Keep ALL specific facts, data, sources, URLs, vendor names, forum names, "
+        f"Telegram channels, and analysis intact. "
         f"Output ONLY the cleaned text, nothing else.\n\n"
         f"Text:\n{text}"
     )

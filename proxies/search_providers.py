@@ -24,8 +24,7 @@ import asyncio
 import json
 import logging
 import os
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import httpx

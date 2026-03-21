@@ -1027,7 +1027,7 @@ async def pdr_node_tree_research(state: PersistentResearchState) -> dict:
         mc.end_node("tree_research")
 
     return {
-        "subagent_results": result["subagent_results"],
+        "subagent_results": list(state.get("subagent_results", [])) + result["subagent_results"],
         "all_conditions": merged_conditions,
         "total_turns": state.get("total_turns", 0) + result["total_turns"],
         "total_tools": state.get("total_tools", 0) + result["total_tools"],
@@ -1271,13 +1271,13 @@ Number of research conditions gathered: {n_conditions}
 Research iterations completed: {iterations}
 
 Output ONLY valid JSON:
-{{
+{
   "is_complete": true,
   "completeness_score": 0.85,
   "gaps": [
-    {{"description": "gap description", "search_query": "specific query to fill this gap"}}
+    {"description": "gap description", "search_query": "specific query to fill this gap"}
   ]
-}}
+}
 
 Rules:
 - is_complete = true if the report adequately answers the query (score >= 0.7)
@@ -1299,11 +1299,16 @@ async def _detect_incompleteness(
     Returns (is_complete, gap_queries) where gap_queries are specific
     search queries to fill the identified gaps.
     """
-    prompt = _INCOMPLETENESS_DETECT_PROMPT.format(
-        query=user_query,
-        report_excerpt=final_answer[:3000],
-        n_conditions=n_conditions,
-        iterations=iterations,
+    # Use .replace() instead of .format() to avoid KeyError if
+    # user_query or final_answer contain { or } characters.
+    prompt = _INCOMPLETENESS_DETECT_PROMPT.replace(
+        "{query}", user_query
+    ).replace(
+        "{report_excerpt}", final_answer[:3000]
+    ).replace(
+        "{n_conditions}", str(n_conditions)
+    ).replace(
+        "{iterations}", str(iterations)
     )
     try:
         result = await call_llm(

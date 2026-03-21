@@ -526,6 +526,16 @@ class TestGraphTopology:
 # Test: tree_research_reactor integration (mocked subagent)
 # ============================================================================
 
+def _empty_comprehension():
+    """Return a QueryComprehension with no entities/domains so tests don't
+    get polluted by understanding conditions admitted at reactor startup."""
+    return pdr.QueryComprehension(
+        entities=[], domains=[], implicit_questions=[],
+        adjacent_territories=[], relevance_keywords=[],
+        deep_knowledge_targets=[], semantic_summary="",
+    )
+
+
 def _make_mock_research_node(conditions, turns=1, tools=1):
     """Helper: create a mock _research_single_node coroutine result."""
     sa_result = pdr.SubagentResult(
@@ -550,7 +560,9 @@ class TestTreeResearchReactor:
         original_timeout = pdr.TREE_WORKER_IDLE_TIMEOUT
         pdr.TREE_WORKER_IDLE_TIMEOUT = 1.0
         try:
-            with patch.object(pdr, "_research_single_node", new_callable=AsyncMock,
+            with patch.object(pdr, "comprehend_query", new_callable=AsyncMock,
+                              return_value=_empty_comprehension()), \
+                 patch.object(pdr, "_research_single_node", new_callable=AsyncMock,
                               return_value=mock_node_result), \
                  patch.object(pdr, "_spawn_sub_questions", new_callable=AsyncMock, return_value=[]):
                 result = await pdr.tree_research_reactor(
@@ -578,7 +590,7 @@ class TestTreeResearchReactor:
 
         call_count = [0]
 
-        async def mock_research_node(node, user_query, req_id, coll, cq):
+        async def mock_research_node(node, user_query, req_id, coll, cq, **kwargs):
             call_count[0] += 1
             conditions = [
                 pdr.AtomicCondition(
@@ -596,7 +608,7 @@ class TestTreeResearchReactor:
 
         spawn_count = [0]
 
-        async def mock_spawn(node, conditions, user_query, existing_questions, req_id):
+        async def mock_spawn(node, conditions, user_query, existing_questions, req_id, **kwargs):
             spawn_count[0] += 1
             if spawn_count[0] == 1:
                 # Only root spawns children
@@ -618,7 +630,9 @@ class TestTreeResearchReactor:
         # spawn children before they time out.
         pdr.TREE_WORKER_IDLE_TIMEOUT = 5.0
         try:
-            with patch.object(pdr, "_research_single_node", side_effect=mock_research_node), \
+            with patch.object(pdr, "comprehend_query", new_callable=AsyncMock,
+                              return_value=_empty_comprehension()), \
+                 patch.object(pdr, "_research_single_node", side_effect=mock_research_node), \
                  patch.object(pdr, "_spawn_sub_questions", side_effect=mock_spawn):
                 result = await pdr.tree_research_reactor(
                     user_query="What is X?",
@@ -641,12 +655,12 @@ class TestTreeResearchReactor:
         collector = pdr.LiveFindingsCollector()
         curated_queue: asyncio.Queue = asyncio.Queue()
 
-        async def mock_research_node(node, user_query, req_id, coll, cq):
+        async def mock_research_node(node, user_query, req_id, coll, cq, **kwargs):
             conditions = [pdr.AtomicCondition(fact="f", confidence=0.5, angle="a")]
             sa = pdr.SubagentResult(angle="q", conditions=conditions, turns_used=1, tool_calls_made=1)
             return conditions, sa
 
-        async def mock_spawn(node, conditions, user_query, existing_questions, req_id):
+        async def mock_spawn(node, conditions, user_query, existing_questions, req_id, **kwargs):
             # Always try to spawn 5 children
             return [
                 pdr.ResearchNode(
@@ -666,7 +680,9 @@ class TestTreeResearchReactor:
         pdr.TREE_MAX_NODES = 8
         pdr.TREE_WORKER_IDLE_TIMEOUT = 1.0
         try:
-            with patch.object(pdr, "_research_single_node", side_effect=mock_research_node), \
+            with patch.object(pdr, "comprehend_query", new_callable=AsyncMock,
+                              return_value=_empty_comprehension()), \
+                 patch.object(pdr, "_research_single_node", side_effect=mock_research_node), \
                  patch.object(pdr, "_spawn_sub_questions", side_effect=mock_spawn):
                 result = await pdr.tree_research_reactor(
                     user_query="q",
@@ -694,7 +710,9 @@ class TestTreeResearchReactor:
         original_timeout = pdr.TREE_WORKER_IDLE_TIMEOUT
         pdr.TREE_WORKER_IDLE_TIMEOUT = 1.0
         try:
-            with patch.object(pdr, "_research_single_node", new_callable=AsyncMock,
+            with patch.object(pdr, "comprehend_query", new_callable=AsyncMock,
+                              return_value=_empty_comprehension()), \
+                 patch.object(pdr, "_research_single_node", new_callable=AsyncMock,
                               return_value=mock_node_result), \
                  patch.object(pdr, "_spawn_sub_questions", new_callable=AsyncMock, return_value=[]):
                 await pdr.tree_research_reactor(
@@ -857,7 +875,7 @@ class TestOldPlanningPathIsDead:
 
         explored_depths = []
 
-        async def mock_research_node(node, user_query, req_id, coll, cq):
+        async def mock_research_node(node, user_query, req_id, coll, cq, **kwargs):
             explored_depths.append(node.depth)
             conditions = [pdr.AtomicCondition(
                 fact=f"Finding at depth {node.depth}", confidence=0.7, angle=node.question,
@@ -870,7 +888,7 @@ class TestOldPlanningPathIsDead:
 
         spawn_count = [0]
 
-        async def mock_spawn(node, conditions, user_query, existing_questions, req_id):
+        async def mock_spawn(node, conditions, user_query, existing_questions, req_id, **kwargs):
             spawn_count[0] += 1
             if node.depth == 0:
                 # Root spawns 2 children
@@ -894,7 +912,9 @@ class TestOldPlanningPathIsDead:
         original_timeout = pdr.TREE_WORKER_IDLE_TIMEOUT
         pdr.TREE_WORKER_IDLE_TIMEOUT = 5.0
         try:
-            with patch.object(pdr, "_research_single_node", side_effect=mock_research_node), \
+            with patch.object(pdr, "comprehend_query", new_callable=AsyncMock,
+                              return_value=_empty_comprehension()), \
+                 patch.object(pdr, "_research_single_node", side_effect=mock_research_node), \
                  patch.object(pdr, "_spawn_sub_questions", side_effect=mock_spawn):
                 result = await pdr.tree_research_reactor(
                     user_query="Test branching",

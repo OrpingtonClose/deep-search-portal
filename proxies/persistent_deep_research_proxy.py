@@ -405,6 +405,19 @@ def serendipity_score(fact: str, query: str, known_facts: list[str]) -> float:
 # ============================================================================
 
 @dataclass
+class CrossRef:
+    """A directional link between two conditions in the knowledge net.
+
+    relation is one of: "confirms", "contradicts", "related"
+    target_idx is the index of the linked condition in the ConditionStore.
+    similarity is the Jaccard similarity score that triggered the link.
+    """
+    relation: str   # "confirms" | "contradicts" | "related"
+    target_idx: int
+    similarity: float = 0.0
+
+
+@dataclass
 class AtomicCondition:
     """A single compressed research finding (Atom of Thoughts)."""
     fact: str
@@ -424,6 +437,8 @@ class AtomicCondition:
     author: str = ""             # Author or creator name
     content_type: str = ""       # e.g. "academic_paper", "news", "forum_post", "video"
     source_type: str = ""        # e.g. "pubmed", "arxiv", "hackernews", "substack"
+    # Cross-reference links to other conditions — forms the knowledge net
+    cross_refs: list[CrossRef] = field(default_factory=list)
 
     def to_text(self) -> str:
         parts = [f"- {self.fact}"]
@@ -1518,6 +1533,94 @@ NATIVE_TOOLS = [
                     "query": {"type": "string", "description": "Search query"},
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "youtube_search",
+            "description": (
+                "Search YouTube for video content — practitioner tutorials, teardowns, "
+                "conference talks, community discussions, investigative videos. YouTube "
+                "contains deep knowledge that rarely appears in text sources. After "
+                "finding videos, use youtube_transcript to extract spoken content and "
+                "youtube_video_metadata for description/comments/chapters."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "youtube_transcript",
+            "description": (
+                "Extract the full transcript/subtitles from a YouTube video. Returns "
+                "timestamped spoken content — the actual knowledge: practitioner "
+                "explanations, lecture content, interview dialogue, tutorial steps. "
+                "No API key needed. Works with auto-generated and manual captions. "
+                "This is the PRIMARY way to extract knowledge from YouTube videos."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "YouTube video URL or video ID"},
+                    "lang": {
+                        "type": "string",
+                        "description": "Language code for transcript (default: en). Falls back to any available.",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "youtube_video_metadata",
+            "description": (
+                "Extract rich metadata from a YouTube video: title, channel, upload date, "
+                "view/like counts, full description, chapter markers, tags, categories, "
+                "and top comments. Comments contain corrections, additional knowledge, "
+                "and community reactions. Chapter markers help navigate long videos. "
+                "Description often has links, timestamps, and context not in spoken content."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "YouTube video URL or video ID"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "youtube_video_analyze",
+            "description": (
+                "Analyze a YouTube video's VISUAL content using Qwen Omni vision model. "
+                "Extracts key frames and sends to a vision-language model for in-depth "
+                "analysis. Use when the video contains diagrams, charts, code on screen, "
+                "product teardowns, demonstrations, or visual evidence that the transcript "
+                "alone cannot capture. Requires QWEN_OMNI_BASE_URL to be configured."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "YouTube video URL or video ID"},
+                    "question": {
+                        "type": "string",
+                        "description": "Specific question about the video visuals (optional). If empty, does general visual analysis.",
+                    },
+                },
+                "required": ["url"],
             },
         },
     },
@@ -3463,9 +3566,513 @@ async def tool_substack_search(query: str) -> str:
         return f"Substack search error: {str(e)}"
 
 
+async def tool_youtube_search(query: str) -> str:
+    """Search YouTube for video content — tutorials, discussions, practitioner knowledge.
+
+    YouTube is a severely underutilized source of deep knowledge: practitioner
+    teardowns, community discussions, conference talks, investigative videos,
+    and how-to content that rarely appears in text sources.  Uses SearXNG with
+    site:youtube.com targeting.  Returns video titles, URLs, and descriptions.
+    Use youtube_transcript to get full spoken content from any video.
+    Use youtube_video_analyze to have a vision model evaluate video visuals.
+    """
+    try:
+        results = await _searxng_query(
+            f"site:youtube.com {query}", categories="general"
+        )
+
+        # Also search via the videos category for broader coverage
+        try:
+            video_results = await _searxng_query(query, categories="videos")
+            seen_urls = {r.get("url", "") for r in results}
+            for r in video_results:
+                url = r.get("url", "")
+                if url not in seen_urls and "youtube.com" in url:
+                    results.append(r)
+                    seen_urls.add(url)
+        except Exception:
+            pass
+
+        if not results:
+            return f"No YouTube results for: {query}"
+
+        return _format_search_results(results[:15], source_label="youtube") or f"No YouTube results for: {query}"
+
+    except httpx.TimeoutException:
+        return "YouTube search error: request timed out"
+    except Exception as e:
+        return f"YouTube search error: {str(e)}"
+
+
+# ============================================================================
+# YouTube Deep Extraction Pipeline
+# ============================================================================
+# Three layers of video content extraction:
+# 1. youtube_transcript — full spoken content via youtube-transcript-api
+# 2. youtube_video_metadata — title, description, chapters, comments via yt-dlp
+# 3. youtube_video_analyze — visual analysis of video frames via Qwen Omni
+
+
+def _extract_video_id(url_or_id: str) -> Optional[str]:
+    """Extract YouTube video ID from a URL or return it if already an ID."""
+    url_or_id = url_or_id.strip()
+    # Already a bare video ID (11 chars, alphanumeric + - _)
+    if re.match(r'^[A-Za-z0-9_-]{11}$', url_or_id):
+        return url_or_id
+    # Standard youtube.com/watch?v=ID
+    m = re.search(r'[?&]v=([A-Za-z0-9_-]{11})', url_or_id)
+    if m:
+        return m.group(1)
+    # Short youtu.be/ID
+    m = re.search(r'youtu\.be/([A-Za-z0-9_-]{11})', url_or_id)
+    if m:
+        return m.group(1)
+    # Embed youtube.com/embed/ID
+    m = re.search(r'youtube\.com/embed/([A-Za-z0-9_-]{11})', url_or_id)
+    if m:
+        return m.group(1)
+    # Shorts youtube.com/shorts/ID
+    m = re.search(r'youtube\.com/shorts/([A-Za-z0-9_-]{11})', url_or_id)
+    if m:
+        return m.group(1)
+    return None
+
+
+async def tool_youtube_transcript(url: str, lang: str = "en") -> str:
+    """Extract the full transcript/subtitles from a YouTube video.
+
+    Primary path uses LangChain's YoutubeLoader (wraps youtube-transcript-api).
+    Falls back to raw youtube-transcript-api with timestamped output if the
+    LangChain loader fails.  No API key needed, no browser needed.
+
+    This is the PRIMARY way to extract spoken content from YouTube videos.
+    Contains the actual knowledge — practitioner explanations, lecture content,
+    interview dialogue, tutorial steps.
+    """
+    video_id = _extract_video_id(url)
+    if not video_id:
+        return f"Could not extract video ID from: {url}"
+
+    loop = asyncio.get_running_loop()
+    yt_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    def _fetch_transcript() -> str:
+        # --- Primary: LangChain YoutubeLoader ---
+        try:
+            from langchain_community.document_loaders import YoutubeLoader
+
+            loader = YoutubeLoader.from_youtube_url(
+                yt_url,
+                add_video_info=True,
+                language=[lang, "en"],
+                continue_on_failure=True,
+            )
+            docs = loader.load()
+            if docs:
+                meta = docs[0].metadata
+                header_parts = []
+                if meta.get("title"):
+                    header_parts.append(f"TITLE: {meta['title']}")
+                if meta.get("author"):
+                    header_parts.append(f"CHANNEL: {meta['author']}")
+                if meta.get("publish_date"):
+                    header_parts.append(f"DATE: {meta['publish_date']}")
+                if meta.get("length"):
+                    m, s = divmod(int(meta["length"]), 60)
+                    header_parts.append(f"DURATION: {m}:{s:02d}")
+                if meta.get("view_count"):
+                    header_parts.append(f"VIEWS: {meta['view_count']:,}")
+
+                header = "\n".join(header_parts)
+                content = docs[0].page_content
+
+                # Cap output
+                max_chars = 30000
+                if len(content) > max_chars:
+                    content = content[:max_chars] + "\n\n[TRANSCRIPT TRUNCATED]"
+
+                return f"YOUTUBE TRANSCRIPT for {video_id}:\n{header}\n\n{content}"
+        except Exception as e:
+            log.debug(f"YoutubeLoader failed for {video_id}, falling back: {e}")
+
+        # --- Fallback: raw youtube-transcript-api with timestamps ---
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+        except ImportError:
+            return "youtube-transcript-api not installed"
+
+        ytt = YouTubeTranscriptApi()
+
+        try:
+            snippets = ytt.fetch(video_id, languages=[lang, "en"])
+        except Exception:
+            try:
+                transcript_list = ytt.list(video_id)
+                available = list(transcript_list)
+                if not available:
+                    return f"No transcripts available for video {video_id}"
+                snippets = available[0].fetch()
+            except Exception as e:
+                return f"Transcript fetch failed for {video_id}: {e}"
+
+        lines = []
+        for s in snippets:
+            start = s.start if hasattr(s, 'start') else s.get("start", 0)
+            text = s.text if hasattr(s, 'text') else s.get("text", "")
+            mins, secs = divmod(int(start), 60)
+            hours, mins = divmod(mins, 60)
+            if hours > 0:
+                ts = f"[{hours}:{mins:02d}:{secs:02d}]"
+            else:
+                ts = f"[{mins}:{secs:02d}]"
+            lines.append(f"{ts} {text}")
+
+        full_text = "\n".join(lines)
+        max_chars = 30000
+        if len(full_text) > max_chars:
+            full_text = full_text[:max_chars] + f"\n\n[TRANSCRIPT TRUNCATED — {len(lines)} segments total]"
+
+        return f"YOUTUBE TRANSCRIPT for {video_id}:\n{full_text}"
+
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _fetch_transcript),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError:
+        return f"Transcript extraction timed out for {video_id}"
+    except Exception as e:
+        return f"Transcript extraction error for {video_id}: {e}"
+
+
+async def tool_youtube_video_metadata(url: str) -> str:
+    """Extract rich metadata from a YouTube video using yt-dlp.
+
+    Returns: title, channel, upload date, view count, like count,
+    full description, chapter markers, tags, categories, duration,
+    and top comments (if available).
+
+    This complements youtube_transcript — the description often contains
+    links, timestamps, and context that the spoken content doesn't.
+    Comments contain corrections, additional knowledge, and community
+    reactions.
+    """
+    video_id = _extract_video_id(url)
+    if not video_id:
+        return f"Could not extract video ID from: {url}"
+
+    loop = asyncio.get_running_loop()
+
+    def _fetch_metadata() -> str:
+        try:
+            import yt_dlp
+        except ImportError:
+            return "yt-dlp not installed"
+
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "writesubtitles": False,
+            "getcomments": True,
+            "extractor_args": {"youtube": {"max_comments": ["30", "0", "0", "0"]}},
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(
+                    f"https://www.youtube.com/watch?v={video_id}",
+                    download=False,
+                )
+        except Exception as e:
+            return f"yt-dlp extraction failed for {video_id}: {e}"
+
+        if not info:
+            return f"No metadata returned for {video_id}"
+
+        parts = []
+        parts.append(f"TITLE: {info.get('title', 'Unknown')}")
+        parts.append(f"CHANNEL: {info.get('channel', info.get('uploader', 'Unknown'))}")
+        parts.append(f"UPLOAD DATE: {info.get('upload_date', 'Unknown')}")
+
+        duration = info.get("duration")
+        if duration:
+            m, s = divmod(int(duration), 60)
+            h, m = divmod(m, 60)
+            parts.append(f"DURATION: {h}:{m:02d}:{s:02d}" if h else f"DURATION: {m}:{s:02d}")
+
+        view_count = info.get("view_count")
+        if view_count is not None:
+            parts.append(f"VIEWS: {view_count:,}")
+
+        like_count = info.get("like_count")
+        if like_count is not None:
+            parts.append(f"LIKES: {like_count:,}")
+
+        tags = info.get("tags") or []
+        if tags:
+            parts.append(f"TAGS: {', '.join(tags[:20])}")
+
+        categories = info.get("categories") or []
+        if categories:
+            parts.append(f"CATEGORIES: {', '.join(categories)}")
+
+        description = info.get("description", "")
+        if description:
+            # Cap description at 3000 chars
+            desc_text = description[:3000]
+            if len(description) > 3000:
+                desc_text += "... [truncated]"
+            parts.append(f"\nDESCRIPTION:\n{desc_text}")
+
+        # Chapter markers — these are gold for navigating long videos
+        chapters = info.get("chapters") or []
+        if chapters:
+            parts.append("\nCHAPTERS:")
+            for ch in chapters:
+                start = ch.get("start_time", 0)
+                m, s = divmod(int(start), 60)
+                h, m = divmod(m, 60)
+                ts = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+                parts.append(f"  {ts} - {ch.get('title', 'Untitled')}")
+
+        # Comments — community knowledge, corrections, additional context
+        comments = info.get("comments") or []
+        if comments:
+            parts.append(f"\nTOP COMMENTS ({len(comments)}):")
+            for c in comments[:20]:
+                author = c.get("author", "Anonymous")
+                text = (c.get("text") or "")[:500]
+                likes = c.get("like_count", 0)
+                prefix = f"  [{likes} likes]" if likes else "  "
+                parts.append(f"{prefix} @{author}: {text}")
+
+        return "\n".join(parts)
+
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _fetch_metadata),
+            timeout=60.0,
+        )
+    except asyncio.TimeoutError:
+        return f"Metadata extraction timed out for {video_id}"
+    except Exception as e:
+        return f"Metadata extraction error for {video_id}: {e}"
+
+
+# --- Qwen Omni vision model endpoint for video analysis ---
+_QWEN_OMNI_BASE = os.getenv("QWEN_OMNI_BASE_URL", "")
+_QWEN_OMNI_KEY = os.getenv("QWEN_OMNI_API_KEY", "")
+_QWEN_OMNI_MODEL = os.getenv("QWEN_OMNI_MODEL", "qwen3-omni-30b-a3b-instruct")
+
+
+async def tool_youtube_video_analyze(
+    url: str,
+    question: str = "",
+) -> str:
+    """Analyze a YouTube video's visual content using a vision-capable model.
+
+    Downloads the video (or key frames) and sends to Qwen Omni or another
+    vision-language model for in-depth visual analysis.  Use this when:
+    - The video contains diagrams, charts, code on screen, product teardowns
+    - You need to understand what is SHOWN, not just what is SAID
+    - The transcript alone doesn't capture the visual information
+    - You want to evaluate the credibility of visual evidence
+
+    Parameters:
+        url: YouTube video URL or ID
+        question: Specific question about the video visuals (optional).
+                  If empty, does a general visual analysis.
+    """
+    video_id = _extract_video_id(url)
+    if not video_id:
+        return f"Could not extract video ID from: {url}"
+
+    if not _QWEN_OMNI_BASE:
+        return (
+            "Video visual analysis not available: QWEN_OMNI_BASE_URL not configured. "
+            "Set QWEN_OMNI_BASE_URL and QWEN_OMNI_API_KEY environment variables to "
+            "point at a Qwen Omni endpoint (vLLM, Ollama, or Alibaba Cloud API). "
+            "Use youtube_transcript for spoken content instead."
+        )
+
+    loop = asyncio.get_running_loop()
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    # Step 1: Extract key frames from the video using yt-dlp
+    def _extract_frames() -> list[str]:
+        """Download video and extract key frames as base64-encoded images."""
+        import base64
+
+        try:
+            import yt_dlp
+        except ImportError:
+            return []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = os.path.join(tmpdir, "video.mp4")
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "format": "worst[ext=mp4]/worst",  # Smallest quality for frame extraction
+                "outtmpl": video_path,
+                "max_filesize": 100 * 1024 * 1024,  # 100MB cap
+            }
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([video_url])
+            except Exception as e:
+                log.warning(f"Video download failed for {video_id}: {e}")
+                return []
+
+            if not os.path.exists(video_path):
+                return []
+
+            # Extract frames using ffmpeg at key intervals
+            frames_dir = os.path.join(tmpdir, "frames")
+            os.makedirs(frames_dir, exist_ok=True)
+            try:
+                # Extract 1 frame every 30 seconds, max 20 frames
+                subprocess.run(
+                    [
+                        "ffmpeg", "-i", video_path,
+                        "-vf", "fps=1/30,scale=768:-1",
+                        "-frames:v", "20",
+                        "-q:v", "3",
+                        os.path.join(frames_dir, "frame_%03d.jpg"),
+                    ],
+                    capture_output=True,
+                    timeout=60,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+                log.warning(f"Frame extraction failed for {video_id}: {e}")
+                return []
+
+            # Read frames as base64
+            frame_files = sorted(
+                f for f in os.listdir(frames_dir) if f.endswith(".jpg")
+            )
+            frames_b64 = []
+            for fname in frame_files[:20]:
+                fpath = os.path.join(frames_dir, fname)
+                with open(fpath, "rb") as f:
+                    frames_b64.append(base64.b64encode(f.read()).decode())
+            return frames_b64
+
+    try:
+        frames_b64 = await asyncio.wait_for(
+            loop.run_in_executor(None, _extract_frames),
+            timeout=120.0,
+        )
+    except asyncio.TimeoutError:
+        return f"Video frame extraction timed out for {video_id}"
+    except Exception as e:
+        return f"Video frame extraction error for {video_id}: {e}"
+
+    if not frames_b64:
+        return (
+            f"Could not extract frames from video {video_id}. "
+            "Use youtube_transcript for spoken content instead."
+        )
+
+    # Step 2: Send frames to Qwen Omni for visual analysis
+    prompt = question or (
+        "Analyze this video's visual content in detail. Describe what is shown: "
+        "diagrams, text on screen, code, products, demonstrations, charts, "
+        "environments, people, and any visual evidence relevant to understanding "
+        "the video's subject matter. Be specific and factual."
+    )
+
+    # Build multimodal message content
+    content_parts: list[dict] = []
+    content_parts.append({
+        "type": "text",
+        "text": (
+            f"These are {len(frames_b64)} key frames extracted from a YouTube video "
+            f"(ID: {video_id}), sampled every 30 seconds. {prompt}"
+        ),
+    })
+    for i, b64 in enumerate(frames_b64):
+        content_parts.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+        })
+
+    try:
+        client = http_client()
+        resp = await client.post(
+            f"{_QWEN_OMNI_BASE.rstrip('/')}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {_QWEN_OMNI_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": _QWEN_OMNI_MODEL,
+                "messages": [
+                    {"role": "user", "content": content_parts},
+                ],
+                "max_tokens": 4096,
+                "temperature": 0.3,
+            },
+            timeout=120.0,
+        )
+        if resp.status_code != 200:
+            return (
+                f"Qwen Omni API error ({resp.status_code}): {resp.text[:500]}. "
+                "Use youtube_transcript for spoken content instead."
+            )
+        data = resp.json()
+        analysis = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not analysis:
+            return f"Qwen Omni returned empty analysis for {video_id}"
+
+        return (
+            f"VISUAL ANALYSIS of YouTube video {video_id} "
+            f"({len(frames_b64)} frames analyzed):\n\n{analysis}"
+        )
+    except httpx.TimeoutException:
+        return f"Qwen Omni API timed out analyzing video {video_id}"
+    except Exception as e:
+        return f"Qwen Omni analysis error for {video_id}: {e}"
+
+
 # ============================================================================
 # Retry Wrapper for Tool Execution
 # ============================================================================
+
+def _simplify_query(query: str) -> str:
+    """Strip a long query down to its core keywords for retry.
+
+    Community/underground search APIs often choke on long natural-language
+    queries.  This extracts the 3-5 most significant words.
+    """
+    stop = {
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "shall", "can", "need", "dare", "ought",
+        "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
+        "as", "into", "through", "during", "before", "after", "above",
+        "below", "between", "out", "off", "over", "under", "again",
+        "further", "then", "once", "here", "there", "when", "where", "why",
+        "how", "all", "both", "each", "few", "more", "most", "other", "some",
+        "such", "no", "nor", "not", "only", "own", "same", "so", "than",
+        "too", "very", "just", "about", "what", "which", "who", "whom",
+        "this", "that", "these", "those", "i", "me", "my", "we", "our",
+        "you", "your", "he", "him", "his", "she", "her", "it", "its",
+        "they", "them", "their", "and", "but", "or", "if",
+    }
+    words = [w for w in re.split(r'\W+', query.lower()) if w and w not in stop]
+    return " ".join(words[:5]) if words else query
+
+
+# Tools that benefit from retry with simplified queries
+_RARE_SOURCE_TOOLS = {
+    "chan_4plebs_search", "chan_b4k_search", "chan_warosu_search",
+    "forum_search", "telegram_search", "darknet_market_search",
+    "twitter_search", "substack_search", "youtube_search",
+    "youtube_transcript", "youtube_video_metadata", "youtube_video_analyze",
+}
+
 
 async def _retry_tool_call(
     coro_factory,
@@ -3502,6 +4109,46 @@ async def _retry_tool_call(
                 continue
 
     return f"Tool failed after {max_retries + 1} attempts: {last_error}"
+
+
+async def _retry_rare_tool(
+    tool_name: str,
+    arguments: dict,
+    req_id: str = "",
+) -> str:
+    """Retry a rare/community source tool with query simplification.
+
+    For community/underground tools, if the first attempt returns no useful
+    results, retry once with a simplified (keyword-only) query.  This handles
+    the common case where long natural-language queries return empty on APIs
+    that expect short keyword searches.
+    """
+    result = await execute_tool(tool_name, arguments, req_id)
+    prefix = result.lower()[:120]
+
+    # If result looks empty or error-ish, retry with simplified query
+    is_empty = (
+        "no results" in prefix
+        or "0 results" in prefix
+        or len(result.strip()) < 30
+    )
+    is_error = "error" in prefix or "failed" in prefix or "timed out" in prefix
+
+    if (is_empty or is_error) and "query" in arguments:
+        original_q = arguments["query"]
+        simplified = _simplify_query(original_q)
+        if simplified != original_q.lower().strip():
+            log.info(
+                f"[{req_id}] Retrying {tool_name} with simplified query: "
+                f"'{original_q[:60]}' → '{simplified}'"
+            )
+            retry_args = {**arguments, "query": simplified}
+            result2 = await execute_tool(tool_name, retry_args, req_id)
+            prefix2 = result2.lower()[:120]
+            if len(result2.strip()) > len(result.strip()):
+                return result2
+
+    return result
 
 
 # ============================================================================
@@ -3687,6 +4334,20 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
         return await tool_scholar_search(arguments.get("query", ""))
     elif tool_name == "substack_search":
         return await tool_substack_search(arguments.get("query", ""))
+    elif tool_name == "youtube_search":
+        return await tool_youtube_search(arguments.get("query", ""))
+    elif tool_name == "youtube_transcript":
+        return await tool_youtube_transcript(
+            arguments.get("url", ""),
+            arguments.get("lang", "en"),
+        )
+    elif tool_name == "youtube_video_metadata":
+        return await tool_youtube_video_metadata(arguments.get("url", ""))
+    elif tool_name == "youtube_video_analyze":
+        return await tool_youtube_video_analyze(
+            arguments.get("url", ""),
+            arguments.get("question", ""),
+        )
     else:
         return f"Unknown tool: {tool_name}"
 
@@ -3997,6 +4658,668 @@ async def call_llm(
             return {"error": last_error}
 
     return {"error": last_error or "[LLM Error: Max retries exceeded]"}
+
+
+# ============================================================================
+# Condition Admission Pipeline
+# ============================================================================
+
+# Patterns that indicate a fake/placeholder source URL (internal tool labels)
+_FAKE_URL_PATTERNS = re.compile(
+    r'(searxng_search_results|reddit_search_results|forum_search_results|'
+    r'twitter_search_results|chan_\w+_results|news_search_results|'
+    r'scholar_search_results|substack_search_results|tool_results|'
+    r'search_results|No source|no source|N/A|n/a|none|unknown)',
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class QueryComprehension:
+    """Deep semantic understanding of a research query.
+
+    Produced once at reactor start by an LLM analysis pass.  This is NOT
+    just keyword extraction — it maps the full knowledge territory:
+    what entities exist, what domains are relevant, what implicit questions
+    the user is really asking, and crucially what *adjacent* knowledge
+    territories might contain the deep/rare information the user needs.
+
+    The comprehension map is used to:
+      - Loosen the relevance gate (a condition about enforcement actions
+        passes even if the query only names a substance)
+      - Guide condition spawning toward unexplored deep territories
+      - Help the question router pick tools for information needs
+    """
+    # Core entities mentioned or implied by the query
+    entities: list[str] = field(default_factory=list)
+    # Knowledge domains the query touches (e.g., "pharmacology", "law enforcement")
+    domains: list[str] = field(default_factory=list)
+    # Implicit questions the user is really asking (not just the literal query)
+    implicit_questions: list[str] = field(default_factory=list)
+    # Adjacent territories — topics NOT in the query but likely to contain
+    # the deep/rare knowledge the user needs
+    adjacent_territories: list[str] = field(default_factory=list)
+    # Keywords and phrases that indicate relevance (broader than the query)
+    relevance_keywords: list[str] = field(default_factory=list)
+    # What kind of deep knowledge would actually be valuable here
+    deep_knowledge_targets: list[str] = field(default_factory=list)
+    # One-paragraph summary of what this query is *really* about
+    semantic_summary: str = ""
+
+
+_QUERY_COMPREHENSION_PROMPT = """You are a deep research analyst. Your job is to DEEPLY understand what a research query is really about — not just the surface words, but the full knowledge territory.
+
+The goal is to understand the query well enough to guide researchers toward RARE, DEEP, EMBEDDED knowledge — the kind found in community discussions, practitioner experiences, court documents, underground forums, academic papers, and obscure archives. NOT surface-level Wikipedia summaries.
+
+Research query: {query}
+
+Analyze this query and output ONLY valid JSON:
+{{
+  "entities": ["every entity, person, substance, organization, concept mentioned or implied"],
+  "domains": ["every knowledge domain this touches — be expansive, include adjacent fields"],
+  "implicit_questions": ["what is the user REALLY trying to understand? list 5-10 implicit questions they haven't asked but need answered"],
+  "adjacent_territories": ["topics NOT in the query but where the DEEP knowledge lives — practitioner communities, enforcement databases, underground discussions, academic niches, historical archives"],
+  "relevance_keywords": ["broad set of 20-30 keywords/phrases that indicate a piece of information is relevant to this query — include slang, technical terms, community jargon, legal terms"],
+  "deep_knowledge_targets": ["specific types of deep knowledge that would be valuable — e.g., 'court case outcomes', 'practitioner dosing discussions', 'supply chain vendor reviews', 'regulatory enforcement actions'"],
+  "semantic_summary": "one paragraph explaining what this query is REALLY about at the deepest level — what knowledge gap is the user trying to fill?"
+}}"""
+
+
+async def comprehend_query(user_query: str, req_id: str) -> QueryComprehension:
+    """Produce a deep semantic understanding of the research query.
+
+    This runs ONCE at reactor start.  The resulting QueryComprehension
+    is shared with the ConditionStore, relevance gate, question router,
+    and spawn logic so they all operate from the same understanding of
+    what the query is really about.
+    """
+    prompt = _QUERY_COMPREHENSION_PROMPT.replace("{query}", user_query[:2000])
+    try:
+        result = await call_llm(
+            [{"role": "user", "content": prompt}],
+            req_id,
+            model=SUBAGENT_MODEL,
+            max_tokens=2048,
+            temperature=0.3,
+        )
+        if "error" not in result:
+            content = result.get("content", "").strip()
+            if content.startswith("```"):
+                content = re.sub(r'^```(?:json)?\s*', '', content)
+                content = re.sub(r'\s*```$', '', content)
+            data = json.loads(content)
+            return QueryComprehension(
+                entities=data.get("entities", [])[:30],
+                domains=data.get("domains", [])[:20],
+                implicit_questions=data.get("implicit_questions", [])[:10],
+                adjacent_territories=data.get("adjacent_territories", [])[:15],
+                relevance_keywords=data.get("relevance_keywords", [])[:40],
+                deep_knowledge_targets=data.get("deep_knowledge_targets", [])[:15],
+                semantic_summary=data.get("semantic_summary", ""),
+            )
+    except Exception as e:
+        log.warning(f"[{req_id}] Query comprehension failed (non-fatal): {e}")
+
+    # Fallback: minimal comprehension from the query itself
+    words = [w for w in re.split(r'\W+', user_query.lower()) if len(w) > 3]
+    return QueryComprehension(
+        entities=words[:10],
+        domains=[],
+        implicit_questions=[],
+        adjacent_territories=[],
+        relevance_keywords=words[:20],
+        deep_knowledge_targets=[],
+        semantic_summary=user_query,
+    )
+
+
+@dataclass
+class AdmissionResult:
+    """Result of attempting to admit a condition into the global store."""
+    admitted: bool
+    reason: str  # "admitted", "duplicate", "irrelevant", "fabricated_url"
+    condition: Optional[AtomicCondition] = None
+    similar_to: Optional[str] = None  # fact text of the most similar existing condition
+    saturation_signal: str = ""  # guidance for the subagent on what to explore instead
+    serendipity_score_val: float = 0.0
+
+
+def _validate_source_url(url: str) -> str:
+    """Validate and clean a source URL. Returns cleaned URL or empty string."""
+    if not url:
+        return ""
+    url = url.strip()
+    # Strip known placeholder patterns
+    if _FAKE_URL_PATTERNS.search(url):
+        return ""
+    # Must look like a real URL
+    if not url.startswith(("http://", "https://")):
+        return ""
+    # Basic URL structure check
+    try:
+        parsed = urlparse(url)
+        if not parsed.netloc or "." not in parsed.netloc:
+            return ""
+    except Exception:
+        return ""
+    return url
+
+
+def _jaccard_similarity(text_a: str, text_b: str) -> float:
+    """Compute Jaccard similarity between two text strings using word sets."""
+    words_a = set(text_a.lower().split())
+    words_b = set(text_b.lower().split())
+    if not words_a or not words_b:
+        return 0.0
+    intersection = len(words_a & words_b)
+    union = len(words_a | words_b)
+    return intersection / max(union, 1)
+
+
+def _compute_topic_buckets(conditions: list[AtomicCondition]) -> dict[str, int]:
+    """Group conditions into topic buckets by keyword clustering.
+
+    Returns a dict mapping topic_label -> condition_count.
+    Topics are derived from the most frequent 2-word phrases.
+    """
+    from collections import Counter
+    bigrams: Counter = Counter()
+    for c in conditions:
+        words = c.fact.lower().split()
+        for i in range(len(words) - 1):
+            # Skip very short words (articles, prepositions)
+            if len(words[i]) > 2 and len(words[i + 1]) > 2:
+                bigrams[f"{words[i]} {words[i + 1]}"] += 1
+
+    # Top bigrams become topic labels
+    topics: dict[str, int] = {}
+    for bigram, count in bigrams.most_common(20):
+        if count >= 2:
+            topics[bigram] = count
+    return topics
+
+
+class ConditionStore:
+    """Global condition store with admission pipeline.
+
+    Every condition must pass through admit() before entering the store.
+    The admission pipeline performs:
+      1. Source URL validation (strip fakes)
+      2. Relevance check (comprehension-aware: keyword pre-check + LLM gate)
+      3. Novelty check (Jaccard dedup against all existing conditions)
+      4. Serendipity scoring (query adherence + novelty + surprise)
+      5. Verification-at-birth (trust scoring, cross-reference)
+
+    Duplicate conditions are rejected with a saturation signal telling
+    the subagent what to explore instead.
+
+    Query comprehension:
+      The store holds a QueryComprehension that maps the full knowledge
+      territory.  Understanding conditions (entities, domains, implicit
+      questions) go through the same admission pipeline.  The comprehension
+      evolves as research progresses — new understanding is admitted just
+      like any other condition.
+    """
+
+    # Jaccard threshold above which a new condition is considered a duplicate
+    DUPLICATE_THRESHOLD = 0.55
+    # Number of conditions on a topic before it's considered saturated
+    SATURATION_THRESHOLD = 10
+
+    def __init__(self, user_query: str, req_id: str, comprehension: Optional["QueryComprehension"] = None):
+        self._user_query = user_query
+        self._req_id = req_id
+        self._conditions: list[AtomicCondition] = []
+        self._fact_word_sets: list[set[str]] = []  # parallel to _conditions for fast Jaccard
+        self._lock = asyncio.Lock()
+        self._admitted_count = 0
+        self._rejected_duplicate = 0
+        self._rejected_irrelevant = 0
+        self._rejected_fabricated = 0
+        # Deep query comprehension — evolves as understanding conditions are admitted
+        self.comprehension: Optional["QueryComprehension"] = comprehension
+        # Build the relevance keyword set from comprehension for fast pre-check
+        self._relevance_words: set[str] = set()
+        if comprehension:
+            self._rebuild_relevance_words()
+
+    def _rebuild_relevance_words(self) -> None:
+        """Rebuild the fast relevance keyword set from comprehension."""
+        words: set[str] = set()
+        if self.comprehension:
+            for kw in self.comprehension.relevance_keywords:
+                words.update(w.lower() for w in re.split(r'\W+', kw) if len(w) > 2)
+            for ent in self.comprehension.entities:
+                words.update(w.lower() for w in re.split(r'\W+', ent) if len(w) > 2)
+            for dom in self.comprehension.domains:
+                words.update(w.lower() for w in re.split(r'\W+', dom) if len(w) > 2)
+            for terr in self.comprehension.adjacent_territories:
+                words.update(w.lower() for w in re.split(r'\W+', terr) if len(w) > 2)
+        # Always include words from the query itself
+        words.update(w.lower() for w in re.split(r'\W+', self._user_query) if len(w) > 2)
+        self._relevance_words = words
+
+    def _fast_relevance_check(self, fact: str) -> bool:
+        """Fast keyword-based relevance pre-check using comprehension map.
+
+        If the fact shares ANY keywords with the comprehension's relevance
+        set, it passes.  This is deliberately LOOSE — the point is to avoid
+        rejecting conditions that are in adjacent territories identified by
+        the comprehension.  Only truly unrelated facts get blocked here.
+
+        Returns True if the fact is likely relevant (should proceed to LLM gate
+        or be admitted directly), False if clearly irrelevant.
+        """
+        if not self._relevance_words:
+            return True  # no comprehension = let everything through
+        fact_words = set(w.lower() for w in re.split(r'\W+', fact) if len(w) > 2)
+        overlap = fact_words & self._relevance_words
+        # If ANY keyword matches, it's potentially relevant
+        return len(overlap) >= 1
+
+    async def admit_understanding(self, comprehension: "QueryComprehension") -> list[AdmissionResult]:
+        """Admit understanding conditions derived from query comprehension.
+
+        Each piece of understanding (entity, domain, implicit question,
+        adjacent territory) is treated as a condition and admitted through
+        the same pipeline.  This lets the system's understanding of the
+        query evolve as research progresses.
+        """
+        self.comprehension = comprehension
+        self._rebuild_relevance_words()
+
+        understanding_conditions: list[AtomicCondition] = []
+
+        # Entities as conditions
+        for ent in comprehension.entities:
+            understanding_conditions.append(AtomicCondition(
+                fact=f"[ENTITY] {ent}",
+                confidence=0.9,
+                angle="query_comprehension",
+                source_url="",
+                verification_status="understanding",
+            ))
+
+        # Domains as conditions
+        for dom in comprehension.domains:
+            understanding_conditions.append(AtomicCondition(
+                fact=f"[DOMAIN] {dom} — relevant knowledge domain for this query",
+                confidence=0.8,
+                angle="query_comprehension",
+                source_url="",
+                verification_status="understanding",
+            ))
+
+        # Implicit questions as conditions
+        for q in comprehension.implicit_questions:
+            understanding_conditions.append(AtomicCondition(
+                fact=f"[IMPLICIT_QUESTION] {q}",
+                confidence=0.7,
+                angle="query_comprehension",
+                source_url="",
+                verification_status="understanding",
+            ))
+
+        # Adjacent territories as conditions
+        for terr in comprehension.adjacent_territories:
+            understanding_conditions.append(AtomicCondition(
+                fact=f"[ADJACENT_TERRITORY] {terr} — deep knowledge likely found here",
+                confidence=0.6,
+                angle="query_comprehension",
+                source_url="",
+                verification_status="understanding",
+            ))
+
+        # Deep knowledge targets as conditions
+        for target in comprehension.deep_knowledge_targets:
+            understanding_conditions.append(AtomicCondition(
+                fact=f"[DEEP_TARGET] {target}",
+                confidence=0.7,
+                angle="query_comprehension",
+                source_url="",
+                verification_status="understanding",
+            ))
+
+        # Admit them through the pipeline (skip LLM relevance — they ARE the relevance)
+        return await self.admit_batch(understanding_conditions, skip_relevance_llm=True)
+
+    @property
+    def conditions(self) -> list[AtomicCondition]:
+        return list(self._conditions)
+
+    @property
+    def stats(self) -> dict:
+        return {
+            "admitted": self._admitted_count,
+            "rejected_duplicate": self._rejected_duplicate,
+            "rejected_irrelevant": self._rejected_irrelevant,
+            "rejected_fabricated": self._rejected_fabricated,
+            "total_stored": len(self._conditions),
+        }
+
+    def _find_most_similar(self, fact_words: set[str]) -> tuple[float, str]:
+        """Find the most similar existing condition by Jaccard similarity."""
+        best_sim = 0.0
+        best_fact = ""
+        for i, existing_words in enumerate(self._fact_word_sets):
+            if not existing_words:
+                continue
+            intersection = len(fact_words & existing_words)
+            union = len(fact_words | existing_words)
+            sim = intersection / max(union, 1)
+            if sim > best_sim:
+                best_sim = sim
+                best_fact = self._conditions[i].fact
+        return best_sim, best_fact
+
+    def _get_saturation_signal(self) -> str:
+        """Compute a saturation signal describing well-covered topics."""
+        topics = _compute_topic_buckets(self._conditions)
+        saturated = [
+            f"\"{topic}\" ({count} conditions)"
+            for topic, count in topics.items()
+            if count >= self.SATURATION_THRESHOLD
+        ]
+        if not saturated:
+            return ""
+        return (
+            f"SATURATED topics (do NOT explore further): {', '.join(saturated[:5])}. "
+            f"Redirect research to unexplored angles: enforcement cases, "
+            f"practitioner experiences, court rulings, vendor reviews, "
+            f"community discussions, underground sources."
+        )
+
+    async def admit(
+        self,
+        condition: AtomicCondition,
+        skip_relevance_llm: bool = False,
+    ) -> AdmissionResult:
+        """Attempt to admit a single condition into the global store.
+
+        Runs the full admission pipeline:
+          1. Source URL validation
+          2. Relevance gate (cheap LLM call)
+          3. Novelty check (Jaccard dedup)
+          4. Serendipity scoring
+          5. Trust scoring + cross-reference
+
+        Returns an AdmissionResult with admission decision and guidance.
+        """
+        # Step 1: Validate source URL
+        condition.source_url = _validate_source_url(condition.source_url)
+
+        # Step 2: Basic content check
+        if not condition.fact or len(condition.fact.strip()) < 10:
+            return AdmissionResult(
+                admitted=False,
+                reason="empty",
+                condition=condition,
+            )
+
+        # Step 3: Relevance gate (comprehension-aware)
+        if not skip_relevance_llm:
+            # Fast pre-check using comprehension keywords — deliberately loose
+            fast_pass = self._fast_relevance_check(condition.fact)
+            if fast_pass:
+                # Comprehension says it's in the knowledge territory — admit
+                # without the expensive LLM call
+                pass
+            else:
+                # Not in the comprehension's keyword territory — use LLM gate
+                is_relevant = await relevance_gate(
+                    condition.fact, self._user_query, self._req_id,
+                )
+                if not is_relevant:
+                    self._rejected_irrelevant += 1
+                    return AdmissionResult(
+                        admitted=False,
+                        reason="irrelevant",
+                        condition=condition,
+                    )
+
+        # Step 4: Novelty check (global Jaccard dedup)
+        fact_words = set(condition.fact.lower().split())
+        async with self._lock:
+            best_sim, similar_fact = self._find_most_similar(fact_words)
+
+            if best_sim > self.DUPLICATE_THRESHOLD:
+                self._rejected_duplicate += 1
+                saturation = self._get_saturation_signal()
+                return AdmissionResult(
+                    admitted=False,
+                    reason="duplicate",
+                    condition=condition,
+                    similar_to=similar_fact,
+                    saturation_signal=saturation,
+                )
+
+            # Step 5: Serendipity scoring
+            known_facts = [c.fact for c in self._conditions[-50:]]
+            seren = serendipity_score(
+                condition.fact, self._user_query, known_facts,
+            )
+            condition.serendipity_score_val = seren
+
+            # Step 6: Trust scoring
+            condition.trust_score = trust_score_url(condition.source_url)
+
+            # Step 7: Cross-reference — build bidirectional links (knowledge net)
+            # Every new condition checks against all existing ones for overlap.
+            # Partial overlap (0.3-0.55 Jaccard) means they discuss the same
+            # topic but say different things — potential confirm or contradict.
+            new_idx = len(self._conditions)  # index the new condition will have
+            for i, existing in enumerate(self._conditions):
+                sim = _jaccard_similarity(condition.fact, existing.fact)
+                if sim < 0.2:
+                    continue  # too dissimilar to be related
+                if sim >= self.DUPLICATE_THRESHOLD:
+                    continue  # duplicate — already caught above
+
+                # Determine relationship: same confidence direction = confirms,
+                # opposite direction = contradicts, otherwise = related
+                conf_diff = abs(condition.confidence - existing.confidence)
+                if conf_diff > 0.3:
+                    relation = "contradicts"
+                    # Contradicting claims reduce confidence on the less-sourced one
+                    if condition.trust_score < existing.trust_score:
+                        condition.confidence = max(condition.confidence - 0.1, 0.2)
+                    elif condition.trust_score > existing.trust_score:
+                        existing.confidence = max(existing.confidence - 0.1, 0.2)
+                elif sim > 0.35:
+                    relation = "confirms"
+                    # Corroborating claims boost confidence on both
+                    condition.confidence = min(condition.confidence + 0.05, 1.0)
+                    existing.confidence = min(existing.confidence + 0.05, 1.0)
+                else:
+                    relation = "related"
+
+                # Bidirectional links: new → existing AND existing → new
+                condition.cross_refs.append(CrossRef(
+                    relation=relation, target_idx=i, similarity=sim,
+                ))
+                existing.cross_refs.append(CrossRef(
+                    relation=relation, target_idx=new_idx, similarity=sim,
+                ))
+
+            # Admit the condition
+            self._conditions.append(condition)
+            self._fact_word_sets.append(fact_words)
+            self._admitted_count += 1
+
+            return AdmissionResult(
+                admitted=True,
+                reason="admitted",
+                condition=condition,
+                serendipity_score_val=seren,
+                saturation_signal=self._get_saturation_signal(),
+            )
+
+    async def admit_batch(
+        self,
+        conditions: list[AtomicCondition],
+        skip_relevance_llm: bool = False,
+    ) -> list[AdmissionResult]:
+        """Admit multiple conditions, returning results for each."""
+        results: list[AdmissionResult] = []
+        for c in conditions:
+            result = await self.admit(c, skip_relevance_llm=skip_relevance_llm)
+            results.append(result)
+        return results
+
+    def get_net_summary(self, max_items: int = 20) -> str:
+        """Summarize the cross-reference knowledge net for downstream use.
+
+        Returns a human-readable summary of the most-linked conditions and
+        their relationships, suitable for injecting into synthesis or spawn
+        prompts.  This exposes the net structure so downstream components
+        know what confirms, contradicts, or relates to what.
+        """
+        if not self._conditions:
+            return "(no conditions yet)"
+
+        # Sort by number of cross-refs (most-connected first)
+        indexed = [(i, c) for i, c in enumerate(self._conditions) if c.cross_refs]
+        indexed.sort(key=lambda x: len(x[1].cross_refs), reverse=True)
+
+        lines: list[str] = []
+        for idx, cond in indexed[:max_items]:
+            confirms = [r for r in cond.cross_refs if r.relation == "confirms"]
+            contradicts = [r for r in cond.cross_refs if r.relation == "contradicts"]
+            related = [r for r in cond.cross_refs if r.relation == "related"]
+
+            line = f"- {cond.fact[:120]}"
+            parts = []
+            if confirms:
+                parts.append(f"confirmed by {len(confirms)} other(s)")
+            if contradicts:
+                parts.append(f"contradicted by {len(contradicts)} other(s)")
+            if related:
+                parts.append(f"related to {len(related)} other(s)")
+            if parts:
+                line += f"  [{', '.join(parts)}]"
+            lines.append(line)
+
+        total_links = sum(len(c.cross_refs) for c in self._conditions)
+        header = (
+            f"Knowledge net: {len(self._conditions)} conditions, "
+            f"{total_links} cross-reference links"
+        )
+        return header + "\n" + "\n".join(lines)
+
+
+# ============================================================================
+# Smart Question Router
+# ============================================================================
+
+# Tool categories for routing
+_COMMUNITY_UNDERGROUND_TOOLS = [
+    "reddit_search", "forum_search", "chan_4plebs_search", "chan_b4k_search",
+    "chan_warosu_search", "twitter_search", "telegram_search",
+    "substack_search", "hackernews_search", "stackexchange_search",
+    "youtube_search", "youtube_transcript", "youtube_video_metadata",
+    "youtube_video_analyze", "social_media_search", "darknet_market_search",
+]
+_ACADEMIC_ARCHIVAL_TOOLS = [
+    "scholar_search", "pubmed_search", "arxiv_search", "archiveorg_search",
+    "wayback_fetch", "wikidata_query",
+]
+_SURFACE_WEB_TOOLS = [
+    "searxng_search", "news_search", "fetch_webpage", "wikipedia_search",
+]
+
+_QUESTION_ROUTER_PROMPT = """You are a research question router. Given a research question and the current state of knowledge, determine:
+1. What SPECIFIC information need does this question have?
+2. Which tool categories are most likely to contain the answer?
+3. What specific search queries should be tried?
+
+Available tool categories:
+- COMMUNITY: reddit_search, forum_search, chan_4plebs_search, chan_b4k_search, chan_warosu_search, twitter_search, hackernews_search, stackexchange_search, youtube_search, youtube_transcript, youtube_video_metadata, youtube_video_analyze, substack_search
+- UNDERGROUND: telegram_search, darknet_market_search, social_media_search
+- ACADEMIC: scholar_search, pubmed_search, arxiv_search, archiveorg_search
+- SURFACE (use ONLY as last resort): searxng_search, news_search, wikipedia_search
+
+Rules:
+- NEVER route primarily to surface web. Community and underground sources contain the deep knowledge.
+- Route to sources where REAL PEOPLE discuss the topic, not official/regulatory portals.
+- For legal questions: route to scholar_search (case law), news_search (prosecutions), forum_search (lawyer discussions)
+- For sourcing/purchasing: route to reddit, forums, chan archives, telegram — where people share actual experiences
+- For medical/health: route to pubmed + reddit + forums — clinical data AND practitioner experiences
+- For tech/crypto: route to hackernews, chan_b4k, stackexchange, substack
+
+Output ONLY valid JSON:
+{{
+  "mandatory_tools": ["tool1", "tool2"],
+  "preferred_tools": ["tool3", "tool4"],
+  "suggested_queries": ["specific query 1", "specific query 2"],
+  "routing_rationale": "one sentence why",
+  "avoid_topics": ["topic already saturated"]
+}}"""
+
+
+async def route_research_question(
+    question: str,
+    user_query: str,
+    condition_store: Optional["ConditionStore"],
+    req_id: str,
+) -> dict:
+    """Smart LLM-based router that determines which tools to use for a question.
+
+    Analyzes the question content, checks what's already saturated in the
+    condition store, and routes to specific tools based on information need.
+    """
+    saturation_info = ""
+    if condition_store is not None:
+        topics = _compute_topic_buckets(condition_store.conditions)
+        saturated = [
+            f"{topic} ({count} conditions)"
+            for topic, count in topics.items()
+            if count >= ConditionStore.SATURATION_THRESHOLD
+        ]
+        if saturated:
+            saturation_info = (
+                f"\n\nALREADY WELL-COVERED (avoid these topics): "
+                + ", ".join(saturated[:8])
+            )
+
+    prompt = (
+        f"{_QUESTION_ROUTER_PROMPT}\n\n"
+        f"Original user query: {user_query}\n"
+        f"Research question to route: {question}"
+        f"{saturation_info}"
+    )
+
+    try:
+        result = await call_llm(
+            [{"role": "user", "content": prompt}],
+            req_id,
+            model=SUBAGENT_MODEL,
+            max_tokens=512,
+            temperature=0.2,
+        )
+        if "error" not in result:
+            content = result.get("content", "").strip()
+            if content.startswith("```"):
+                content = re.sub(r'^```(?:json)?\s*', '', content)
+                content = re.sub(r'\s*```$', '', content)
+            data = json.loads(content)
+            return {
+                "mandatory_tools": data.get("mandatory_tools", [])[:4],
+                "preferred_tools": data.get("preferred_tools", [])[:4],
+                "suggested_queries": data.get("suggested_queries", [])[:3],
+                "routing_rationale": data.get("routing_rationale", ""),
+                "avoid_topics": data.get("avoid_topics", []),
+            }
+    except Exception as e:
+        log.warning(f"[{req_id}] Question routing failed: {e}")
+
+    # Fallback: default to community/underground tools
+    return {
+        "mandatory_tools": ["reddit_search", "forum_search"],
+        "preferred_tools": ["twitter_search", "chan_4plebs_search"],
+        "suggested_queries": [question],
+        "routing_rationale": "default community routing",
+        "avoid_topics": [],
+    }
 
 
 # ============================================================================
@@ -4546,27 +5869,44 @@ Initial search query: {angle_query}
 7. Use wayback_fetch if a link is dead or unavailable.
 8. Use news_search (not searxng_search) for anything about current events, recent news, market movements, or time-sensitive topics.
 
-**USE THE FULL TOOL ECOSYSTEM — do NOT rely only on web search:**
-- knowledge_graph_search: Query the Neo4j knowledge graph FIRST for prior research, ingested documents, and known entities. This is your most valuable source for topics the system has seen before.
-- knowledge_discover: Run graph discovery algorithms (spreading_activation, swanson_abc, information_gaps) to find hidden connections and serendipitous links in prior knowledge.
-- twitter_search: Real-time signals, expert commentary, breaking news, public discourse. Use Twitter search operators (from:, since:, "exact phrase").
-- youtube_search: Video content, expert lectures, documentaries, tutorials, interviews. Often contains information not found in text-based sources.
+**TOOL PRIORITY — community and underground sources FIRST:**
+Your FIRST tool calls must come from community/underground sources. Do NOT default to searxng_search.
+
+PRIMARY (use these FIRST — real people, real discussions, real experiences):
 - reddit_search: Community discussions, niche expertise, first-hand experiences. Specify subreddits for targeted results.
+- forum_search: Niche internet forums (SomethingAwful, Bodybuilding.com, XDA, Head-Fi, AVSForum, Overclock.net, ResetEra, etc.). First-hand experiences and underground knowledge.
 - chan_4plebs_search: Anonymous intelligence from /pol/, /sp/, /int/, /tv/. Early narrative tracking, political discourse, uncensored discussion.
 - chan_b4k_search: /biz/ archive — cryptocurrency, DeFi, financial alpha, early-stage project sentiment.
 - chan_warosu_search: /g/ (tech), /sci/ (science), /lit/ (literature) archives. Niche technical and scientific discussion.
-- social_media_search: Instagram, TikTok, LinkedIn, YouTube via commercial scrapers.
-- hackernews_search: Tech industry discourse, startup culture, programming debates, security incidents, expert opinions from engineers/founders.
-- stackexchange_search: Expert Q&A from hundreds of niche communities (stackoverflow, math, physics, chemistry, biology, electronics, diy, cooking, gaming, rpg, worldbuilding, law, money, academia, etc.).
-- pubmed_search: Biomedical and life science research — medical journals, clinical trials, pharmacology, genetics, epidemiology, public health.
-- wikipedia_search: Encyclopedic background context, definitions, historical facts. Fast reference.
-- archiveorg_search: Internet Archive full-text search — rare historical documents, out-of-print books, government reports, primary sources.
-- forum_search: Niche internet forums (SomethingAwful, Bodybuilding.com, XDA, Head-Fi, AVSForum, Overclock.net, ResetEra, etc.). First-hand experiences and underground knowledge.
-- scholar_search: Academic literature beyond arXiv — Google Scholar, Semantic Scholar, SSRN, JSTOR. Journal articles, theses, patents, court opinions.
-- substack_search: Independent journalism and long-form analysis from Substack newsletters. Expert commentary not found in mainstream media.
-- DIVERSIFY your sources. Do NOT use only searxng_search. Each research node should use at least 2-3 different tool types.
+- twitter_search: Real-time signals, expert commentary, breaking news, public discourse.
+- substack_search: Independent journalism and long-form analysis from Substack newsletters.
+- hackernews_search: Tech industry discourse, startup culture, expert opinions from engineers/founders.
+- stackexchange_search: Expert Q&A from hundreds of niche communities.
+- youtube_search: Search YouTube for videos. After finding results, ALWAYS follow up with youtube_transcript and youtube_video_metadata.
+- youtube_transcript: Extract full spoken content (transcript/subtitles) from a YouTube video URL. This is the PRIMARY way to get knowledge from videos.
+- youtube_video_metadata: Extract title, description, chapters, comments, tags from a YouTube video. Comments contain corrections and community knowledge.
+- youtube_video_analyze: Analyze video VISUALS using Qwen Omni vision model — diagrams, code on screen, product teardowns, demonstrations. Use when transcript alone isn't enough.
+- social_media_search: Instagram, TikTok, LinkedIn via commercial scrapers.
+- telegram_search: Encrypted community channels, alternative discourse.
+- darknet_market_search: Underground marketplace intelligence.
+
+SECONDARY (use for depth/verification AFTER primary sources):
+- scholar_search: Academic literature — journal articles, theses, patents, court opinions.
+- pubmed_search: Biomedical research — medical journals, clinical trials.
+- arxiv_search: Pre-print academic papers.
+- archiveorg_search: Historical documents, out-of-print materials, primary sources.
+- knowledge_graph_search: Query Neo4j for prior research and known entities.
+- knowledge_discover: Graph discovery algorithms for hidden connections.
+
+FALLBACK ONLY (use ONLY when primary and secondary return nothing):
+- searxng_search: Generic web search. NEVER use as your first tool call.
+- news_search: Mainstream news results.
+- wikipedia_search: Background context only.
+
+{tool_routing_instruction}
 
 **CRITICAL RULES:**
+- Your FIRST 2 tool calls MUST be from PRIMARY sources. Do NOT start with searxng_search.
 - NEVER fabricate or invent source names. Only cite sources you actually fetched via tools.
 - NEVER claim you checked Bloomberg Terminal, Reuters, or any specific service unless a tool actually returned results from that service.
 - If tools return no useful results, say so honestly — do NOT invent plausible-sounding conclusions.
@@ -4674,11 +6014,13 @@ async def run_subagent(
     user_query: str,
     depth: int = 0,
     collector: Optional["LiveFindingsCollector"] = None,
+    condition_store: Optional["ConditionStore"] = None,
 ) -> SubagentResult:
     """Run a single subagent's research loop on one angle.
 
     Uses AoT-style state contraction and dynamic saturation detection.
     May spawn recursive sub-subagents for rabbit holes.
+    Conditions are admitted through the global ConditionStore at birth.
     """
     angle_title = angle.get("title", f"Angle {subagent_index + 1}")
     angle_query = angle.get("query", user_query)
@@ -4688,6 +6030,34 @@ async def run_subagent(
 
     log.info(f"[{sa_id}] Starting subagent: {angle_title} (depth={depth})")
 
+    # Smart question routing: determine which tools to use for this angle
+    tool_routing_inst = ""
+    if condition_store is not None:
+        routing = await route_research_question(
+            angle_query, user_query, condition_store, req_id,
+        )
+        mandatory = routing.get("mandatory_tools", [])
+        preferred = routing.get("preferred_tools", [])
+        avoid = routing.get("avoid_topics", [])
+        suggested_qs = routing.get("suggested_queries", [])
+
+        parts = []
+        if mandatory:
+            parts.append(f"MANDATORY tools for this angle (use ALL of these): {', '.join(mandatory)}")
+        if preferred:
+            parts.append(f"Preferred tools (use at least 1): {', '.join(preferred)}")
+        if suggested_qs:
+            parts.append(f"Suggested search queries: {'; '.join(suggested_qs)}")
+        if avoid:
+            parts.append(f"AVOID these saturated topics: {', '.join(avoid)}")
+
+        saturation = condition_store._get_saturation_signal()
+        if saturation:
+            parts.append(saturation)
+
+        if parts:
+            tool_routing_inst = "**ROUTING INSTRUCTIONS FOR THIS ANGLE:**\n" + "\n".join(f"- {p}" for p in parts)
+
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     serendipity_inst = SERENDIPITY_INSTRUCTION if is_bridge else ""
     system_prompt = SUBAGENT_PROMPT_TEMPLATE.format(
@@ -4696,6 +6066,7 @@ async def run_subagent(
         angle_description=angle_desc,
         angle_query=angle_query,
         serendipity_instruction=serendipity_inst,
+        tool_routing_instruction=tool_routing_inst,
     )
 
     agent_messages: list[dict] = [
@@ -4742,16 +6113,25 @@ async def run_subagent(
                 result.turns_used = turn
                 conditions = _parse_conditions(content, angle_title, is_bridge)
                 if conditions:
-                    for c in conditions:
-                        c.trust_score = trust_score_url(c.source_url)
-                        c.serendipity_score_val = serendipity_score(c.fact, user_query, known_facts)
+                    # Admit conditions through global store (admission pipeline)
+                    if condition_store is not None:
+                        admission_results = await condition_store.admit_batch(conditions)
+                        admitted = [ar.condition for ar in admission_results if ar.admitted and ar.condition]
+                        rejected_count = len(conditions) - len(admitted)
+                        if rejected_count > 0:
+                            log.info(f"[{sa_id}] Admission: {len(admitted)} admitted, {rejected_count} rejected")
+                        conditions = admitted
+                    else:
+                        for c in conditions:
+                            c.trust_score = trust_score_url(c.source_url)
+                            c.serendipity_score_val = serendipity_score(c.fact, user_query, known_facts)
                     result.conditions.extend(conditions)
-                    # Feed live findings to heartbeat collector
-                    await progress_queue.put({
-                        "type": "conditions",
-                        "subagent": subagent_index,
-                        "conditions": conditions,
-                    })
+                    if conditions:
+                        await progress_queue.put({
+                            "type": "conditions",
+                            "subagent": subagent_index,
+                            "conditions": conditions,
+                        })
                 break
 
             assistant_msg: dict = {"role": "assistant", "content": content or None, "tool_calls": tool_calls}
@@ -4829,9 +6209,23 @@ async def run_subagent(
                         extract_result.get("content", ""), angle_title, is_bridge
                     )
                     if mid_conditions:
-                        for c in mid_conditions:
-                            c.trust_score = trust_score_url(c.source_url)
-                            c.serendipity_score_val = serendipity_score(c.fact, user_query, known_facts)
+                        # Admit through global store
+                        if condition_store is not None:
+                            admission_results = await condition_store.admit_batch(mid_conditions)
+                            admitted = [ar.condition for ar in admission_results if ar.admitted and ar.condition]
+                            rejected = len(mid_conditions) - len(admitted)
+                            if rejected > 0:
+                                log.info(f"[{sa_id}] Mid-turn admission: {len(admitted)} admitted, {rejected} rejected")
+                                # Inject saturation signal into next context reset
+                                dup_results = [ar for ar in admission_results if ar.reason == "duplicate" and ar.saturation_signal]
+                                if dup_results:
+                                    saturation_msg = dup_results[0].saturation_signal
+                                    agent_messages.append({"role": "user", "content": f"RESEARCH REDIRECT: {saturation_msg}"})
+                            mid_conditions = admitted
+                        else:
+                            for c in mid_conditions:
+                                c.trust_score = trust_score_url(c.source_url)
+                                c.serendipity_score_val = serendipity_score(c.fact, user_query, known_facts)
 
                         # Dynamic Saturation Detection
                         new_fact_texts = [c.fact for c in mid_conditions]
@@ -4855,12 +6249,12 @@ async def run_subagent(
                         known_facts.extend(new_fact_texts)
                         result.conditions.extend(mid_conditions)
 
-                        # Feed live findings to heartbeat collector
-                        await progress_queue.put({
-                            "type": "conditions",
-                            "subagent": subagent_index,
-                            "conditions": mid_conditions,
-                        })
+                        if mid_conditions:
+                            await progress_queue.put({
+                                "type": "conditions",
+                                "subagent": subagent_index,
+                                "conditions": mid_conditions,
+                            })
 
                         if len(result.novelty_history) >= 2 and novelty < NOVELTY_STOP_THRESHOLD:
                             log.info(f"[{sa_id}] Saturation detected (novelty={novelty:.2f}), stopping early")
@@ -4904,16 +6298,20 @@ async def run_subagent(
                     final_extract.get("content", ""), angle_title, is_bridge
                 )
                 if conditions:
-                    for c in conditions:
-                        c.trust_score = trust_score_url(c.source_url)
-                        c.serendipity_score_val = serendipity_score(c.fact, user_query, known_facts)
+                    if condition_store is not None:
+                        admission_results = await condition_store.admit_batch(conditions)
+                        conditions = [ar.condition for ar in admission_results if ar.admitted and ar.condition]
+                    else:
+                        for c in conditions:
+                            c.trust_score = trust_score_url(c.source_url)
+                            c.serendipity_score_val = serendipity_score(c.fact, user_query, known_facts)
                     result.conditions.extend(conditions)
-                    # Feed live findings to heartbeat collector
-                    await progress_queue.put({
-                        "type": "conditions",
-                        "subagent": subagent_index,
-                        "conditions": conditions,
-                    })
+                    if conditions:
+                        await progress_queue.put({
+                            "type": "conditions",
+                            "subagent": subagent_index,
+                            "conditions": conditions,
+                        })
 
         # Recursive subagent spawning for rabbit holes
         if (depth < MAX_RECURSIVE_DEPTH
@@ -4958,7 +6356,7 @@ async def run_subagent(
                             }
                             child_tasks.append(
                                 asyncio.create_task(
-                                    run_subagent(child_angle, subagent_index * 100 + gi, progress_queue, req_id, user_query, depth + 1, collector=collector)
+                                    run_subagent(child_angle, subagent_index * 100 + gi, progress_queue, req_id, user_query, depth + 1, collector=collector, condition_store=condition_store)
                                 )
                             )
 
@@ -5063,11 +6461,17 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
 
 SPAWN_QUESTIONS_PROMPT = """You are a research strategist who generates focused follow-up questions.
 
-Given the findings so far, generate follow-up questions that help answer the ORIGINAL USER QUERY more completely. Diversity is good, but every question must be directly useful for answering what the user actually asked.
+Given the findings so far, generate follow-up questions that help answer the ORIGINAL USER QUERY more completely. Your goal is to chase DEEP, RARE, EMBEDDED knowledge — the kind found in community discussions, practitioner experiences, court documents, underground forums, academic papers, and obscure archives. NOT surface-level summaries.
 
 **Original user query:** {user_query}
 **Question just investigated:** {node_question}
 **Context:** {node_context}
+
+**Deep understanding of the query:**
+{comprehension_context}
+
+**Knowledge net state:**
+{net_summary}
 
 **Findings from this investigation:**
 {findings_text}
@@ -5085,17 +6489,23 @@ STRATEGY RULES:
 - "deepen": drill further into a specific finding (preferred — most questions should be this)
 - "verify": cross-reference a specific entity/claim by searching for independent mentions (REQUIRED for any concrete entity discovered — vendor, person, product, website). Example: "Has anyone on Reddit/forums confirmed buying from [vendor X]?" or "What do reviews say about [product Y]?"
 - "lateral": explore a related angle that DIRECTLY helps answer the original query from a different perspective
-- "contrarian": investigate the opposite claim or a dissenting viewpoint ON THE SAME TOPIC
+- "contrarian": investigate the opposite claim or a dissenting viewpoint ON THE SAME TOPIC. Pay special attention to claims that CONTRADICT each other in the knowledge net — these need resolution.
 - "historical": look at historical precedents directly relevant to the query
 - "cross-domain": ONLY use if there is a genuinely useful parallel — do NOT force random associations
 - "verify" questions are HIGH PRIORITY — they should be generated for EVERY concrete entity found. If findings mention specific vendors, products, organizations, or individuals, there MUST be verify questions for them.
 - Non-deepen strategies are optional. Only use them if they genuinely serve the user's question.
 - CRITICAL: "lateral" does NOT mean "free association with a keyword". If the user asks about buying insulin, a lateral question is about alternative purchasing channels — NOT about bodybuilding or side effects.
 
+KNOWLEDGE NET RULES:
+- If two claims CONTRADICT each other, generate a question that resolves the contradiction from an independent source
+- If a claim has ZERO cross-references, it's unverified — consider generating a question to corroborate or refute it
+- If a claim is confirmed by multiple sources, it's well-established — lower pressure for that area
+- Use the adjacent territories and deep knowledge targets from the query comprehension to guide where to look next
+
 PRESSURE RULES:
-- Higher pressure for: contradictions, unverified claims, critical gaps directly relevant to the query
+- Higher pressure for: contradictions in the knowledge net, unverified claims, critical gaps directly relevant to the query, unexplored adjacent territories
 - HIGHEST pressure (0.9-1.0) for: verify questions about concrete entities that haven't been cross-referenced yet
-- Lower pressure for: already-well-covered areas, tangential topics
+- Lower pressure for: already-well-confirmed areas, tangential topics
 - 0 questions is fine if the topic is well-covered AND all concrete entities have been verified
 
 Other rules:
@@ -5129,8 +6539,12 @@ async def _spawn_sub_questions(
     user_query: str,
     existing_questions: list[str],
     req_id: str,
+    condition_store: Optional["ConditionStore"] = None,
 ) -> list[ResearchNode]:
     """Ask LLM to generate follow-up questions from research findings.
+
+    Uses the condition store's comprehension map and knowledge net state
+    to guide question generation toward deep, rare knowledge.
 
     Returns a list of new ResearchNode children.
     """
@@ -5144,10 +6558,32 @@ async def _spawn_sub_questions(
 
     existing_text = "\n".join(f"- {q}" for q in existing_questions[-30:]) or "(none yet)"
 
+    # Build comprehension context for the spawn prompt
+    comprehension_context = "(no deep comprehension available)"
+    net_summary = "(no knowledge net yet)"
+    if condition_store:
+        if condition_store.comprehension:
+            comp = condition_store.comprehension
+            parts = []
+            if comp.semantic_summary:
+                parts.append(f"Summary: {comp.semantic_summary[:300]}")
+            if comp.adjacent_territories:
+                parts.append(f"Adjacent territories to explore: {', '.join(comp.adjacent_territories[:8])}")
+            if comp.deep_knowledge_targets:
+                parts.append(f"Deep knowledge targets: {', '.join(comp.deep_knowledge_targets[:8])}")
+            if comp.implicit_questions:
+                unanswered = [q for q in comp.implicit_questions if q not in existing_questions]
+                if unanswered:
+                    parts.append(f"Still-unanswered implicit questions: {', '.join(unanswered[:5])}")
+            comprehension_context = "\n".join(parts) if parts else comprehension_context
+        net_summary = condition_store.get_net_summary(max_items=10)
+
     prompt = SPAWN_QUESTIONS_PROMPT.format(
         user_query=user_query,
         node_question=node.question,
         node_context=node.context,
+        comprehension_context=comprehension_context,
+        net_summary=net_summary,
         findings_text=findings_text,
         existing_questions=existing_text,
     )
@@ -5330,11 +6766,13 @@ async def _research_single_node(
     req_id: str,
     collector: "LiveFindingsCollector",
     curated_queue: asyncio.Queue,
+    condition_store: Optional["ConditionStore"] = None,
 ) -> tuple[list[AtomicCondition], SubagentResult]:
     """Research a single tree node using the existing subagent loop.
 
     This wraps run_subagent with the tree node's question/context
     and feeds findings into the collector and curated queue.
+    Conditions pass through the global ConditionStore at birth.
     """
     angle = {
         "title": node.question,
@@ -5357,6 +6795,7 @@ async def _research_single_node(
         user_query=user_query,
         depth=0,
         collector=collector,
+        condition_store=condition_store,
     )
 
     # Clear the active question now that research is done
@@ -5389,21 +6828,56 @@ async def tree_research_reactor(
     collector: "LiveFindingsCollector",
     curated_queue: asyncio.Queue,
 ) -> dict:
-    """Tree-based research reactor.
+    """Tree-based research reactor with global condition admission pipeline.
 
     Explores the research space as a tree: each finding can spawn
     sub-questions which get explored by concurrent workers.
+    All conditions pass through a global ConditionStore which handles
+    dedup, relevance gating, serendipity scoring, and saturation signaling.
 
     The semaphore governs only the workers doing active LLM+tool
     research.  Spawning and queuing are free (no slot consumed).
 
     Returns a dict with keys matching the old plan+subagents output:
       - subagent_results, all_conditions, total_turns, total_tools,
-        total_children, progress_log
+        total_children, progress_log, admission_stats
     """
     sem = asyncio.Semaphore(TREE_MAX_CONCURRENT)
     pending: asyncio.PriorityQueue = asyncio.PriorityQueue()
     progress: list[str] = []
+
+    # Step 0: Deep query comprehension — understand what the query is REALLY about
+    # This runs once and produces a semantic map that guides all downstream decisions
+    progress.append("\n**[Phase 2a: Query Comprehension]**\n")
+    progress.append("Building deep semantic understanding of the research query...\n")
+    comprehension = await comprehend_query(user_query, req_id)
+    if comprehension.semantic_summary:
+        progress.append(
+            f"Understanding: {comprehension.semantic_summary[:300]}\n"
+            f"Entities: {', '.join(comprehension.entities[:10])}\n"
+            f"Domains: {', '.join(comprehension.domains[:8])}\n"
+            f"Adjacent territories: {', '.join(comprehension.adjacent_territories[:6])}\n"
+        )
+    log.info(
+        f"[{req_id}] Query comprehension: {len(comprehension.entities)} entities, "
+        f"{len(comprehension.domains)} domains, "
+        f"{len(comprehension.implicit_questions)} implicit questions, "
+        f"{len(comprehension.adjacent_territories)} adjacent territories, "
+        f"{len(comprehension.relevance_keywords)} relevance keywords"
+    )
+
+    # Global condition store — seeded with comprehension for relevance-aware admission
+    condition_store = ConditionStore(
+        user_query=user_query, req_id=req_id, comprehension=comprehension,
+    )
+
+    # Admit understanding conditions — they go through the same pipeline
+    understanding_results = await condition_store.admit_understanding(comprehension)
+    understanding_admitted = sum(1 for r in understanding_results if r.admitted)
+    progress.append(
+        f"Admitted {understanding_admitted} understanding conditions "
+        f"(entities, domains, implicit questions, adjacent territories, deep targets)\n"
+    )
 
     # Bookkeeping
     all_conditions: list[AtomicCondition] = []
@@ -5441,45 +6915,81 @@ async def tree_research_reactor(
     await pending.put(root)
     total_queued = 1
 
-    # --- Pre-seed: decompose into parallel initial angles ---
-    # Generate 3-5 initial research angles so workers start in parallel
-    # instead of waiting for the single root node to finish first.
+    # --- Pre-seed: comprehension-guided initial angles ---
+    # Use the query comprehension's implicit questions and adjacent territories
+    # to seed parallel research angles.  This replaces the old generic
+    # "decompose into 3-5 angles" prompt — now the angles come from deep
+    # understanding of what the query is really about.
     try:
-        seed_prompt = (
-            f"Decompose this research query into 3-5 DISTINCT research angles "
-            f"that can be investigated IN PARALLEL. Each angle should cover a "
-            f"different aspect, perspective, or source type.\n\n"
-            f"Query: {user_query}\n\n"
-            f"Output ONLY valid JSON:\n"
-            f'{{"angles": [{{"question": "specific searchable question", '
-            f'"context": "why this angle matters"}}]}}'
+        seed_angles: list[tuple[str, str]] = []  # (question, context)
+
+        # Implicit questions from comprehension — these are the questions
+        # the user is REALLY asking but didn't spell out
+        for q in comprehension.implicit_questions[:4]:
+            if q.strip() and q.lower() != user_query.lower():
+                seed_angles.append((q, "Implicit question from query comprehension"))
+
+        # Adjacent territories — where the DEEP knowledge lives
+        for terr in comprehension.adjacent_territories[:3]:
+            if terr.strip():
+                seed_angles.append((
+                    f"What do {terr} reveal about {user_query[:100]}?",
+                    f"Adjacent territory: {terr}",
+                ))
+
+        # Deep knowledge targets — specific types of rare knowledge
+        for target in comprehension.deep_knowledge_targets[:2]:
+            if target.strip():
+                seed_angles.append((
+                    f"Find {target} related to {user_query[:100]}",
+                    f"Deep knowledge target: {target}",
+                ))
+
+        # If comprehension didn't produce enough angles, fall back to LLM decomposition
+        if len(seed_angles) < 3:
+            seed_prompt = (
+                f"Decompose this research query into 3-5 DISTINCT research angles "
+                f"that can be investigated IN PARALLEL. Focus on angles that would "
+                f"find DEEP, RARE knowledge — practitioner experiences, community "
+                f"discussions, enforcement data, obscure archives.\n\n"
+                f"Query: {user_query}\n\n"
+                f"Output ONLY valid JSON:\n"
+                f'{{"angles": [{{"question": "specific searchable question", '
+                f'"context": "why this angle matters"}}]}}'
+            )
+            seed_result = await call_llm(
+                [{"role": "user", "content": seed_prompt}],
+                req_id, model=SUBAGENT_MODEL, max_tokens=1024, temperature=0.4,
+            )
+            if "error" not in seed_result:
+                seed_content = seed_result.get("content", "").strip()
+                if seed_content.startswith("```"):
+                    seed_content = re.sub(r'^```(?:json)?\s*', '', seed_content)
+                    seed_content = re.sub(r'\s*```$', '', seed_content)
+                seed_data = json.loads(seed_content)
+                for angle in seed_data.get("angles", [])[:5]:
+                    q = angle.get("question", "").strip()
+                    if q and q.lower() != user_query.lower():
+                        seed_angles.append((q, angle.get("context", "")))
+
+        # Create seed nodes from the angles
+        for i, (q, ctx) in enumerate(seed_angles[:8]):
+            seed_node = ResearchNode(
+                id=f"{req_id}-seed{i}",
+                question=q,
+                context=ctx,
+                depth=0,
+                pressure=0.9,
+                parent_id=root.id,
+            )
+            nodes_by_id[seed_node.id] = seed_node
+            all_questions.append(q)
+            await pending.put(seed_node)
+            total_queued += 1
+
+        log.info(
+            f"[{req_id}] Seeded {len(seed_angles)} comprehension-guided research angles"
         )
-        seed_result = await call_llm(
-            [{"role": "user", "content": seed_prompt}],
-            req_id, model=SUBAGENT_MODEL, max_tokens=1024, temperature=0.4,
-        )
-        if "error" not in seed_result:
-            seed_content = seed_result.get("content", "").strip()
-            if seed_content.startswith("```"):
-                seed_content = re.sub(r'^```(?:json)?\s*', '', seed_content)
-                seed_content = re.sub(r'\s*```$', '', seed_content)
-            seed_data = json.loads(seed_content)
-            for i, angle in enumerate(seed_data.get("angles", [])[:5]):
-                q = angle.get("question", "").strip()
-                if not q or q.lower() == user_query.lower():
-                    continue
-                seed_node = ResearchNode(
-                    id=f"{req_id}-seed{i}",
-                    question=q,
-                    context=angle.get("context", ""),
-                    depth=0,
-                    pressure=0.9,
-                    parent_id=root.id,
-                )
-                nodes_by_id[seed_node.id] = seed_node
-                all_questions.append(q)
-                await pending.put(seed_node)
-                total_queued += 1
     except Exception as e:
         log.warning(f"[{req_id}] Pre-seed decomposition failed (non-fatal): {e}")
 
@@ -5536,6 +7046,7 @@ async def tree_research_reactor(
 
                     conditions, sa_result = await _research_single_node(
                         node, user_query, req_id, collector, curated_queue,
+                        condition_store=condition_store,
                     )
 
                     node.status = "done"
@@ -5554,6 +7065,7 @@ async def tree_research_reactor(
                     #    "verify" strategy now)
                     children = await _spawn_sub_questions(
                         node, conditions, user_query, all_questions, req_id,
+                        condition_store=condition_store,
                     )
 
                     # 2. Auto-spawn verification nodes for concrete
@@ -5633,6 +7145,20 @@ async def tree_research_reactor(
         "conditions_count": len(all_conditions),
     })
 
+    # When using admission pipeline, the ConditionStore has the canonical set
+    admission_stats = condition_store.stats
+    store_conditions = condition_store.conditions
+    if store_conditions:
+        # Use the globally-admitted conditions instead of the raw all_conditions
+        all_conditions = store_conditions
+
+    progress.append(
+        f"\n**Admission Pipeline Stats:** "
+        f"{admission_stats['admitted']} admitted, "
+        f"{admission_stats['rejected_duplicate']} duplicates rejected, "
+        f"{admission_stats['rejected_irrelevant']} irrelevant rejected\n"
+    )
+
     return {
         "subagent_results": all_results,
         "all_conditions": all_conditions,
@@ -5640,6 +7166,7 @@ async def tree_research_reactor(
         "total_tools": total_tools,
         "total_children": total_children,
         "progress_log": progress,
+        "admission_stats": admission_stats,
     }
 
 
@@ -6547,19 +8074,16 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
 async def pdr_node_verify(state: PersistentResearchState) -> dict:
     """Phase 5: Citation verification.
 
-    With inline verification enabled (the tree reactor now cross-references
-    concrete entities during research), this phase is streamlined:
+    Verification is now primarily done at admission time (per-condition)
+    via the ConditionStore, plus inline verification during the tree phase
+    (cross-referencing concrete entities during research).
 
-      1. Self-evaluation (fast, LLM-only): cross-checks conditions against each
-         other for contradictions, source quality, and fabricated entities.
-      2. Veritas Inquisitor: SKIPPED by default because inline verification
-         already cross-referenced entities during the tree phase.  The tree's
-         verification nodes produce findings that get fed back into the tree
-         for deeper branching — something post-hoc Veritas cannot do.
-         Veritas can still be forced via VERITAS_FORCE_POST_HOC=true env var.
+    This phase runs a lightweight self-evaluation pass on the already-admitted
+    conditions to catch any remaining contradictions or confidence adjustments.
 
-    Philosophy: verify DURING research so verification findings can be
-    branched upon, not after the tree is closed.
+    Veritas Inquisitor (the 5-agent post-hoc swarm) is DEPRECATED by default:
+    admission-time + inline verification replaced it.  Can be forced via
+    VERITAS_FORCE_POST_HOC=true env var.
     """
     req_id = state["req_id"]
     user_query = state["user_query"]
@@ -6574,25 +8098,27 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
     pre_count = len(all_conditions)
 
     if all_conditions and len(all_conditions) >= 2:
-        # Stage 1: fast self-evaluation (always runs — lightweight)
-        progress.append("\n**[Phase 5a: Citation Cross-Check]**\n")
-        progress.append("Cross-checking claims for contradictions...\n")
+        # Lightweight self-evaluation: cross-check for contradictions
+        progress.append("\n**[Phase 5: Citation Cross-Check]**\n")
+        progress.append(
+            f"Cross-checking {len(all_conditions)} pre-admitted conditions "
+            f"for contradictions (conditions already passed admission pipeline)...\n"
+        )
 
         all_conditions = await verify_conditions(all_conditions, req_id)
 
         stage1_removed = pre_count - len(all_conditions)
         high_conf = sum(1 for c in all_conditions if c.confidence >= 0.7)
         low_conf = sum(1 for c in all_conditions if c.confidence < 0.4)
+        speculative = sum(1 for c in all_conditions if c.verification_status == "speculative")
         summary = (f"Cross-check complete: {high_conf} high-confidence, "
-                   f"{low_conf} low-confidence conditions.")
+                   f"{low_conf} low-confidence, {speculative} speculative.")
         if stage1_removed > 0:
             summary += f" {stage1_removed} fabricated removed."
         progress.append(summary + "\n")
 
-    # Stage 2: Veritas Inquisitor — only runs if explicitly forced.
-    # Inline verification during the tree phase replaces this: each
-    # concrete entity gets its own verification node whose findings
-    # feed back into the tree for deeper branching.
+    # Veritas Inquisitor — only runs if explicitly forced.
+    # Admission-time + inline verification during the tree phase replaces this.
     force_veritas = os.getenv("VERITAS_FORCE_POST_HOC", "").lower() in ("1", "true", "yes")
     veritas_report: dict = {}
     if force_veritas and VERITAS_VERIFY_ENABLED and len(all_conditions) >= VERITAS_MIN_CONDITIONS:
@@ -6606,34 +8132,6 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
         all_conditions, veritas_report = await verify_conditions_with_veritas(
             all_conditions, user_query, req_id,
         )
-
-        removed = pre_veritas_count - len(all_conditions)
-        speculative_count = sum(
-            1 for c in all_conditions if c.verification_status == "speculative"
-        )
-        verified_count = sum(
-            1 for c in all_conditions if c.verification_status == "verified"
-        )
-        overall_score = veritas_report.get("overall_score", -1)
-        halluc_prob = veritas_report.get("overall_hallucination_probability", -1)
-
-        summary_parts = []
-        if removed > 0:
-            summary_parts.append(f"{removed} fabricated claim{'s' if removed != 1 else ''} removed")
-        if speculative_count > 0:
-            summary_parts.append(f"{speculative_count} speculative (kept)")
-        if verified_count > 0:
-            summary_parts.append(f"{verified_count} verified")
-        if overall_score >= 0:
-            summary_parts.append(f"truthfulness {overall_score:.0%}")
-        if halluc_prob >= 0:
-            summary_parts.append(f"fabrication probability {halluc_prob:.0%}")
-
-        if summary_parts:
-            progress.append(f"Veritas: {', '.join(summary_parts)}.\n")
-        else:
-            progress.append("Veritas verification complete.\n")
-
         progress.append(
             f"{len(all_conditions)} conditions retained out of {pre_veritas_count}.\n"
         )

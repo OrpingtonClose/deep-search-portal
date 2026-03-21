@@ -389,8 +389,10 @@ class TestVerifyConditionsWithVeritas:
 
 class TestPdrNodeVerifyWithVeritas:
     @pytest.mark.asyncio
-    async def test_runs_both_stages_when_forced(self):
-        """When VERITAS_FORCE_POST_HOC is set, both self-eval and Veritas run."""
+    async def test_runs_cross_check_only_veritas_deprecated(self):
+        """Veritas is deprecated in favor of admission-time verification.
+        Only the self-eval cross-check stage should run; Veritas is skipped
+        even when VERITAS_VERIFY_ENABLED is True (unless forced)."""
         conditions = [
             _make_condition("Claim A", confidence=0.7),
             _make_condition("Claim B is hallucinated", confidence=0.6),
@@ -399,37 +401,24 @@ class TestPdrNodeVerifyWithVeritas:
 
         state = _pdr_state(all_conditions=conditions)
 
-        mock_veritas_result = {
-            "report": {
-                "claims": [
-                    {"claim_text": "Claim A", "status": "verified", "confidence": 0.85},
-                    {"claim_text": "Claim B is hallucinated", "status": "hallucinated", "confidence": 0.05},
-                    {"claim_text": "Claim C", "status": "plausible-unverified", "confidence": 0.5},
-                ],
-                "overall_score": 0.5,
-                "overall_hallucination_probability": 0.33,
-            },
-        }
-
         with patch.object(pdr, "VERITAS_VERIFY_ENABLED", True), \
              patch.object(pdr, "VERITAS_MIN_CONDITIONS", 3), \
              patch.object(pdr, "verify_conditions", new_callable=AsyncMock, return_value=conditions), \
-             patch("veritas_inquisitor.verify_output", new_callable=AsyncMock, return_value=mock_veritas_result), \
-             patch.object(pdr, "_metrics_collectors", {}), \
-             patch.dict("os.environ", {"VERITAS_FORCE_POST_HOC": "true"}):
+             patch("veritas_inquisitor.verify_output", new_callable=AsyncMock) as mock_veritas, \
+             patch.object(pdr, "_metrics_collectors", {}):
 
             result = await pdr.pdr_node_verify(state)
 
-        # Hallucinated claim should be removed
-        result_conditions = result["all_conditions"]
-        assert len(result_conditions) == 2
-        facts = [c.fact for c in result_conditions]
-        assert "Claim B is hallucinated" not in facts
+        # Veritas is deprecated — should NOT have been called
+        mock_veritas.assert_not_called()
 
-        # Progress should mention both stages
+        # All conditions survive (self-eval mock returns them unchanged)
+        result_conditions = result["all_conditions"]
+        assert len(result_conditions) == 3
+
+        # Progress should mention the cross-check phase
         progress_text = " ".join(result["progress_log"])
-        assert "Phase 5a" in progress_text
-        assert "Phase 5b" in progress_text or "Veritas" in progress_text
+        assert "Phase 5" in progress_text or "Cross-Check" in progress_text
 
     @pytest.mark.asyncio
     async def test_skips_veritas_by_default_with_inline_verification(self):
@@ -508,44 +497,34 @@ class TestPdrNodeVerifyWithVeritas:
         mock_veritas.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_progress_log_shows_removal_count(self):
-        """Progress log should report how many conditions were removed
-        when Veritas is forced."""
-        conditions = [
+    async def test_progress_log_shows_cross_check_summary(self):
+        """Progress log should report cross-check results (Veritas deprecated)."""
+        # Self-eval removes 2 fabricated conditions
+        real_conditions = [
+            _make_condition("Real claim A", confidence=0.8),
+            _make_condition("Real claim B", confidence=0.7),
+        ]
+        all_conditions = [
             _make_condition("Real claim A", confidence=0.8),
             _make_condition("Fake company XYZ Ltd", confidence=0.6),
             _make_condition("Real claim B", confidence=0.7),
             _make_condition("Fake entity ABC Corp", confidence=0.5),
         ]
 
-        state = _pdr_state(all_conditions=conditions)
+        state = _pdr_state(all_conditions=all_conditions)
 
-        mock_result = {
-            "report": {
-                "claims": [
-                    {"claim_text": "Fake company XYZ Ltd", "status": "hallucinated", "confidence": 0.02},
-                    {"claim_text": "Fake entity ABC Corp", "status": "hallucinated", "confidence": 0.01},
-                    {"claim_text": "Real claim A", "status": "verified", "confidence": 0.9},
-                    {"claim_text": "Real claim B", "status": "verified", "confidence": 0.85},
-                ],
-                "overall_score": 0.5,
-                "overall_hallucination_probability": 0.5,
-            },
-        }
-
-        with patch.object(pdr, "VERITAS_VERIFY_ENABLED", True), \
-             patch.object(pdr, "VERITAS_MIN_CONDITIONS", 3), \
-             patch.object(pdr, "verify_conditions", new_callable=AsyncMock, return_value=conditions), \
-             patch("veritas_inquisitor.verify_output", new_callable=AsyncMock, return_value=mock_result), \
-             patch.object(pdr, "_metrics_collectors", {}), \
-             patch.dict("os.environ", {"VERITAS_FORCE_POST_HOC": "true"}):
+        with patch.object(pdr, "verify_conditions", new_callable=AsyncMock, return_value=real_conditions), \
+             patch("veritas_inquisitor.verify_output", new_callable=AsyncMock) as mock_veritas, \
+             patch.object(pdr, "_metrics_collectors", {}):
 
             result = await pdr.pdr_node_verify(state)
 
+        # Veritas is deprecated — not called
+        mock_veritas.assert_not_called()
+        # Self-eval removed the 2 fake conditions
         assert len(result["all_conditions"]) == 2
         progress_text = " ".join(result["progress_log"])
-        assert "2 fabricated claims removed" in progress_text
-        assert "2 conditions retained out of 4" in progress_text
+        assert "2 fabricated removed" in progress_text or "Cross-Check" in progress_text or "Cross-check" in progress_text
 
     @pytest.mark.asyncio
     async def test_single_condition_skips_both_stages(self):
@@ -566,8 +545,8 @@ class TestPdrNodeVerifyWithVeritas:
         assert len(result["all_conditions"]) == 1
 
     @pytest.mark.asyncio
-    async def test_veritas_error_preserves_conditions(self):
-        """If Veritas crashes (when forced), self-eval results should still be preserved."""
+    async def test_self_eval_error_propagates(self):
+        """If self-eval crashes, the error propagates (not silently swallowed)."""
         conditions = [
             _make_condition("Claim A", confidence=0.7),
             _make_condition("Claim B", confidence=0.6),
@@ -576,17 +555,11 @@ class TestPdrNodeVerifyWithVeritas:
 
         state = _pdr_state(all_conditions=conditions)
 
-        with patch.object(pdr, "VERITAS_VERIFY_ENABLED", True), \
-             patch.object(pdr, "VERITAS_MIN_CONDITIONS", 3), \
-             patch.object(pdr, "verify_conditions", new_callable=AsyncMock, return_value=conditions), \
-             patch("veritas_inquisitor.verify_output", new_callable=AsyncMock, side_effect=RuntimeError("boom")), \
-             patch.object(pdr, "_metrics_collectors", {}), \
-             patch.dict("os.environ", {"VERITAS_FORCE_POST_HOC": "true"}):
+        with patch.object(pdr, "verify_conditions", new_callable=AsyncMock, side_effect=RuntimeError("boom")), \
+             patch.object(pdr, "_metrics_collectors", {}):
 
-            result = await pdr.pdr_node_verify(state)
-
-        # All conditions preserved despite Veritas error
-        assert len(result["all_conditions"]) == 3
+            with pytest.raises(RuntimeError, match="boom"):
+                await pdr.pdr_node_verify(state)
 
 
 # ============================================================================

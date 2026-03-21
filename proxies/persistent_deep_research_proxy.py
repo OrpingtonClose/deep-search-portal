@@ -5936,7 +5936,7 @@ Output ONLY a JSON object:
 {
   "overall_quality": 0.7,
   "issues": [
-    {"section": "section heading or quote", "type": "unsupported_claim|logical_gap|needs_verification|contradiction|missing_context", "description": "what's wrong", "search_query": "suggested search to fix this"}
+    {"section": "section heading or quote", "type": "unsupported_claim|logical_gap|needs_verification|contradiction|missing_context|fearmongering|value_judgement|vague_reference", "description": "what's wrong", "search_query": "suggested search to fix this"}
   ],
   "strengths": ["list of things done well"]
 }

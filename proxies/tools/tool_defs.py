@@ -686,26 +686,6 @@ NATIVE_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "youtube_search",
-            "description": (
-                "Search YouTube for video content — practitioner tutorials, teardowns, "
-                "conference talks, community discussions, investigative videos. YouTube "
-                "contains deep knowledge that rarely appears in text sources. After "
-                "finding videos, use youtube_transcript to extract spoken content and "
-                "youtube_video_metadata for description/comments/chapters."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "youtube_transcript",
             "description": (
                 "Extract the full transcript/subtitles from a YouTube video. Returns "

@@ -350,8 +350,6 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
         return await tool_scholar_search(arguments.get("query", ""))
     elif tool_name == "substack_search":
         return await tool_substack_search(arguments.get("query", ""))
-    elif tool_name == "youtube_search":
-        return await tool_youtube_search(arguments.get("query", ""))
     elif tool_name == "youtube_transcript":
         return await tool_youtube_transcript(
             arguments.get("url", ""),

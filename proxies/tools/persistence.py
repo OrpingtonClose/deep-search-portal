@@ -107,24 +107,32 @@ def _log_entities_jsonl(
 # Neo4j-backed Persistence (via Knowledge Engine)
 # ============================================================================
 
+def _clamp01(v: float) -> float:
+    """Clamp a float to [0.0, 1.0]."""
+    return max(0.0, min(1.0, float(v)))
+
+
 async def _store_conditions_neo4j(
     session_id: str,
     query: str,
     conditions: list["AtomicCondition"],
-) -> int:
-    """Store atomic conditions in Neo4j via the knowledge engine. Returns count stored."""
+) -> tuple[int, str]:
+    """Store atomic conditions in Neo4j via the knowledge engine.
+
+    Returns (count_stored, error_message).  error_message is empty on success.
+    """
     if not conditions:
-        return 0
+        return 0, ""
     cond_dicts = [
         {
             "fact": c.fact,
             "source_url": c.source_url,
-            "confidence": c.confidence,
-            "trust_score": c.trust_score,
+            "confidence": _clamp01(c.confidence),
+            "trust_score": _clamp01(c.trust_score),
             "angle": c.angle,
             "domain": c.domain,
             "is_serendipitous": c.is_serendipitous,
-            "serendipity_score": c.serendipity_score_val,
+            "serendipity_score": _clamp01(c.serendipity_score_val),
             "publication_date": c.publication_date,
             "author": c.author,
             "content_type": c.content_type,
@@ -139,18 +147,21 @@ async def _store_conditions_neo4j(
             conditions=cond_dicts,
             namespace=RESEARCH_NAMESPACE,
         )
-        return result.get("stored", 0)
+        return result.get("stored", 0), ""
     except Exception as e:
         log.error(f"Neo4j condition storage error: {e}")
-        return 0
+        return 0, str(e)
 
 
 async def _store_entities_neo4j(
     session_id: str,
     entities: list[dict],
     relationships: list[dict],
-) -> tuple[int, int]:
-    """Store entities and relationships in Neo4j via the knowledge engine."""
+) -> tuple[int, int, str]:
+    """Store entities and relationships in Neo4j via the knowledge engine.
+
+    Returns (entities_stored, relationships_stored, error_message).
+    """
     try:
         result = await knowledge_client.store_entities(
             session_id=session_id,
@@ -158,10 +169,10 @@ async def _store_entities_neo4j(
             relationships=relationships,
             namespace=RESEARCH_NAMESPACE,
         )
-        return result.get("entities_stored", 0), result.get("relationships_stored", 0)
+        return result.get("entities_stored", 0), result.get("relationships_stored", 0), ""
     except Exception as e:
         log.error(f"Neo4j entity storage error: {e}")
-        return 0, 0
+        return 0, 0, str(e)
 
 
 async def _retrieve_related(query: str, limit: int = 20) -> list[dict]:
@@ -378,5 +389,4 @@ try:
     log.info(f"JSONL log directory ready: {JSONL_LOG_DIR}")
 except Exception as e:
     log.warning(f"Failed to create JSONL log directory: {e}")
-
 

@@ -147,6 +147,10 @@ class ResearchConditionInput(BaseModel):
     domain: str = Field("", description="Source domain")
     is_serendipitous: bool = Field(False)
     serendipity_score: float = Field(0.0, ge=0.0, le=1.0)
+    publication_date: str = Field("", description="Publication date of source")
+    author: str = Field("", description="Author of source")
+    content_type: str = Field("", description="Content type (article, paper, etc.)")
+    source_type: str = Field("", description="Source type (web, academic, etc.)")
 
 
 class StoreConditionsRequest(BaseModel):

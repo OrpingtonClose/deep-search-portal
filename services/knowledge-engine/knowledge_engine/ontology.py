@@ -438,6 +438,10 @@ def batch_create_research_conditions(
                 domain: $domain,
                 is_serendipitous: $is_serendipitous,
                 serendipity_score: $serendipity_score,
+                publication_date: $publication_date,
+                author: $author,
+                content_type: $content_type,
+                source_type: $source_type,
                 verified: false,
                 created_at: $now
             })
@@ -452,6 +456,10 @@ def batch_create_research_conditions(
             domain=c.get("domain", ""),
             is_serendipitous=bool(c.get("is_serendipitous", False)),
             serendipity_score=float(c.get("serendipity_score", 0.0)),
+            publication_date=c.get("publication_date", ""),
+            author=c.get("author", ""),
+            content_type=c.get("content_type", ""),
+            source_type=c.get("source_type", ""),
             now=now,
         )
         count += 1

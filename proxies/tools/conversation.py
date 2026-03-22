@@ -30,14 +30,20 @@ from .config import SUBAGENT_MODEL
 # Conversation ID derivation
 # ---------------------------------------------------------------------------
 
-def derive_conversation_id(messages: list[dict]) -> str:
+def derive_conversation_id(messages: list[dict], chat_id: str | None = None) -> str:
     """Derive a stable conversation ID from the message history.
 
-    Strategy: hash only the first user message content.  This gives a
-    stable ID across all turns because the opening user message never
-    changes within a chat thread — even when assistant responses are
-    appended in subsequent turns.
+    If *chat_id* is provided (from Open WebUI's request body) we use it
+    directly — it uniquely identifies the chat thread and avoids
+    cross-user collisions when two users happen to open with the same
+    first message.
+
+    Fallback strategy: hash only the first user message content.  This
+    gives a stable ID across all turns because the opening user message
+    never changes within a chat thread.
     """
+    if chat_id:
+        return hashlib.sha256(chat_id.encode()).hexdigest()[:16]
     first_user = ""
     for msg in messages:
         role = msg.get("role", "")

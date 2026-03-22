@@ -1971,7 +1971,9 @@ async def run_persistent_research(
     log.info(f"[{req_id}] Starting persistent deep research: {user_query[:100]}")
 
     # --- Conversation continuity: detect follow-ups ---
-    conversation_id = derive_conversation_id(user_messages)
+    conversation_id = derive_conversation_id(
+        user_messages, chat_id=original_body.get("chat_id"),
+    )
     conversation_turn = count_user_turns(user_messages) - 1  # 0-indexed
     prior_conv_facts: list[str] = []
     prior_conv_summary = ""

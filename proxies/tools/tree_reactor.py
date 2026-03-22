@@ -20,7 +20,7 @@ from .config import (
 )
 from .models import AtomicCondition, ResearchNode, SubagentResult
 from .llm import call_llm
-from .pipeline import ConditionStore, comprehend_query
+from .pipeline import ConditionStore, QueryComprehension, comprehend_query
 from .subagent import run_subagent
 
 if TYPE_CHECKING:
@@ -89,20 +89,102 @@ Output format:
 {{"sub_questions": [{{"question": "...", "context": "...", "pressure": 0.8, "strategy": "lateral"}}]}}"""
 
 
+# ============================================================================
+# Prompt-Distance Scoring
+# ============================================================================
+
+# Intent-specific keyword boosters: questions containing these patterns
+# get a relevance boost for the corresponding intent type.
+_INTENT_BOOSTERS: dict[str, list[str]] = {
+    "transactional": [
+        "buy", "purchase", "order", "get", "acquire", "obtain", "source",
+        "vendor", "supplier", "price", "cost", "shipping", "delivery",
+        "how to", "setup", "install", "configure", "step by step",
+        "where can", "who sells", "cheapest", "best deal", "coupon",
+        "subscribe", "sign up", "register", "apply", "book",
+    ],
+    "informational": [
+        "what is", "how does", "why", "explain", "understand",
+        "mechanism", "cause", "effect", "research", "study",
+        "evidence", "data", "statistics", "history", "background",
+        "difference between", "compare", "analysis", "review",
+    ],
+    "exploratory": [
+        "overview", "landscape", "state of", "trends", "future",
+        "possibilities", "options", "alternatives", "emerging",
+        "what are", "survey", "map", "scope", "range",
+    ],
+}
+
+
+def _score_prompt_distance(
+    question: str,
+    core_need: str,
+    intent_type: str,
+) -> float:
+    """Score how closely a research question serves the user's core need.
+
+    Returns a value in [0.0, 1.0] where 1.0 means the question directly
+    addresses the core need and intent.
+
+    The score combines:
+      1. Word overlap between question and core_need (Jaccard-like)
+      2. Intent-specific keyword boost
+    """
+    if not core_need:
+        return 0.5  # no core_need available — neutral score
+
+    q_words = set(question.lower().split())
+    need_words = set(core_need.lower().split())
+
+    # Filter out very short words (articles, prepositions)
+    q_words = {w for w in q_words if len(w) > 2}
+    need_words = {w for w in need_words if len(w) > 2}
+
+    if not q_words or not need_words:
+        return 0.5
+
+    # 1. Word overlap component (0-1)
+    overlap = len(q_words & need_words)
+    union = len(q_words | need_words)
+    overlap_score = overlap / max(union, 1)
+
+    # 2. Intent-specific keyword boost (0 or 0.15)
+    intent_boost = 0.0
+    q_lower = question.lower()
+    boosters = _INTENT_BOOSTERS.get(intent_type, [])
+    for keyword in boosters:
+        if keyword in q_lower:
+            intent_boost = 0.15
+            break
+
+    # Combine: overlap is primary, intent boost is additive
+    raw = overlap_score * 0.85 + intent_boost
+    return min(1.0, max(0.0, raw))
+
+
 def _compute_pressure(
     base_pressure: float,
     depth: int,
     parent_pressure: float,
+    prompt_distance: float = 0.5,
 ) -> float:
     """Compute final pressure score for a research node.
 
-    Combines the LLM's assessed importance with a depth decay and
-    inheritance from the parent node's pressure.
+    Combines the LLM's assessed importance with a depth decay,
+    inheritance from the parent node's pressure, and prompt-distance
+    scoring (how closely the question serves the user's core need).
+
+    prompt_distance in [0, 1]: 1.0 = directly addresses core need.
+    Questions closer to the core need get a pressure boost.
     """
     depth_decay = max(0.1, 1.0 - (depth * 0.15))
     inherited = parent_pressure * 0.3
     base_weight = base_pressure * 0.7
-    return min(1.0, (base_weight + inherited) * depth_decay)
+    # prompt_distance modulates base: questions far from core_need
+    # get dampened, questions close get boosted (range: 0.7x to 1.3x)
+    distance_factor = 0.7 + (prompt_distance * 0.6)
+    return min(1.0, (base_weight + inherited) * depth_decay * distance_factor)
 
 
 async def _spawn_sub_questions(
@@ -203,7 +285,29 @@ async def _spawn_sub_questions(
             continue
 
         raw_pressure = float(sq.get("pressure", 0.5))
-        pressure = _compute_pressure(raw_pressure, node.depth + 1, node.pressure)
+
+        # Compute prompt-distance for this question
+        pd_score = 0.5
+        if condition_store and condition_store.comprehension:
+            pd_score = _score_prompt_distance(
+                question,
+                condition_store.comprehension.core_need,
+                condition_store.comprehension.intent_type,
+            )
+
+        pressure = _compute_pressure(
+            raw_pressure, node.depth + 1, node.pressure,
+            prompt_distance=pd_score,
+        )
+
+        # Phase 3: Saturation-aware pressure decay — if this question
+        # covers entities we've already thoroughly researched, reduce
+        # pressure so the tree redirects budget to unexplored ground.
+        if condition_store:
+            sat_ratio = condition_store.entity_saturation_ratio(question)
+            if sat_ratio > 0:
+                # Reduce pressure proportionally: 50% reduction at full saturation
+                pressure *= (1.0 - sat_ratio * 0.5)
 
         if pressure < TREE_PRESSURE_THRESHOLD:
             continue
@@ -426,16 +530,20 @@ async def tree_research_reactor(
     if comprehension.semantic_summary:
         progress.append(
             f"Understanding: {comprehension.semantic_summary[:300]}\n"
+            f"Intent: **{comprehension.intent_type}**\n"
+            f"Core need: {comprehension.core_need[:200]}\n"
             f"Entities: {', '.join(comprehension.entities[:10])}\n"
             f"Domains: {', '.join(comprehension.domains[:8])}\n"
             f"Adjacent territories: {', '.join(comprehension.adjacent_territories[:6])}\n"
         )
     log.info(
-        f"[{req_id}] Query comprehension: {len(comprehension.entities)} entities, "
+        f"[{req_id}] Query comprehension: intent={comprehension.intent_type}, "
+        f"{len(comprehension.entities)} entities, "
         f"{len(comprehension.domains)} domains, "
         f"{len(comprehension.implicit_questions)} implicit questions, "
         f"{len(comprehension.adjacent_territories)} adjacent territories, "
-        f"{len(comprehension.relevance_keywords)} relevance keywords"
+        f"{len(comprehension.relevance_keywords)} relevance keywords, "
+        f"core_need={comprehension.core_need[:100]}"
     )
 
     # Global condition store — seeded with comprehension for relevance-aware admission
@@ -544,14 +652,22 @@ async def tree_research_reactor(
                     if q and q.lower() != user_query.lower():
                         seed_angles.append((q, angle.get("context", "")))
 
-        # Create seed nodes from the angles
+        # Create seed nodes from the angles — use prompt-distance
+        # scoring instead of uniform 0.9 pressure so questions closer
+        # to the core_need get explored first.
         for i, (q, ctx) in enumerate(seed_angles[:8]):
+            pd_score = _score_prompt_distance(
+                q, comprehension.core_need, comprehension.intent_type,
+            )
+            # Seed pressure: base 0.9 modulated by prompt distance
+            # Range: ~0.63 (distant) to ~1.0 (directly on core_need)
+            seed_pressure = min(1.0, 0.9 * (0.7 + pd_score * 0.6))
             seed_node = ResearchNode(
                 id=f"{req_id}-seed{i}",
                 question=q,
                 context=ctx,
                 depth=0,
-                pressure=0.9,
+                pressure=seed_pressure,
                 parent_id=root.id,
             )
             nodes_by_id[seed_node.id] = seed_node

@@ -5,6 +5,7 @@ LangGraph state & pipeline graph, and main research orchestrator.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -849,6 +850,13 @@ class PersistentResearchState(TypedDict):
     targeted_questions: list[str]
     quality_score: float
     comprehension_data: dict
+    # Identity-based lists of condition fact hashes already processed,
+    # so re-loop iterations only process NEW conditions.  Using hashes
+    # instead of positional counts is robust to verify removing conditions.
+    # Stored as list[str] (not set) for JSON/SQLite checkpoint serialisation.
+    # Uses SHA-256 truncated hex for determinism across process restarts.
+    persisted_fact_hashes: list[str]
+    extracted_fact_hashes: list[str]
 
 
 async def pdr_node_comprehend(state: PersistentResearchState) -> dict:
@@ -944,32 +952,53 @@ async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
     }
 
 
-async def pdr_node_tree_research(state: PersistentResearchState) -> dict:
-    """Phase 2: Tree-based research reactor.
+# ============================================================================
+# Tree Research Subgraph
+# ============================================================================
+#
+# The tree research phase is implemented as a LangGraph *subgraph* so that
+# LangSmith and Langfuse can render it as a distinct nested graph with
+# individually traceable nodes.
+#
+# Subgraph topology:
+#     START → init_tree → explore → END
+#
+# - ``init_tree``: set up the live collector, curated queue, metrics
+#   tracking, and log re-research iteration context.
+# - ``explore``: delegate to the priority-queue-based concurrent tree
+#   reactor (``tree_research_reactor``).  Depth routing within the
+#   reactor is governed by pressure decay, ``TREE_MAX_DEPTH``, and
+#   ``TREE_PRESSURE_THRESHOLD``.
+#
+# The main graph's conditional edges (reflect → tree_research,
+# synthesize → tree_research) provide the *inter-iteration* routing
+# that feeds targeted gap questions back into the subgraph.
+# ============================================================================
 
-    Replaces the old plan-angles + parallel-subagents phases with a
-    tree exploration that starts from the user query, researches it,
-    and spawns focused sub-questions from each finding.
 
-    On re-research iterations (triggered by reflect or synthesis
-    feedback loops), ``targeted_questions`` from the previous iteration
-    are injected as high-priority seed questions so the reactor
-    focuses on known gaps instead of re-exploring covered ground.
+async def _tree_sub_init(state: PersistentResearchState) -> dict:
+    """Tree subgraph · init_tree: set up context and log iteration start.
+
+    Ensures the live findings collector and curated event queue exist
+    (creating them if this is the first invocation for this request).
+    On re-research iterations, logs which targeted gap questions will
+    be investigated.
     """
     req_id = state["req_id"]
     iterations = state.get("research_iterations", 0)
     targeted = state.get("targeted_questions", [])
+
     mc = _metrics_collectors.get(req_id)
     if mc:
         mc.start_node("tree_research")
 
-    # Get or create the live findings collector
+    # Ensure collector exists
     collector = _live_collectors.get(req_id)
     if collector is None:
         collector = LiveFindingsCollector(user_query=state["user_query"])
         _live_collectors[req_id] = collector
 
-    # Get or create the curated queue
+    # Ensure curated queue exists
     curated_queue = _curated_queues.get(req_id)
     if curated_queue is None:
         curated_queue = asyncio.Queue()
@@ -981,6 +1010,36 @@ async def pdr_node_tree_research(state: PersistentResearchState) -> dict:
             f"\n**[Re-research iteration {iterations + 1}]** "
             f"Targeting {len(targeted)} gap questions...\n"
         )
+
+    return {"progress_log": progress}
+
+
+async def _tree_sub_explore(state: PersistentResearchState) -> dict:
+    """Tree subgraph · explore: run the concurrent tree research reactor.
+
+    Delegates to ``tree_research_reactor`` which manages a priority
+    queue of research nodes explored by concurrent workers.  Depth
+    routing is handled internally:
+
+    - **Pressure decay**: deeper nodes receive exponentially lower
+      pressure scores, making them less likely to be explored.
+    - **TREE_MAX_DEPTH**: hard ceiling on node depth.
+    - **TREE_PRESSURE_THRESHOLD**: nodes below this pressure are pruned.
+    - **TREE_MAX_NODES**: total budget for the exploration tree.
+
+    On re-research iterations, ``targeted_questions`` from the reflect
+    or synthesis feedback loop are injected as high-priority seed
+    questions so the reactor focuses on known gaps.
+    """
+    req_id = state["req_id"]
+    iterations = state.get("research_iterations", 0)
+    targeted = state.get("targeted_questions", [])
+
+    collector = _live_collectors.get(req_id)
+    curated_queue = _curated_queues.get(req_id)
+
+    if not collector or not curated_queue:
+        return {"progress_log": ["Tree research skipped: missing collector/queue.\n"]}
 
     # Build the effective query: on re-research, prepend targeted
     # questions so the reactor seeds its tree from the gaps.
@@ -1035,13 +1094,38 @@ async def pdr_node_tree_research(state: PersistentResearchState) -> dict:
         "nodes_explored": state.get("nodes_explored", 0) + len(result["subagent_results"]),
         "research_iterations": iterations + 1,
         "targeted_questions": [],  # clear after consuming
-        "progress_log": progress + result["progress_log"],
+        "progress_log": result["progress_log"],
         "phase": "entities",
     }
 
 
+def _build_tree_research_subgraph() -> Any:
+    """Build the tree research subgraph.
+
+    Creates a nested ``StateGraph`` that appears as a distinct subgraph
+    in LangSmith / Langfuse execution traces.  The subgraph shares the
+    parent ``PersistentResearchState`` schema so state flows through
+    without manual mapping.
+
+    Topology::
+
+        START → init_tree → explore → END
+    """
+    sg = StateGraph(PersistentResearchState)
+    sg.add_node("init_tree", _tree_sub_init)
+    sg.add_node("explore", _tree_sub_explore)
+    sg.add_edge(START, "init_tree")
+    sg.add_edge("init_tree", "explore")
+    sg.add_edge("explore", END)
+    return sg.compile()
+
+
 async def pdr_node_entities(state: PersistentResearchState) -> dict:
-    """Phase 4: Entity extraction + knowledge graph update."""
+    """Phase 4: Entity extraction + knowledge graph update.
+
+    On re-research iterations, only extracts entities from NEW conditions
+    (those added since the last entities pass) to avoid redundant LLM calls.
+    """
     req_id = state["req_id"]
     collector = _live_collectors.get(req_id)
     if collector:
@@ -1050,13 +1134,21 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
     if mc:
         mc.start_node("entities")
     all_conditions = state["all_conditions"]
+    already_extracted = set(state.get("extracted_fact_hashes") or [])
+    new_conditions = [c for c in all_conditions if hashlib.sha256(c.fact.encode()).hexdigest()[:16] not in already_extracted]
     progress: list[str] = []
 
-    if all_conditions:
+    if new_conditions:
         progress.append("\n**[Phase 4: Knowledge Graph Update]**\n")
-        progress.append("Extracting entities and relationships...\n")
+        if already_extracted:
+            progress.append(
+                f"Processing {len(new_conditions)} new conditions "
+                f"(skipping {len(already_extracted)} already-extracted)...\n"
+            )
+        else:
+            progress.append("Extracting entities and relationships...\n")
 
-        entities, relationships = await extract_entities_from_conditions(all_conditions, req_id)
+        entities, relationships = await extract_entities_from_conditions(new_conditions, req_id)
 
         if entities or relationships:
             _log_entities_jsonl(req_id, entities, relationships)
@@ -1078,7 +1170,15 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
     if mc:
         mc.end_node("entities")
 
-    return {"progress_log": progress, "phase": "verify"}
+    # Track all conditions we've now extracted entities from by fact hash
+    updated_hashes = already_extracted | {
+        hashlib.sha256(c.fact.encode()).hexdigest()[:16] for c in all_conditions
+    }
+    return {
+        "progress_log": progress,
+        "phase": "verify",
+        "extracted_fact_hashes": sorted(updated_hashes),
+    }
 
 
 async def pdr_node_verify(state: PersistentResearchState) -> dict:
@@ -1235,21 +1335,32 @@ async def pdr_node_reflect(state: PersistentResearchState) -> dict:
 
 
 async def pdr_node_persist(state: PersistentResearchState) -> dict:
-    """Phase 7: Persist findings to Neo4j + JSONL."""
+    """Phase 7: Persist findings to Neo4j + JSONL.
+
+    On re-research iterations, only persists NEW conditions (those added
+    since the last persist pass) to avoid duplicate JSONL/Neo4j entries.
+    """
     req_id = state["req_id"]
     mc = _metrics_collectors.get(req_id)
     if mc:
         mc.start_node("persist")
     user_query = state["user_query"]
     all_conditions = state["all_conditions"]
+    already_persisted = set(state.get("persisted_fact_hashes") or [])
+    new_conditions = [c for c in all_conditions if hashlib.sha256(c.fact.encode()).hexdigest()[:16] not in already_persisted]
     progress: list[str] = []
 
-    if all_conditions:
+    if new_conditions:
         progress.append("\n**[Phase 7: Persisting Knowledge]**\n")
-        _log_conditions_jsonl(req_id, user_query, all_conditions)
-        stored, err = await _store_conditions_neo4j(req_id, user_query, all_conditions)
+        if already_persisted:
+            progress.append(
+                f"Persisting {len(new_conditions)} new conditions "
+                f"(skipping {len(already_persisted)} already-persisted)...\n"
+            )
+        _log_conditions_jsonl(req_id, user_query, new_conditions)
+        stored, err = await _store_conditions_neo4j(req_id, user_query, new_conditions)
         if err:
-            progress.append(f"⚠ Neo4j storage failed ({err}); {len(all_conditions)} conditions saved to JSONL only.\n")
+            progress.append(f"⚠ Neo4j storage failed ({err}); {len(new_conditions)} conditions saved to JSONL only.\n")
         else:
             progress.append(f"Stored {stored} conditions to persistent knowledge base.\n")
 
@@ -1257,7 +1368,15 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
     if mc:
         mc.end_node("persist")
 
-    return {"progress_log": progress, "phase": "synthesize"}
+    # Track all conditions we've now persisted by fact hash
+    updated_hashes = already_persisted | {
+        hashlib.sha256(c.fact.encode()).hexdigest()[:16] for c in all_conditions
+    }
+    return {
+        "progress_log": progress,
+        "phase": "synthesize",
+        "persisted_fact_hashes": sorted(updated_hashes),
+    }
 
 
 _INCOMPLETENESS_DETECT_PROMPT = """You are a research completeness evaluator. Given the user's original query and a synthesised research report, determine whether the report has critical gaps that would benefit from additional research.
@@ -1409,6 +1528,11 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         progress.append(f" + {total_children} recursive sub-explorations")
     progress.append(")\n")
 
+    # Always record synthesize node timing, even when looping back.
+    mc = _metrics_collectors.get(req_id)
+    if mc:
+        mc.end_node("synthesize")
+
     # Only generate report + metrics on the final pass (not when looping
     # back to tree_research).  Generating prematurely would produce
     # duplicate "Report published" progress entries and call mc.finalise()
@@ -1418,8 +1542,6 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
     if not targeted:
         mc = _metrics_collectors.get(req_id)
         if mc:
-            mc.end_node("synthesize")
-
             # Feed conditions into metrics collector
             condition_dicts = [
                 {
@@ -1557,7 +1679,7 @@ def build_persistent_research_graph(
     # --- Nodes ---
     graph.add_node("comprehend", pdr_node_comprehend)
     graph.add_node("retrieve", pdr_node_retrieve)
-    graph.add_node("tree_research", pdr_node_tree_research)
+    graph.add_node("tree_research", _build_tree_research_subgraph())
     graph.add_node("entities", pdr_node_entities)
     graph.add_node("verify", pdr_node_verify)
     graph.add_node("reflect", pdr_node_reflect)
@@ -1755,6 +1877,9 @@ async def run_persistent_research(
         "targeted_questions": [],
         "quality_score": 0.0,
         "comprehension_data": {},
+        # Identity-based dedup lists (prevent duplicate persist/entity-extraction)
+        "persisted_fact_hashes": [],
+        "extracted_fact_hashes": [],
     }
 
     # Create the shared output queue, live findings collector, and curated queue
@@ -1778,6 +1903,12 @@ async def run_persistent_research(
     config = {
         "configurable": {"thread_id": req_id},
         "callbacks": callbacks,
+        "run_name": "persistent_research_pipeline",
+        "metadata": {
+            "req_id": req_id,
+            "query_preview": user_query[:120],
+            "graph": "persistent_research",
+        },
     }
 
     # Register the config so call_llm and execute_tool can look it up

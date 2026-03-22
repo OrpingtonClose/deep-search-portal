@@ -748,7 +748,8 @@ class TestOldPlanningPathIsDead:
         import inspect
         graph_node_funcs = [
             pdr.pdr_node_retrieve,
-            pdr.pdr_node_tree_research,
+            pdr._tree_sub_init,
+            pdr._tree_sub_explore,
             pdr.pdr_node_entities,
             pdr.pdr_node_verify,
             pdr.pdr_node_reflect,
@@ -767,7 +768,8 @@ class TestOldPlanningPathIsDead:
         import inspect
         graph_node_funcs = [
             pdr.pdr_node_retrieve,
-            pdr.pdr_node_tree_research,
+            pdr._tree_sub_init,
+            pdr._tree_sub_explore,
             pdr.pdr_node_entities,
             pdr.pdr_node_verify,
             pdr.pdr_node_reflect,
@@ -798,11 +800,11 @@ class TestOldPlanningPathIsDead:
         assert "tree_research" in node_names
 
     def test_tree_research_calls_tree_research_reactor(self):
-        """pdr_node_tree_research must delegate to tree_research_reactor."""
+        """_tree_sub_explore must delegate to tree_research_reactor."""
         import inspect
-        source = inspect.getsource(pdr.pdr_node_tree_research)
+        source = inspect.getsource(pdr._tree_sub_explore)
         assert "tree_research_reactor(" in source, (
-            "pdr_node_tree_research does not call tree_research_reactor — "
+            "_tree_sub_explore does not call tree_research_reactor — "
             "the tree reactor is not being used"
         )
 
@@ -817,13 +819,13 @@ class TestOldPlanningPathIsDead:
         assert "nodes_explored" in annotations
 
     @pytest.mark.asyncio
-    async def test_pdr_node_tree_research_invokes_reactor_not_planner(self):
-        """Full integration: pdr_node_tree_research should call
+    async def test_tree_sub_explore_invokes_reactor_not_planner(self):
+        """Full integration: _tree_sub_explore should call
         tree_research_reactor (not plan_research) when executed."""
         collector = pdr.LiveFindingsCollector()
         curated_queue = asyncio.Queue()
 
-        # Pre-populate the module-level dicts that pdr_node_tree_research reads
+        # Pre-populate the module-level dicts that _tree_sub_explore reads
         req_id = "test-regression-no-planner"
         pdr._live_collectors[req_id] = collector
         pdr._curated_queues[req_id] = curated_queue
@@ -851,7 +853,7 @@ class TestOldPlanningPathIsDead:
                           return_value=reactor_result) as mock_reactor, \
              patch.object(pdr, "plan_research", new_callable=AsyncMock) as mock_planner:
 
-            result = await pdr.pdr_node_tree_research(state)
+            result = await pdr._tree_sub_explore(state)
 
             # tree_research_reactor MUST have been called
             mock_reactor.assert_called_once()

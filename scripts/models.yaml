@@ -1,0 +1,46 @@
+# =============================================================================
+# Model Management — Single Source of Truth
+# =============================================================================
+#
+# This file defines every model proxy exposed in the Open WebUI dropdown.
+# Run `python3 scripts/sync_models.py scripts/models.yaml` to apply.
+#
+# Adding a model:
+#   1. Add an entry below under `models:`
+#   2. Start the proxy service if it's new
+#   3. Run sync_models.py
+#
+# Removing a model:
+#   1. Delete the entry below
+#   2. Run sync_models.py (it will deactivate the model and remove its grant)
+#
+# DB path default: /opt/openwebui-data/webui.db
+# Override with: --db-path /path/to/webui.db
+# =============================================================================
+
+models:
+  mistral-large-thinking:
+    display_name: "Mistral Large (Thinking)"
+    description: "Mistral Large with transparent chain-of-thought reasoning"
+    provider_url: "http://localhost:9100/v1"
+    api_key: "not-needed"
+    public: true
+
+  persistent-miroflow:
+    display_name: "Persistent MiroFlow"
+    description: "Deep research agent with persistent knowledge base, tree-based exploration, and inline verification"
+    provider_url: "http://localhost:9300/v1"
+    api_key: "not-needed"
+    public: true
+
+# Legacy providers kept in the DB but disabled.
+# sync_models.py ensures they exist at the correct indices but are not active.
+disabled_providers:
+  - url: "https://openrouter.ai/api/v1"
+    key_env: "OPENROUTER_API_KEY"
+  - url: "https://api.venice.ai/api/v1"
+    key_env: "VENICE_API_KEY"
+  - url: "https://api.together.xyz/v1"
+    key_env: "TOGETHER_API_KEY"
+  - url: "https://api.perplexity.ai"
+    key_env: "PERPLEXITY_API_KEY"

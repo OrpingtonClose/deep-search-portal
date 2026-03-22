@@ -125,18 +125,18 @@ async def _store_conditions_neo4j(
         return 0, ""
     cond_dicts = [
         {
-            "fact": c.fact,
-            "source_url": c.source_url,
+            "fact": c.fact or "",
+            "source_url": c.source_url or "",
             "confidence": _clamp01(c.confidence),
             "trust_score": _clamp01(c.trust_score),
-            "angle": c.angle,
-            "domain": c.domain,
-            "is_serendipitous": c.is_serendipitous,
+            "angle": c.angle or "",
+            "domain": c.domain or "",
+            "is_serendipitous": bool(c.is_serendipitous),
             "serendipity_score": _clamp01(c.serendipity_score_val),
-            "publication_date": c.publication_date,
-            "author": c.author,
-            "content_type": c.content_type,
-            "source_type": c.source_type,
+            "publication_date": c.publication_date or "",
+            "author": c.author or "",
+            "content_type": c.content_type or "",
+            "source_type": c.source_type or "",
         }
         for c in conditions
     ]

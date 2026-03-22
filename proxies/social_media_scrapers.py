@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ from typing import Any, Optional
 
 import httpx
 
+import search_providers
 from shared import get_throttler
 
 log = logging.getLogger("social_media_scrapers")
@@ -693,6 +695,82 @@ _APIFY_INPUT_BUILDERS = {
 
 
 # ---------------------------------------------------------------------------
+# Tier 3: SearXNG site-scoped fallback (free, no credentials needed)
+# ---------------------------------------------------------------------------
+
+# Map platform → site domain for SearXNG site: operator
+_SEARXNG_SITE_DOMAINS: dict[str, str] = {
+    "reddit": "reddit.com",
+    "twitter": "x.com OR site:twitter.com",
+    "youtube": "youtube.com",
+}
+
+
+async def _searxng_site_fallback(
+    platform: str, query: str, **kwargs: Any
+) -> Optional[list[dict]]:
+    """Search via SearXNG using site: operator as a free fallback.
+
+    Only supports platforms with publicly indexable web content
+    (reddit, twitter, youtube).  Returns raw dicts compatible with
+    the formatter pipeline, or None on failure.
+    """
+    site_domain = _SEARXNG_SITE_DOMAINS.get(platform)
+    if not site_domain:
+        return None
+
+    # Build site-scoped query
+    subreddit = kwargs.get("subreddit", "")
+    if platform == "reddit" and subreddit:
+        scoped_query = f"site:reddit.com/r/{subreddit} {query}"
+    elif "OR" in (site_domain or ""):
+        # Multi-domain (twitter): use parenthesised OR
+        scoped_query = f"(site:{site_domain}) {query}"
+    else:
+        scoped_query = f"site:{site_domain} {query}"
+
+    try:
+        raw_results = await search_providers.search_as_raw(
+            scoped_query, categories="general", max_results=15,
+        )
+        if not raw_results:
+            return None
+
+        # Normalise into the dict shape that formatters expect
+        normalised: list[dict] = []
+        for r in raw_results:
+            url = r.get("url", "")
+            title = r.get("title", "")
+            content = r.get("content", r.get("snippet", ""))
+
+            if platform == "reddit":
+                # Extract subreddit from URL heuristics
+                sub_match = re.search(r"reddit\.com/r/(\w+)", url)
+                normalised.append({
+                    "title": title,
+                    "url": url,
+                    "body": content,
+                    "subreddit": sub_match.group(1) if sub_match else "",
+                    "author": "",
+                    "created_utc": "",
+                    "score": 0,
+                    "num_comments": 0,
+                })
+            else:
+                normalised.append({
+                    "title": title,
+                    "url": url,
+                    "description": content,
+                    "content": content,
+                })
+
+        return normalised if normalised else None
+    except Exception as e:
+        log.debug(f"SearXNG site-scoped fallback failed for {platform}: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Unified Social Media Search
 # ---------------------------------------------------------------------------
 
@@ -745,6 +823,13 @@ async def social_media_search(
             if results is not None:
                 provider_used = "apify"
 
+    # Tier 3: SearXNG site-scoped fallback for platforms with web-searchable content
+    if not results:
+        searxng_fallback = await _searxng_site_fallback(platform, query, **kwargs)
+        if searxng_fallback:
+            results = searxng_fallback
+            provider_used = "searxng_fallback"
+
     # Format results
     if results is None or len(results) == 0:
         result_count = 0
@@ -752,7 +837,8 @@ async def social_media_search(
         if not BRIGHT_DATA_API_KEY and not APIFY_API_TOKEN:
             formatted += (
                 "\n\n[No social media scraper credentials configured. "
-                "Set BRIGHT_DATA_API_KEY and/or APIFY_API_TOKEN environment variables.]"
+                "Set BRIGHT_DATA_API_KEY and/or APIFY_API_TOKEN environment variables. "
+                "SearXNG site-scoped search was also attempted as fallback.]"
             )
         provider_used = provider_used if provider_used != "none" else ("none (no credentials)" if not BRIGHT_DATA_API_KEY and not APIFY_API_TOKEN else "none (search failed)")
     else:

@@ -538,12 +538,15 @@ async def get_research_report(session_id: str, request: Request):
 
 
 @app.get("/graph")
-async def graph_view():
+async def graph_view(request: Request):
     """Serve an interactive StateGraph visualization.
 
     Renders the LangGraph StateGraph as a Mermaid node-and-edge diagram
     with real-time active node highlighting by polling for running spans.
     """
+    if not await _validate_owui_token(request):
+        return _auth_denied()
+
     from fastapi.responses import HTMLResponse
 
     try:
@@ -670,10 +673,21 @@ mermaid.initialize({{
 }});
 
 // Poll for active research spans
+// Mermaid generates SVG node IDs like "flowchart-comprehend-1", "flowchart-retrieve-2"
 const KNOWN_NODES = [
   'comprehend', 'retrieve', 'tree_research',
   'entities', 'verify', 'reflect', 'persist', 'synthesize'
 ];
+
+function findNodeGroup(svg, nodeName) {{
+  // Mermaid v11 uses .node class with IDs like flowchart-{name}-{n}
+  const groups = svg.querySelectorAll('.node');
+  const matches = [];
+  groups.forEach(g => {{
+    if (g.id && g.id.includes(nodeName)) matches.push(g);
+  }});
+  return matches;
+}}
 
 async function pollActiveNodes() {{
   try {{
@@ -688,21 +702,25 @@ async function pollActiveNodes() {{
     const el = document.getElementById('status');
     if (running) {{
       el.className = 'status-running';
-      el.textContent = 'Running — ' + (active.size ? [...active].join(', ') : 'starting...');
+      const nodeNames = [...active].map(n => n.replace(/\./g, ' › '));
+      el.textContent = 'Running — ' + (nodeNames.length ? nodeNames.join(', ') : 'starting...');
     }} else {{
       el.className = 'status-idle';
       el.textContent = 'Idle — no active research';
     }}
 
-    // Highlight SVG nodes
+    // Highlight SVG nodes by matching Mermaid's flowchart-{name}-{n} pattern
     const svg = document.querySelector('.mermaid svg');
     if (!svg) return;
     for (const node of KNOWN_NODES) {{
-      const els = svg.querySelectorAll(`[id*="${{node}}"]`);
-      els.forEach(g => {{
+      const groups = findNodeGroup(svg, node);
+      // Also match sub-nodes like tree_research.init_tree
+      const isActive = active.has(node) || [...active].some(a => a.startsWith(node + '.'));
+      const isCompleted = completed.has(node) || [...completed].some(c => c.startsWith(node + '.'));
+      groups.forEach(g => {{
         g.classList.remove('node-active', 'node-completed');
-        if (active.has(node)) g.classList.add('node-active');
-        else if (completed.has(node)) g.classList.add('node-completed');
+        if (isActive) g.classList.add('node-active');
+        else if (isCompleted) g.classList.add('node-completed');
       }});
     }}
   }} catch (e) {{ /* ignore polling errors */ }}
@@ -717,8 +735,11 @@ pollActiveNodes();
 
 
 @app.get("/graph/active")
-async def graph_active_nodes():
+async def graph_active_nodes(request: Request):
     """Return currently active and completed pipeline nodes for graph highlighting."""
+    if not await _validate_owui_token(request):
+        return _auth_denied()
+
     node_status = phoenix_config.get_node_status()
 
     # Aggregate across all active requests

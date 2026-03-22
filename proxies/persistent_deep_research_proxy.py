@@ -30,7 +30,6 @@ import veritas_inquisitor
 from research_metrics import list_available_reports, load_metrics
 
 import langfuse_config
-import phoenix_config
 
 from shared import (
     ConcurrencyLimiter,  # noqa: F401
@@ -334,9 +333,6 @@ def _auth_denied() -> JSONResponse:
 # ============================================================================
 # FastAPI App
 # ============================================================================
-
-# --- Initialize Phoenix tracing (global OpenTelemetry auto-instrumentation) ---
-phoenix_config.initialize()
 
 app = create_app("Persistent Deep Research Proxy")
 
@@ -740,7 +736,7 @@ async def graph_active_nodes(request: Request):
     if not await _validate_owui_token(request):
         return _auth_denied()
 
-    node_status = phoenix_config.get_node_status()
+    node_status: dict[str, dict[str, set[str]]] = {}
 
     # Aggregate across all active requests
     active: set[str] = set()

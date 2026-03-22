@@ -26,8 +26,6 @@ from research_metrics import (
 )
 import research_report
 import langfuse_config
-import phoenix_config
-from phoenix_config import traced_node, start_pipeline_span, end_pipeline_span
 
 from shared import make_sse_chunk
 
@@ -861,7 +859,6 @@ class PersistentResearchState(TypedDict):
     extracted_fact_hashes: list[str]
 
 
-@traced_node("comprehend")
 async def pdr_node_comprehend(state: PersistentResearchState) -> dict:
     """Phase 0: Deep query comprehension.
 
@@ -911,7 +908,6 @@ async def pdr_node_comprehend(state: PersistentResearchState) -> dict:
     }
 
 
-@traced_node("retrieve")
 async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
     """Phase 1: Retrieve prior knowledge from Neo4j."""
     user_query = state["user_query"]
@@ -980,7 +976,6 @@ async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
 # ============================================================================
 
 
-@traced_node("tree_research.init_tree")
 async def _tree_sub_init(state: PersistentResearchState) -> dict:
     """Tree subgraph · init_tree: set up context and log iteration start.
 
@@ -1019,7 +1014,6 @@ async def _tree_sub_init(state: PersistentResearchState) -> dict:
     return {"progress_log": progress}
 
 
-@traced_node("tree_research.explore")
 async def _tree_sub_explore(state: PersistentResearchState) -> dict:
     """Tree subgraph · explore: run the concurrent tree research reactor.
 
@@ -1126,7 +1120,6 @@ def _build_tree_research_subgraph() -> Any:
     return sg.compile()
 
 
-@traced_node("entities")
 async def pdr_node_entities(state: PersistentResearchState) -> dict:
     """Phase 4: Entity extraction + knowledge graph update.
 
@@ -1188,7 +1181,6 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
     }
 
 
-@traced_node("verify")
 async def pdr_node_verify(state: PersistentResearchState) -> dict:
     """Phase 5: Citation verification.
 
@@ -1267,7 +1259,6 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
     return {"all_conditions": all_conditions, "progress_log": progress, "phase": "reflect"}
 
 
-@traced_node("reflect")
 async def pdr_node_reflect(state: PersistentResearchState) -> dict:
     """Phase 6: AoT Reflection.
 
@@ -1343,7 +1334,6 @@ async def pdr_node_reflect(state: PersistentResearchState) -> dict:
     }
 
 
-@traced_node("persist")
 async def pdr_node_persist(state: PersistentResearchState) -> dict:
     """Phase 7: Persist findings to Neo4j + JSONL.
 
@@ -1465,7 +1455,6 @@ async def _detect_incompleteness(
     return True, []
 
 
-@traced_node("synthesize")
 async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
     """Final phase: Draft-Synthesis-Revision loop.
 
@@ -1756,8 +1745,6 @@ async def _pipeline_producer(
 
     last_progress_idx = 0
     final_state = initial_state
-    pipeline_span = start_pipeline_span(req_id, initial_state.get("user_query", ""))
-
     try:
         async for state_update in graph.astream(
             initial_state, config=config, stream_mode="values",
@@ -1775,7 +1762,6 @@ async def _pipeline_producer(
         report_url = final_state.get("report_url", "")
         metrics_url = final_state.get("metrics_url", "")
         langfuse_url = initial_state.get("_langfuse_trace_url", "")
-        phoenix_url = initial_state.get("_phoenix_url", "")
         link_lines = []
         if report_url:
             link_lines.append(f"**[Full Report]({report_url})**")
@@ -1783,8 +1769,6 @@ async def _pipeline_producer(
             link_lines.append(f"[Metrics JSON]({metrics_url})")
         if langfuse_url:
             link_lines.append(f"[Langfuse Trace]({langfuse_url})")
-        if phoenix_url:
-            link_lines.append(f"[Phoenix Traces]({phoenix_url})")
         if link_lines:
             await output_queue.put(chunk_fn(" | ".join(link_lines) + "\n\n"))
 
@@ -1806,7 +1790,6 @@ async def _pipeline_producer(
         await output_queue.put("data: [DONE]\n\n")
 
     finally:
-        end_pipeline_span(req_id, pipeline_span)
         await output_queue.put(_STREAM_DONE)
 
 
@@ -1888,7 +1871,6 @@ async def run_persistent_research(
         "report_url": "",
         "metrics_url": "",
         "_langfuse_trace_url": langfuse_trace_url or "",
-        "_phoenix_url": phoenix_config.get_project_url(),
         # Feedback-loop fields
         "research_iterations": 0,
         "targeted_questions": [],

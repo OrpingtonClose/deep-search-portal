@@ -253,8 +253,12 @@ def traced_node(node_name: str) -> Callable:
             if not is_enabled():
                 return await fn(state)
 
+            # Phase 1: OTel setup — if this fails, run fn without tracing
+            span = None
+            token = None
+            otel_ctx_mod = None
             try:
-                from opentelemetry import context, trace
+                from opentelemetry import context as otel_ctx_mod, trace
 
                 req_id = state.get("req_id", "") if isinstance(state, dict) else ""
                 parent_ctx = _root_contexts.get(req_id)
@@ -275,20 +279,22 @@ def traced_node(node_name: str) -> Callable:
                 # Activate this span as current so auto-instrumented LLM calls
                 # become children of this node span
                 ctx = trace.set_span_in_context(span)
-                token = context.attach(ctx)
-                try:
-                    result = await fn(state)
-                    return result
-                except Exception as exc:
-                    from opentelemetry.trace import StatusCode
-                    span.set_status(StatusCode.ERROR, str(exc))
-                    raise
-                finally:
-                    span.end()
-                    context.detach(token)
-
+                token = otel_ctx_mod.attach(ctx)
             except Exception:
+                # OTel setup failed — run without tracing
                 return await fn(state)
+
+            # Phase 2: run the actual node function under the span
+            try:
+                result = await fn(state)
+                return result
+            except Exception as exc:
+                from opentelemetry.trace import StatusCode
+                span.set_status(StatusCode.ERROR, str(exc))
+                raise
+            finally:
+                span.end()
+                otel_ctx_mod.detach(token)
 
         return wrapper
     return decorator

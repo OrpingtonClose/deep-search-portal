@@ -11,14 +11,12 @@ if [ -f /opt/.env ]; then
 fi
 
 # --- Provider Configuration ---
-# Semicolon-separated lists. Order matters — index used in OPENAI_API_CONFIGS.
-# 0: OpenRouter, 1: Venice.ai, 2: Together.ai, 3: Perplexity, 4: Thinking Proxy, 5: Persistent Deep Research Proxy
+# Managed by sync_models.py (reads scripts/models.yaml, writes to DB).
+# These minimal placeholders are only used on first boot before sync runs.
+# After first sync, the DB config table overrides these env vars.
 export ENABLE_OPENAI_API=true
-export OPENAI_API_BASE_URLS="https://openrouter.ai/api/v1;https://api.venice.ai/api/v1;https://api.together.xyz/v1;https://api.perplexity.ai;http://localhost:9100/v1;http://localhost:9300/v1"
-export OPENAI_API_KEYS="${OPENROUTER_API_KEY:-not-set};${VENICE_API_KEY:-not-set};${TOGETHER_API_KEY:-not-set};${PERPLEXITY_API_KEY:-not-set};not-needed;not-needed"
-
-# Provider-specific model filtering
-export OPENAI_API_CONFIGS='{"4": {"enable": true, "model_ids": ["mistral-large-thinking"]}, "5": {"enable": true, "model_ids": ["persistent-miroflow"]}}'
+export OPENAI_API_BASE_URLS="http://localhost:9100/v1;http://localhost:9300/v1"
+export OPENAI_API_KEYS="not-needed;not-needed"
 
 # --- SearXNG for RAG Web Search ---
 export ENABLE_RAG_WEB_SEARCH=true

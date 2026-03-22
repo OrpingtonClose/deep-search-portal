@@ -209,6 +209,10 @@ def start_pipeline_span(req_id: str, user_query: str) -> Any:
             "persistent_research_pipeline",
             attributes={
                 "graph.name": "persistent_research_pipeline",
+                "graph.node.id": "persistent_research_pipeline",
+                "graph.node.display_name": "Research Pipeline",
+                "metadata.langgraph_node": "persistent_research_pipeline",
+                "metadata.langgraph_step": 0,
                 "req_id": req_id,
                 "user_query": user_query[:200],
             },
@@ -265,14 +269,21 @@ def traced_node(node_name: str) -> Callable:
 
                 tracer = trace.get_tracer("deep-search.pipeline")
 
+                iteration = state.get("research_iterations", 0) if isinstance(state, dict) else 0
+
                 # Create child span under the pipeline root
                 span = tracer.start_span(
                     node_name,
                     context=parent_ctx,
                     attributes={
-                        "graph.node": node_name,
+                        "graph.node.id": node_name,
+                        "graph.node.parent_id": "persistent_research_pipeline",
+                        "graph.node.display_name": node_name.replace("_", " ").title(),
                         "graph.name": "persistent_research_pipeline",
-                        "graph.iteration": state.get("research_iterations", 0) if isinstance(state, dict) else 0,
+                        "graph.node": node_name,
+                        "graph.iteration": iteration,
+                        "metadata.langgraph_node": node_name,
+                        "metadata.langgraph_step": iteration,
                     },
                 )
 

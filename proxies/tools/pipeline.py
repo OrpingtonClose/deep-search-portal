@@ -71,6 +71,12 @@ class QueryComprehension:
     deep_knowledge_targets: list[str] = field(default_factory=list)
     # One-paragraph summary of what this query is *really* about
     semantic_summary: str = ""
+    # Intent classification: "transactional" (user wants to DO something),
+    # "informational" (user wants to UNDERSTAND something),
+    # "exploratory" (user wants to EXPLORE a topic broadly)
+    intent_type: str = "informational"
+    # One-sentence summary of what the user ultimately needs to accomplish
+    core_need: str = ""
 
 
 _QUERY_COMPREHENSION_PROMPT = """You are a deep research analyst. Your job is to DEEPLY understand what a research query is really about — not just the surface words, but the full knowledge territory.
@@ -87,7 +93,9 @@ Analyze this query and output ONLY valid JSON:
   "adjacent_territories": ["topics NOT in the query but where the DEEP knowledge lives — practitioner communities, enforcement databases, underground discussions, academic niches, historical archives"],
   "relevance_keywords": ["broad set of 20-30 keywords/phrases that indicate a piece of information is relevant to this query — include slang, technical terms, community jargon, legal terms"],
   "deep_knowledge_targets": ["specific types of deep knowledge that would be valuable — e.g., 'court case outcomes', 'practitioner dosing discussions', 'supply chain vendor reviews', 'regulatory enforcement actions'"],
-  "semantic_summary": "one paragraph explaining what this query is REALLY about at the deepest level — what knowledge gap is the user trying to fill?"
+  "semantic_summary": "one paragraph explaining what this query is REALLY about at the deepest level — what knowledge gap is the user trying to fill?",
+  "intent_type": "one of: transactional | informational | exploratory. transactional = user wants to DO/BUY/GET something (e.g., 'where can I buy X', 'how to set up Y'). informational = user wants to UNDERSTAND something (e.g., 'what causes X', 'how does Y work'). exploratory = user wants to broadly EXPLORE a topic (e.g., 'tell me about X', 'what's the state of Y').",
+  "core_need": "one sentence describing what the user ultimately needs to accomplish or understand — this is the ACTIONABLE goal behind the query"
 }}"""
 
 
@@ -114,6 +122,10 @@ async def comprehend_query(user_query: str, req_id: str) -> QueryComprehension:
                 content = re.sub(r'^```(?:json)?\s*', '', content)
                 content = re.sub(r'\s*```$', '', content)
             data = json.loads(content)
+            # Validate intent_type
+            raw_intent = data.get("intent_type", "informational").strip().lower()
+            if raw_intent not in ("transactional", "informational", "exploratory"):
+                raw_intent = "informational"
             return QueryComprehension(
                 entities=data.get("entities", [])[:30],
                 domains=data.get("domains", [])[:20],
@@ -122,6 +134,8 @@ async def comprehend_query(user_query: str, req_id: str) -> QueryComprehension:
                 relevance_keywords=data.get("relevance_keywords", [])[:40],
                 deep_knowledge_targets=data.get("deep_knowledge_targets", [])[:15],
                 semantic_summary=data.get("semantic_summary", ""),
+                intent_type=raw_intent,
+                core_need=data.get("core_need", "")[:500],
             )
     except Exception as e:
         log.warning(f"[{req_id}] Query comprehension failed (non-fatal): {e}")
@@ -232,6 +246,9 @@ class ConditionStore:
     # Number of conditions on a topic before it's considered saturated
     SATURATION_THRESHOLD = 10
 
+    # Number of actionable conditions on an entity before that entity is saturated
+    ENTITY_SATURATION_THRESHOLD = 6
+
     def __init__(self, user_query: str, req_id: str, comprehension: Optional["QueryComprehension"] = None):
         self._user_query = user_query
         self._req_id = req_id
@@ -248,6 +265,10 @@ class ConditionStore:
         self._relevance_words: set[str] = set()
         if comprehension:
             self._rebuild_relevance_words()
+        # Entity-level saturation tracking: entity_name -> count of conditions mentioning it
+        self._entity_condition_counts: dict[str, int] = {}
+        # Set of entity names that have reached saturation threshold
+        self._saturated_entities: set[str] = set()
 
     def _rebuild_relevance_words(self) -> None:
         """Rebuild the fast relevance keyword set from comprehension."""
@@ -361,6 +382,8 @@ class ConditionStore:
             "rejected_irrelevant": self._rejected_irrelevant,
             "rejected_fabricated": self._rejected_fabricated,
             "total_stored": len(self._conditions),
+            "saturated_entities": sorted(self._saturated_entities),
+            "entity_coverage": dict(self._entity_condition_counts),
         }
 
     def _find_most_similar(self, fact_words: set[str]) -> tuple[float, str]:
@@ -378,20 +401,94 @@ class ConditionStore:
                 best_fact = self._conditions[i].fact
         return best_sim, best_fact
 
+    def _update_entity_counts(self, condition: AtomicCondition) -> None:
+        """Track which entities this condition mentions and update counts.
+
+        Called inside _lock after admission.  Uses the condition's own
+        entities list plus simple keyword matching against comprehension
+        entities.
+
+        Understanding conditions (from query comprehension) are skipped —
+        they're structural/definitional and don't represent actual research
+        coverage.  Counting them would saturate core entities before any
+        real research begins.
+        """
+        if condition.verification_status == "understanding":
+            return
+
+        mentioned: set[str] = set()
+
+        # 1. Use condition's own entity list if populated
+        for ent in condition.entities:
+            mentioned.add(ent.lower().strip())
+
+        # 2. Check comprehension entities against the fact text
+        if self.comprehension:
+            fact_lower = condition.fact.lower()
+            for ent in self.comprehension.entities:
+                if ent.lower() in fact_lower:
+                    mentioned.add(ent.lower().strip())
+
+        for ent in mentioned:
+            if not ent:
+                continue
+            self._entity_condition_counts[ent] = self._entity_condition_counts.get(ent, 0) + 1
+            if self._entity_condition_counts[ent] >= self.ENTITY_SATURATION_THRESHOLD:
+                self._saturated_entities.add(ent)
+
+    def get_saturated_entities(self) -> set[str]:
+        """Return the set of entity names that have reached saturation."""
+        return set(self._saturated_entities)
+
+    def entity_saturation_ratio(self, question: str) -> float:
+        """Return 0.0-1.0 indicating how saturated the entities in a question are.
+
+        If the question mentions entities that are already saturated,
+        returns a high value (closer to 1.0).  Used by the tree reactor
+        to reduce pressure on branches exploring already-covered ground.
+        """
+        if not self._saturated_entities:
+            return 0.0
+        q_lower = question.lower()
+        total_entities = 0
+        saturated_count = 0
+        for ent in self._entity_condition_counts:
+            if ent in q_lower:
+                total_entities += 1
+                if ent in self._saturated_entities:
+                    saturated_count += 1
+        if total_entities == 0:
+            return 0.0
+        return saturated_count / total_entities
+
     def _get_saturation_signal(self) -> str:
-        """Compute a saturation signal describing well-covered topics."""
+        """Compute a saturation signal describing well-covered topics and entities."""
+        # Topic-level saturation (bigram-based)
         topics = _compute_topic_buckets(self._conditions)
-        saturated = [
+        saturated_topics = [
             f"\"{topic}\" ({count} conditions)"
             for topic, count in topics.items()
             if count >= self.SATURATION_THRESHOLD
         ]
-        if not saturated:
+
+        # Entity-level saturation
+        saturated_ents = [
+            f"\"{ent}\" ({self._entity_condition_counts[ent]} conditions)"
+            for ent in sorted(self._saturated_entities)
+        ]
+
+        parts = []
+        if saturated_topics:
+            parts.append(f"SATURATED topics: {', '.join(saturated_topics[:5])}")
+        if saturated_ents:
+            parts.append(f"SATURATED entities: {', '.join(saturated_ents[:5])}")
+
+        if not parts:
             return ""
         return (
-            f"SATURATED topics (do NOT explore further): {', '.join(saturated[:5])}. "
-            f"Redirect research to unexplored angles: enforcement cases, "
-            f"practitioner experiences, court rulings, vendor reviews, "
+            f"{'; '.join(parts)}. "
+            f"Do NOT explore these further. Redirect research to unexplored angles: "
+            f"enforcement cases, practitioner experiences, court rulings, vendor reviews, "
             f"community discussions, underground sources."
         )
 
@@ -511,6 +608,7 @@ class ConditionStore:
             self._conditions.append(condition)
             self._fact_word_sets.append(fact_words)
             self._admitted_count += 1
+            self._update_entity_counts(condition)
 
             return AdmissionResult(
                 admitted=True,

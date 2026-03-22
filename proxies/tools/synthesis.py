@@ -62,6 +62,14 @@ from .search_tools import tool_searxng_search
 from .subagent import reflect_on_conditions
 from .tree_reactor import tree_research_reactor
 from .pipeline import comprehend_query
+from .conversation import (
+    ConversationSnapshot,
+    build_followup_context,
+    count_user_turns,
+    derive_conversation_id,
+    detect_followup,
+    get_conversation_store,
+)
 
 # SQLite checkpoint DB path (configurable via env)
 _CHECKPOINT_DB_PATH = os.getenv(
@@ -660,8 +668,16 @@ async def synthesize_with_revision(
     subagent_results: list[SubagentResult],
     prior_conditions: list[dict],
     req_id: str,
+    prior_conversation_summary: str = "",
 ) -> str:
-    """Full Draft-Synthesis-Revision loop."""
+    """Full Draft-Synthesis-Revision loop.
+
+    Args:
+        prior_conversation_summary: If this is a follow-up query, the
+            final answer from the most recent prior turn.  Injected into
+            the synthesis prompt so the model can build on prior research
+            rather than repeating it.
+    """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     conditions_by_angle: dict[str, list[str]] = {}
@@ -684,8 +700,20 @@ async def synthesize_with_revision(
     if prior_conditions:
         prior_text = "\n**PRIOR KNOWLEDGE (from previous sessions):**\n"
         prior_text += "\n".join(
-            f"- {c['fact']} [prior research: {c['original_query']}]"
+            f"- {c['fact']} [prior research: {c.get('original_query', c.get('source', ''))}]"
             for c in prior_conditions[:10]
+        )
+
+    # Add conversation history context for follow-up queries
+    conv_context_text = ""
+    if prior_conversation_summary:
+        conv_context_text = (
+            "\n**PREVIOUS RESEARCH IN THIS CONVERSATION:**\n"
+            "The user has asked follow-up questions. Here is the conclusion "
+            "from the previous turn of research:\n"
+            f"{prior_conversation_summary[:2000]}\n\n"
+            "Build on this prior research. Do NOT repeat information "
+            "already covered. Focus on what is NEW in this follow-up query.\n"
         )
 
     # --- Phase 1: Draft Synthesis ---
@@ -693,7 +721,7 @@ async def synthesize_with_revision(
         date=today,
         n_subagents=len(subagent_results),
         conditions_text=conditions_text,
-        prior_knowledge_text=prior_text,
+        prior_knowledge_text=prior_text + conv_context_text,
     )
 
     draft_messages = [
@@ -824,6 +852,12 @@ class PersistentResearchState(TypedDict):
       - quality_score: latest AoT reflection quality score
       - comprehension_data: serialised QueryComprehension from the
         ``comprehend`` node (dict form for checkpoint serialisation)
+
+    Conversation continuity fields:
+      - conversation_id: stable ID for the chat thread
+      - conversation_turn: which turn in the conversation this is
+      - prior_conversation_facts: fact strings from earlier turns
+      - prior_conversation_summary: final answer from the most recent prior turn
     """
     req_id: str
     user_query: str
@@ -857,6 +891,11 @@ class PersistentResearchState(TypedDict):
     # Uses SHA-256 truncated hex for determinism across process restarts.
     persisted_fact_hashes: list[str]
     extracted_fact_hashes: list[str]
+    # --- Conversation continuity fields ---
+    conversation_id: str
+    conversation_turn: int
+    prior_conversation_facts: list[str]
+    prior_conversation_summary: str
 
 
 async def pdr_node_comprehend(state: PersistentResearchState) -> dict:
@@ -867,6 +906,9 @@ async def pdr_node_comprehend(state: PersistentResearchState) -> dict:
     territories, and relevance keywords.  The result is stored in
     ``comprehension_data`` (as a plain dict for serialisation) and
     consumed by tree_research for seeding research angles.
+
+    When conversation context is present (follow-up query), logs the
+    continuity status and augments comprehension with prior entities.
     """
     req_id = state["req_id"]
     user_query = state["user_query"]
@@ -875,7 +917,29 @@ async def pdr_node_comprehend(state: PersistentResearchState) -> dict:
         mc.start_node("comprehend")
     progress: list[str] = ["**[Phase 0: Query Comprehension]**\n"]
 
-    comp = await comprehend_query(user_query, req_id)
+    # Log conversation continuity status
+    conv_turn = state.get("conversation_turn", 0)
+    prior_facts = state.get("prior_conversation_facts", [])
+    if conv_turn > 0 and prior_facts:
+        progress.append(
+            f"Continuing conversation (turn {conv_turn + 1}): "
+            f"{len(prior_facts)} prior findings available.\n"
+        )
+
+    # For follow-ups, augment the query with prior context so the LLM
+    # comprehension understands this is a continuation.
+    prior_summary = state.get("prior_conversation_summary", "")
+    augmented_query = user_query
+    if conv_turn > 0 and prior_summary:
+        # Prepend a context hint so the comprehension model knows this
+        # is a follow-up and can identify entities from prior research.
+        context_hint = (
+            f"[Context: This is a follow-up question. Previous research "
+            f"concluded: {prior_summary[:300]}...]\n\n"
+        )
+        augmented_query = context_hint + user_query
+
+    comp = await comprehend_query(augmented_query, req_id)
 
     # Serialise dataclass → dict for checkpoint compatibility
     comp_dict = {
@@ -886,6 +950,8 @@ async def pdr_node_comprehend(state: PersistentResearchState) -> dict:
         "relevance_keywords": comp.relevance_keywords,
         "deep_knowledge_targets": comp.deep_knowledge_targets,
         "semantic_summary": comp.semantic_summary,
+        "intent_type": comp.intent_type,
+        "core_need": comp.core_need,
     }
 
     progress.append(
@@ -909,7 +975,12 @@ async def pdr_node_comprehend(state: PersistentResearchState) -> dict:
 
 
 async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
-    """Phase 1: Retrieve prior knowledge from Neo4j."""
+    """Phase 1: Retrieve prior knowledge from Neo4j.
+
+    When conversation context is present (follow-up query), merges
+    prior conversation facts into the retrieved prior_conditions so
+    the tree reactor and synthesis have access to earlier findings.
+    """
     user_query = state["user_query"]
     req_id = state["req_id"]
     mc = _metrics_collectors.get(req_id)
@@ -939,6 +1010,27 @@ async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
             progress.append(f"  - {gn['fact'][:80]}... (via entity: {gn.get('via_entity', '?')})\n")
     else:
         progress.append("No graph neighbors found.\n")
+
+    # --- Inject conversation context facts from prior turns ---
+    conv_facts = state.get("prior_conversation_facts", [])
+    if conv_facts:
+        # Convert plain fact strings into the same dict format as Neo4j results
+        existing_facts = {pc["fact"].lower().strip()[:100] for pc in prior_conditions}
+        injected = 0
+        for fact_str in conv_facts:
+            if fact_str.lower().strip()[:100] not in existing_facts:
+                prior_conditions.append({
+                    "fact": fact_str,
+                    "source_url": "",
+                    "confidence": 0.7,
+                    "source": "conversation_history",
+                })
+                existing_facts.add(fact_str.lower().strip()[:100])
+                injected += 1
+        if injected:
+            progress.append(
+                f"Injected {injected} findings from prior conversation turns.\n"
+            )
 
     mc = _metrics_collectors.get(req_id)
     if mc:
@@ -1476,8 +1568,10 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         "Generating draft synthesis...\n",
     ]
 
+    prior_conv_summary = state.get("prior_conversation_summary", "")
     final_answer = await synthesize_with_revision(
         state["user_query"], state["subagent_results"], state["prior_conditions"], req_id,
+        prior_conversation_summary=prior_conv_summary,
     )
 
     # Relevance gate: check if the final answer actually addresses the query
@@ -1486,6 +1580,7 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         log.warning(f"[{req_id}] Final answer failed relevance gate — re-running synthesis")
         final_answer = await synthesize_with_revision(
             state["user_query"], state["subagent_results"], state["prior_conditions"], req_id,
+            prior_conversation_summary=prior_conv_summary,
         )
 
     progress.append("Critic review complete.\n")
@@ -1736,6 +1831,9 @@ async def _pipeline_producer(
     This runs as a background task so the heartbeat can interleave its
     updates into the same queue.
 
+    After the pipeline completes successfully, saves a conversation
+    snapshot so that follow-up queries can inherit prior research context.
+
     Args:
         graph: The compiled LangGraph to run.  Defaults to the module-level
             ``_persistent_research_graph`` (no checkpointer) if not provided.
@@ -1777,6 +1875,35 @@ async def _pipeline_producer(
             await output_queue.put(chunk_fn(final_answer[i:i + 200]))
         await output_queue.put(chunk_fn("", finish_reason="stop"))
         await output_queue.put("data: [DONE]\n\n")
+
+        # --- Save conversation snapshot for continuity ---
+        try:
+            conv_id = final_state.get("conversation_id", "")
+            conv_turn = final_state.get("conversation_turn", 0)
+            if conv_id:
+                all_conditions = final_state.get("all_conditions", [])
+                condition_facts = [
+                    c.fact if hasattr(c, "fact") else str(c)
+                    for c in all_conditions
+                ][:100]  # cap at 100 facts for storage
+                snapshot = ConversationSnapshot(
+                    conversation_id=conv_id,
+                    turn_index=conv_turn,
+                    user_query=final_state.get("user_query", ""),
+                    condition_facts=condition_facts,
+                    comprehension_data=final_state.get("comprehension_data", {}),
+                    final_answer=final_answer[:5000],
+                    report_url=report_url,
+                    created_at=time.time(),
+                )
+                store = get_conversation_store()
+                store.save_turn(snapshot)
+                log.info(
+                    "[%s] Saved conversation snapshot: conv=%s turn=%d facts=%d",
+                    req_id, conv_id, conv_turn, len(condition_facts),
+                )
+        except Exception as e:
+            log.warning(f"[{req_id}] Failed to save conversation snapshot: {e}")
 
     except Exception as e:
         start_time = initial_state.get("start_time", 0)
@@ -1843,13 +1970,49 @@ async def run_persistent_research(
 
     log.info(f"[{req_id}] Starting persistent deep research: {user_query[:100]}")
 
+    # --- Conversation continuity: detect follow-ups ---
+    conversation_id = derive_conversation_id(user_messages)
+    conversation_turn = count_user_turns(user_messages) - 1  # 0-indexed
+    prior_conv_facts: list[str] = []
+    prior_conv_summary = ""
+    is_followup = False
+
+    try:
+        store = get_conversation_store()
+        prior_turns = store.load_turns(conversation_id)
+        if prior_turns:
+            latest = prior_turns[-1]
+            is_followup = await detect_followup(
+                new_query=user_query,
+                prev_query=latest.user_query,
+                prev_summary=latest.final_answer[:500],
+                req_id=req_id,
+            )
+            if is_followup:
+                ctx = build_followup_context(prior_turns)
+                prior_conv_facts = ctx["prior_condition_facts"]
+                prior_conv_summary = ctx["prior_summary"]
+                log.info(
+                    "[%s] Follow-up detected (conv=%s, turn=%d): "
+                    "injecting %d prior facts from %d turns",
+                    req_id, conversation_id, conversation_turn,
+                    len(prior_conv_facts), len(prior_turns),
+                )
+            else:
+                log.info(
+                    "[%s] New topic in existing conversation (conv=%s)",
+                    req_id, conversation_id,
+                )
+    except Exception as e:
+        log.warning(f"[{req_id}] Conversation state lookup failed (non-fatal): {e}")
+
     # --- Langfuse tracing: generate trace URL early so it goes into initial_state ---
     langfuse_trace_id = langfuse_config.create_trace_id(req_id)
     langfuse_trace_url = langfuse_config.get_trace_url(langfuse_trace_id)
     langfuse_handler = langfuse_config.create_callback_handler(
         trace_id=langfuse_trace_id,
         session_id=req_id,
-        tags=["persistent-research"],
+        tags=["persistent-research"] + (["follow-up"] if is_followup else []),
     )
 
     initial_state: dict[str, Any] = {
@@ -1879,6 +2042,11 @@ async def run_persistent_research(
         # Identity-based dedup lists (prevent duplicate persist/entity-extraction)
         "persisted_fact_hashes": [],
         "extracted_fact_hashes": [],
+        # Conversation continuity fields
+        "conversation_id": conversation_id,
+        "conversation_turn": conversation_turn,
+        "prior_conversation_facts": prior_conv_facts,
+        "prior_conversation_summary": prior_conv_summary,
     }
 
     # Create the shared output queue, live findings collector, and curated queue

@@ -28,11 +28,16 @@ export SEARXNG_QUERY_URL="http://localhost:8888/search?q=<query>&format=json"
 # --- Data Directory ---
 export DATA_DIR="/opt/openwebui-data"
 
-# --- Google OAuth ---
-export GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID not set}"
-export GOOGLE_CLIENT_SECRET="${GOOGLE_CLIENT_SECRET:?GOOGLE_CLIENT_SECRET not set}"
+# --- Google OAuth via OIDC ---
+# Uses OIDC provider (not built-in GOOGLE_CLIENT_ID) so the callback
+# path is /oauth/oidc/callback — must match Google Cloud Console redirect URIs.
 export ENABLE_OAUTH_SIGNUP=true
+export OAUTH_PROVIDER_NAME=Google
+export OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
+export OAUTH_CLIENT_ID="${OAUTH_CLIENT_ID:?OAUTH_CLIENT_ID not set}"
+export OAUTH_CLIENT_SECRET="${OAUTH_CLIENT_SECRET:?OAUTH_CLIENT_SECRET not set}"
 export OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true
+export ENABLE_LOGIN_FORM=true
 
 # --- Access Control ---
 export ENABLE_SIGNUP=false

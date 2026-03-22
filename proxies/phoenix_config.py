@@ -18,9 +18,10 @@ Environment variables (all optional — tracing is a no-op when unconfigured):
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
-from typing import Optional
+from typing import Any, Callable, Optional
 
 log = logging.getLogger("phoenix_config")
 
@@ -43,6 +44,10 @@ PHOENIX_ENABLED = os.getenv("PHOENIX_ENABLED", "true").lower() not in (
 
 _initialized = False
 _tracer_provider: Optional[object] = None
+
+# Per-request root span context — keyed by req_id.
+# Populated by start_pipeline_span(), consumed by traced_node().
+_root_contexts: dict[str, Any] = {}
 
 
 def initialize() -> bool:
@@ -109,6 +114,186 @@ def get_project_url() -> str:
     return f"{PHOENIX_BASE_URL}/projects/{PHOENIX_PROJECT_NAME}"
 
 
+def get_tracer(name: str = "deep-search.pipeline") -> Any:
+    """Return an OpenTelemetry tracer for manual span creation.
+
+    Returns a real Tracer when Phoenix is enabled, or a no-op object
+    whose ``start_as_current_span`` context manager does nothing.
+    """
+    if not is_enabled():
+        return _NoOpTracer()
+
+    try:
+        from opentelemetry import trace
+        return trace.get_tracer(name)
+    except Exception:
+        return _NoOpTracer()
+
+
+class _NoOpTracer:
+    """Dummy tracer that produces no-op context managers."""
+
+    def start_as_current_span(self, name: str, **kwargs: Any) -> "_NoOpSpanCtx":
+        return _NoOpSpanCtx()
+
+    def start_span(self, name: str, **kwargs: Any) -> "_NoOpSpan":
+        return _NoOpSpan()
+
+
+class _NoOpSpan:
+    """No-op span returned by _NoOpTracer.start_span."""
+
+    def end(self) -> None:
+        pass
+
+    def get_span_context(self) -> None:
+        return None
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        pass
+
+    def set_status(self, *args: Any) -> None:
+        pass
+
+
+class _NoOpSpanCtx:
+    """No-op context manager returned by _NoOpTracer."""
+
+    def __enter__(self) -> "_NoOpSpanCtx":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> "_NoOpSpanCtx":
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Pipeline-level root span management
+# ---------------------------------------------------------------------------
+
+def start_pipeline_span(req_id: str, user_query: str) -> Any:
+    """Create a long-lived root span for the entire pipeline run.
+
+    The span is stored in ``_root_contexts`` keyed by req_id.  Each
+    ``@traced_node`` decorated function reads this context to create
+    child spans, producing the hierarchical trace tree:
+
+        persistent_research_pipeline
+          +- comprehend
+          |    +- ChatOpenAI (auto-instrumented LLM call)
+          +- retrieve
+          +- tree_research.init_tree
+          +- tree_research.explore
+          +- entities
+          +- verify
+          +- reflect
+          +- persist
+          +- synthesize
+
+    Returns the span object (caller must call ``end_pipeline_span``
+    when the pipeline finishes).
+    """
+    if not is_enabled():
+        return _NoOpSpan()
+
+    try:
+        from opentelemetry import trace
+
+        tracer = trace.get_tracer("deep-search.pipeline")
+        span = tracer.start_span(
+            "persistent_research_pipeline",
+            attributes={
+                "graph.name": "persistent_research_pipeline",
+                "req_id": req_id,
+                "user_query": user_query[:200],
+            },
+        )
+        # Store the context with this span active so child spans can parent to it
+        ctx = trace.set_span_in_context(span)
+        _root_contexts[req_id] = ctx
+        log.debug("[%s] Started pipeline root span", req_id)
+        return span
+
+    except Exception as exc:
+        log.warning("Failed to create pipeline root span: %s", exc)
+        return _NoOpSpan()
+
+
+def end_pipeline_span(req_id: str, span: Any) -> None:
+    """End the root pipeline span and clean up the stored context."""
+    try:
+        span.end()
+    except Exception:
+        pass
+    _root_contexts.pop(req_id, None)
+
+
+def traced_node(node_name: str) -> Callable:
+    """Decorator that wraps a LangGraph node function in an OTel span.
+
+    The span is created as a child of the root pipeline span (stored
+    in ``_root_contexts`` by ``start_pipeline_span``).  This preserves
+    the parent-child hierarchy even though LangGraph runs each node in
+    a separate async context.
+
+    Usage::
+
+        @traced_node("comprehend")
+        async def pdr_node_comprehend(state):
+            ...
+    """
+    def decorator(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        async def wrapper(state: Any) -> Any:
+            if not is_enabled():
+                return await fn(state)
+
+            try:
+                from opentelemetry import context, trace
+
+                req_id = state.get("req_id", "") if isinstance(state, dict) else ""
+                parent_ctx = _root_contexts.get(req_id)
+
+                tracer = trace.get_tracer("deep-search.pipeline")
+
+                # Create child span under the pipeline root
+                span = tracer.start_span(
+                    node_name,
+                    context=parent_ctx,
+                    attributes={
+                        "graph.node": node_name,
+                        "graph.name": "persistent_research_pipeline",
+                        "graph.iteration": state.get("research_iterations", 0) if isinstance(state, dict) else 0,
+                    },
+                )
+
+                # Activate this span as current so auto-instrumented LLM calls
+                # become children of this node span
+                ctx = trace.set_span_in_context(span)
+                token = context.attach(ctx)
+                try:
+                    result = await fn(state)
+                    return result
+                except Exception as exc:
+                    from opentelemetry.trace import StatusCode
+                    span.set_status(StatusCode.ERROR, str(exc))
+                    raise
+                finally:
+                    span.end()
+                    context.detach(token)
+
+            except ImportError:
+                return await fn(state)
+
+        return wrapper
+    return decorator
+
+
 def shutdown() -> None:
     """Gracefully shut down the Phoenix tracer provider."""
     global _tracer_provider, _initialized
@@ -120,3 +305,4 @@ def shutdown() -> None:
             pass
         _tracer_provider = None
     _initialized = False
+    _root_contexts.clear()

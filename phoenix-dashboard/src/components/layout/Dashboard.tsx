@@ -17,6 +17,7 @@ type SidePanel = 'metrics' | 'events';
 export function Dashboard() {
   const drilldown = useStore(s => s.drilldown);
   const sseFileName = useStore(s => s.sseFileName);
+  const eventCount = useStore(s => s.events.length);
   const [sidePanel, setSidePanel] = useState<SidePanel>('metrics');
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
 
@@ -72,7 +73,7 @@ export function Dashboard() {
               }`}
             >
               <ScrollText className="w-3.5 h-3.5" />
-              Events ({useStore.getState().events.length})
+              Events ({eventCount})
             </button>
           </div>
 

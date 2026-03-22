@@ -86,6 +86,7 @@ export function parseSSEStream(text: string): ParsedStream {
   let treeNodeCounter = 0;
   let toolCallCounter = 0;
   let currentInvestigation: string | null = null;
+  let lastCrosscheckTotal = 0;
   let lineIdx = 0;
 
   for (const line of lines) {
@@ -235,7 +236,7 @@ export function parseSSEStream(text: string): ParsedStream {
     if (spawnMatch) {
       const count = parseInt(spawnMatch[1], 10);
       if (currentInvestigation) {
-        const node = findNodeByIdOrLast(treeNodes);
+        const node = treeNodes.get(currentInvestigation) || findNodeByIdOrLast(treeNodes);
         if (node) {
           node.childrenSpawned += count;
         }
@@ -276,14 +277,18 @@ export function parseSSEStream(text: string): ParsedStream {
       });
     }
 
+    const crossStartMatch = trimmed.match(CROSSCHECK_START_PATTERN);
+    if (crossStartMatch) {
+      lastCrosscheckTotal = parseInt(crossStartMatch[1], 10);
+    }
+
     const crosscheckMatch = trimmed.match(CROSSCHECK_PATTERN);
     if (crosscheckMatch) {
-      const totalMatch = trimmed.match(CROSSCHECK_START_PATTERN);
       metrics.crossCheck.push({
         highConfidence: parseInt(crosscheckMatch[1], 10),
         lowConfidence: parseInt(crosscheckMatch[2], 10),
         speculative: parseInt(crosscheckMatch[3], 10),
-        totalChecked: totalMatch ? parseInt(totalMatch[1], 10) : 0,
+        totalChecked: lastCrosscheckTotal,
         iteration: currentIteration,
       });
     }

@@ -248,7 +248,7 @@ def sync_access_grants(
                 )
 
     # Remove grants for models not in YAML
-    yaml_resource_ids = {f"model:{mid}" for mid in models}
+    yaml_resource_ids = {f"model:{mid}" for mid, cfg in models.items() if cfg.get("public", True)}
     cur = conn.execute(
         "SELECT id, resource_id FROM access_grant WHERE principal_id = '*' AND permission = 'read' AND resource_type = 'model'"
     )

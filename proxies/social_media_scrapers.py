@@ -760,6 +760,7 @@ async def _searxng_site_fallback(
                 normalised.append({
                     "title": title,
                     "url": url,
+                    "description": content,
                     "content": content,
                 })
 

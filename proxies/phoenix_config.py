@@ -49,6 +49,10 @@ _tracer_provider: Optional[object] = None
 # Populated by start_pipeline_span(), consumed by traced_node().
 _root_contexts: dict[str, Any] = {}
 
+# Per-request node status tracking for live graph visualization.
+# Each entry: {"active": set[str], "completed": set[str]}
+_node_status: dict[str, dict[str, set[str]]] = {}
+
 
 def initialize() -> bool:
     """Initialize Phoenix OpenTelemetry tracing (idempotent).
@@ -176,6 +180,15 @@ class _NoOpSpanCtx:
 # Pipeline-level root span management
 # ---------------------------------------------------------------------------
 
+def get_node_status() -> dict[str, dict[str, set[str]]]:
+    """Return current node status for all active pipelines.
+
+    Used by the ``/graph/active`` endpoint to highlight nodes in the
+    live StateGraph visualization.
+    """
+    return _node_status
+
+
 def start_pipeline_span(req_id: str, user_query: str) -> Any:
     """Create a long-lived root span for the entire pipeline run.
 
@@ -220,6 +233,7 @@ def start_pipeline_span(req_id: str, user_query: str) -> Any:
         # Store the context with this span active so child spans can parent to it
         ctx = trace.set_span_in_context(span)
         _root_contexts[req_id] = ctx
+        _node_status[req_id] = {"active": set(), "completed": set()}
         log.debug("[%s] Started pipeline root span", req_id)
         return span
 
@@ -235,6 +249,7 @@ def end_pipeline_span(req_id: str, span: Any) -> None:
     except Exception:
         pass
     _root_contexts.pop(req_id, None)
+    _node_status.pop(req_id, None)
 
 
 def traced_node(node_name: str) -> Callable:
@@ -295,6 +310,11 @@ def traced_node(node_name: str) -> Callable:
                 # OTel setup failed — run without tracing
                 return await fn(state)
 
+            # Track node as active for live graph visualization
+            if req_id and req_id in _node_status:
+                _node_status[req_id]["active"].add(node_name)
+                _node_status[req_id]["completed"].discard(node_name)
+
             # Phase 2: run the actual node function under the span
             try:
                 result = await fn(state)
@@ -306,6 +326,10 @@ def traced_node(node_name: str) -> Callable:
             finally:
                 span.end()
                 otel_ctx_mod.detach(token)
+                # Mark node as completed for live graph visualization
+                if req_id and req_id in _node_status:
+                    _node_status[req_id]["active"].discard(node_name)
+                    _node_status[req_id]["completed"].add(node_name)
 
         return wrapper
     return decorator
@@ -323,3 +347,4 @@ def shutdown() -> None:
         _tracer_provider = None
     _initialized = False
     _root_contexts.clear()
+    _node_status.clear()

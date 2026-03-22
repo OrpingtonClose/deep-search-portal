@@ -12,13 +12,13 @@ fi
 
 # --- Provider Configuration ---
 # Semicolon-separated lists. Order matters — index used in OPENAI_API_CONFIGS.
-# 0: OpenRouter, 1: Venice.ai, 2: Together.ai, 3: Perplexity, 4: RunPod, 5: Thinking Proxy, 6: Deep Research Proxy, 7: Mistral Direct
+# 0: OpenRouter, 1: Venice.ai, 2: Together.ai, 3: Perplexity, 4: RunPod, 5: Thinking Proxy, 6: Persistent Deep Research Proxy
 export ENABLE_OPENAI_API=true
-export OPENAI_API_BASE_URLS="https://openrouter.ai/api/v1;https://api.venice.ai/api/v1;https://api.together.xyz/v1;https://api.perplexity.ai;https://api.runpod.ai/v2/8aql6uyqnfnreu/openai/v1;http://localhost:9100/v1;http://localhost:9200/v1;https://api.mistral.ai/v1"
-export OPENAI_API_KEYS="${OPENROUTER_API_KEY:-not-set};${VENICE_API_KEY:-not-set};${TOGETHER_API_KEY:-not-set};${PERPLEXITY_API_KEY:-not-set};${RUNPOD_API_KEY:-not-set};not-needed;not-needed;${MISTRAL_API_KEY:-not-set}"
+export OPENAI_API_BASE_URLS="https://openrouter.ai/api/v1;https://api.venice.ai/api/v1;https://api.together.xyz/v1;https://api.perplexity.ai;https://api.runpod.ai/v2/8aql6uyqnfnreu/openai/v1;http://localhost:9100/v1;http://localhost:9300/v1"
+export OPENAI_API_KEYS="${OPENROUTER_API_KEY:-not-set};${VENICE_API_KEY:-not-set};${TOGETHER_API_KEY:-not-set};${PERPLEXITY_API_KEY:-not-set};${RUNPOD_API_KEY:-not-set};not-needed;not-needed"
 
 # Provider-specific model filtering
-export OPENAI_API_CONFIGS='{"5": {"enable": true, "model_ids": ["mistral-large-thinking"]}, "6": {"enable": true, "model_ids": ["miroflow"]}}'
+export OPENAI_API_CONFIGS='{"5": {"enable": true, "model_ids": ["mistral-large-thinking"]}, "6": {"enable": true, "model_ids": ["persistent-miroflow"]}}'
 
 # --- SearXNG for RAG Web Search ---
 export ENABLE_RAG_WEB_SEARCH=true

@@ -537,6 +537,231 @@ async def get_research_report(session_id: str, request: Request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/graph")
+async def graph_view(request: Request):
+    """Serve an interactive StateGraph visualization.
+
+    Renders the LangGraph StateGraph as a Mermaid node-and-edge diagram
+    with real-time active node highlighting by polling for running spans.
+    """
+    if not await _validate_owui_token(request):
+        return _auth_denied()
+
+    from fastapi.responses import HTMLResponse
+
+    try:
+        graph = build_persistent_research_graph()
+        mermaid_code = graph.get_graph().draw_mermaid()
+    except Exception as exc:
+        return JSONResponse({"error": f"Failed to build graph: {exc}"}, status_code=500)
+
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Research Pipeline — StateGraph</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0d1117;
+    color: #e6edf3;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    padding: 1.5rem;
+  }}
+  h1 {{
+    font-size: 1.4rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: #58a6ff;
+  }}
+  .subtitle {{
+    font-size: 0.85rem;
+    color: #8b949e;
+    margin-bottom: 1.5rem;
+  }}
+  .subtitle a {{ color: #58a6ff; text-decoration: none; }}
+  .subtitle a:hover {{ text-decoration: underline; }}
+  #status {{
+    font-size: 0.8rem;
+    padding: 0.4rem 0.8rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+  }}
+  .status-idle {{ background: #1c2128; color: #8b949e; }}
+  .status-running {{ background: #0d2818; color: #3fb950; }}
+  .mermaid {{
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 2rem;
+    max-width: 100%;
+    overflow: auto;
+  }}
+  .mermaid svg {{ max-width: 100%; height: auto; }}
+
+  /* Active node pulse animation */
+  @keyframes pulse {{
+    0%, 100% {{ stroke: #3fb950; stroke-width: 3px; filter: drop-shadow(0 0 6px #3fb950); }}
+    50% {{ stroke: #56d364; stroke-width: 4px; filter: drop-shadow(0 0 12px #56d364); }}
+  }}
+  .node-active rect, .node-active polygon, .node-active circle {{
+    animation: pulse 1.5s ease-in-out infinite;
+  }}
+  .node-completed rect, .node-completed polygon, .node-completed circle {{
+    stroke: #1f6feb;
+    stroke-width: 2px;
+    filter: drop-shadow(0 0 4px #1f6feb);
+  }}
+
+  .legend {{
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 1rem;
+    font-size: 0.8rem;
+    color: #8b949e;
+  }}
+  .legend-item {{
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }}
+  .legend-dot {{
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }}
+  .dot-active {{ background: #3fb950; box-shadow: 0 0 6px #3fb950; }}
+  .dot-completed {{ background: #1f6feb; box-shadow: 0 0 4px #1f6feb; }}
+  .dot-pending {{ background: #30363d; border: 1px solid #484f58; }}
+</style>
+</head>
+<body>
+<h1>Research Pipeline — StateGraph</h1>
+<div class="subtitle">
+  Live execution graph &middot;
+  <a href="https://phoenix.deep-search.uk" target="_blank">Phoenix Traces</a>
+</div>
+<div id="status" class="status-idle">Idle — no active research</div>
+<div class="mermaid">
+{mermaid_code}
+</div>
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot dot-active"></div> Active</div>
+  <div class="legend-item"><div class="legend-dot dot-completed"></div> Completed</div>
+  <div class="legend-item"><div class="legend-dot dot-pending"></div> Pending</div>
+</div>
+
+<script>
+mermaid.initialize({{
+  startOnLoad: true,
+  theme: 'dark',
+  flowchart: {{ curve: 'linear', padding: 20 }},
+  themeVariables: {{
+    primaryColor: '#1f2937',
+    primaryBorderColor: '#4b5563',
+    primaryTextColor: '#e6edf3',
+    lineColor: '#6b7280',
+    secondaryColor: '#1c2128',
+    tertiaryColor: '#0d1117',
+  }}
+}});
+
+// Poll for active research spans
+// Mermaid generates SVG node IDs like "flowchart-comprehend-1", "flowchart-retrieve-2"
+const KNOWN_NODES = [
+  'comprehend', 'retrieve', 'tree_research',
+  'entities', 'verify', 'reflect', 'persist', 'synthesize'
+];
+
+function findNodeGroup(svg, nodeName) {{
+  // Mermaid v11 uses .node class with IDs like flowchart-{name}-{n}
+  const groups = svg.querySelectorAll('.node');
+  const matches = [];
+  groups.forEach(g => {{
+    if (g.id && g.id.includes(nodeName)) matches.push(g);
+  }});
+  return matches;
+}}
+
+async function pollActiveNodes() {{
+  try {{
+    const resp = await fetch('/graph/active');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const active = new Set(data.active_nodes || []);
+    const completed = new Set(data.completed_nodes || []);
+    const running = data.is_running || false;
+
+    // Update status badge
+    const el = document.getElementById('status');
+    if (running) {{
+      el.className = 'status-running';
+      const nodeNames = [...active].map(n => n.replace(/\./g, ' › '));
+      el.textContent = 'Running — ' + (nodeNames.length ? nodeNames.join(', ') : 'starting...');
+    }} else {{
+      el.className = 'status-idle';
+      el.textContent = 'Idle — no active research';
+    }}
+
+    // Highlight SVG nodes by matching Mermaid's flowchart-{name}-{n} pattern
+    const svg = document.querySelector('.mermaid svg');
+    if (!svg) return;
+    for (const node of KNOWN_NODES) {{
+      const groups = findNodeGroup(svg, node);
+      // Also match sub-nodes like tree_research.init_tree
+      const isActive = active.has(node) || [...active].some(a => a.startsWith(node + '.'));
+      const isCompleted = completed.has(node) || [...completed].some(c => c.startsWith(node + '.'));
+      groups.forEach(g => {{
+        g.classList.remove('node-active', 'node-completed');
+        if (isActive) g.classList.add('node-active');
+        else if (isCompleted) g.classList.add('node-completed');
+      }});
+    }}
+  }} catch (e) {{ /* ignore polling errors */ }}
+}}
+
+setInterval(pollActiveNodes, 2000);
+pollActiveNodes();
+</script>
+</body>
+</html>"""
+    return HTMLResponse(content=html_content)
+
+
+@app.get("/graph/active")
+async def graph_active_nodes(request: Request):
+    """Return currently active and completed pipeline nodes for graph highlighting."""
+    if not await _validate_owui_token(request):
+        return _auth_denied()
+
+    node_status = phoenix_config.get_node_status()
+
+    # Aggregate across all active requests
+    active: set[str] = set()
+    completed: set[str] = set()
+    is_running = False
+
+    for req_id, status in list(node_status.items()):
+        is_running = True
+        active.update(status.get("active", set()))
+        completed.update(status.get("completed", set()))
+
+    # Remove active from completed (active takes precedence)
+    completed -= active
+
+    return JSONResponse({
+        "active_nodes": sorted(active),
+        "completed_nodes": sorted(completed),
+        "is_running": is_running,
+    })
+
+
 @app.get("/research/metrics/{session_id}")
 async def get_research_metrics(session_id: str, request: Request):
     """Serve the metrics JSON for a research session.

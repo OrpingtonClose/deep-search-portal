@@ -33,16 +33,12 @@ from .config import SUBAGENT_MODEL
 def derive_conversation_id(messages: list[dict]) -> str:
     """Derive a stable conversation ID from the message history.
 
-    Strategy: hash the first user message content + the first assistant
-    response (if any).  This gives a stable ID even as more turns are
-    appended, since the opening exchange never changes within a chat
-    thread.
-
-    Falls back to hashing the entire first user message if there's no
-    assistant response yet (single-turn conversation).
+    Strategy: hash only the first user message content.  This gives a
+    stable ID across all turns because the opening user message never
+    changes within a chat thread — even when assistant responses are
+    appended in subsequent turns.
     """
     first_user = ""
-    first_assistant = ""
     for msg in messages:
         role = msg.get("role", "")
         content = msg.get("content", "")
@@ -53,17 +49,16 @@ def derive_conversation_id(messages: list[dict]) -> str:
             )
         if role == "user" and not first_user:
             first_user = content.strip()[:500]
-        elif role == "assistant" and first_user and not first_assistant:
-            first_assistant = content.strip()[:500]
             break
 
     if not first_user:
         # No user messages — unlikely but handle gracefully
         return hashlib.sha256(json.dumps(messages[:3]).encode()).hexdigest()[:16]
 
+    # Always hash only the first user message to keep the ID stable
+    # across all turns.  Including the assistant response would cause
+    # the ID to change between turn 1 (no assistant yet) and turn 2+.
     seed = first_user
-    if first_assistant:
-        seed += "\n---\n" + first_assistant
     return hashlib.sha256(seed.encode()).hexdigest()[:16]
 
 

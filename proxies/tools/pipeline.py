@@ -407,7 +407,15 @@ class ConditionStore:
         Called inside _lock after admission.  Uses the condition's own
         entities list plus simple keyword matching against comprehension
         entities.
+
+        Understanding conditions (from query comprehension) are skipped —
+        they're structural/definitional and don't represent actual research
+        coverage.  Counting them would saturate core entities before any
+        real research begins.
         """
+        if condition.verification_status == "understanding":
+            return
+
         mentioned: set[str] = set()
 
         # 1. Use condition's own entity list if populated

@@ -287,7 +287,7 @@ def traced_node(node_name: str) -> Callable:
                     span.end()
                     context.detach(token)
 
-            except ImportError:
+            except Exception:
                 return await fn(state)
 
         return wrapper

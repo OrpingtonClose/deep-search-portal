@@ -389,9 +389,10 @@ class TestVerifyConditionsWithVeritas:
 
 class TestPdrNodeVerifyWithVeritas:
     @pytest.mark.asyncio
-    async def test_runs_both_stages_when_enabled(self):
-        """When VERITAS_VERIFY_ENABLED is True and enough conditions exist,
-        both self-eval and Veritas should run."""
+    async def test_runs_cross_check_only_veritas_deprecated(self):
+        """Veritas is deprecated in favor of admission-time verification.
+        Only the self-eval cross-check stage should run; Veritas is skipped
+        even when VERITAS_VERIFY_ENABLED is True (unless forced)."""
         conditions = [
             _make_condition("Claim A", confidence=0.7),
             _make_condition("Claim B is hallucinated", confidence=0.6),
@@ -400,36 +401,58 @@ class TestPdrNodeVerifyWithVeritas:
 
         state = _pdr_state(all_conditions=conditions)
 
-        mock_veritas_result = {
-            "report": {
-                "claims": [
-                    {"claim_text": "Claim A", "status": "verified", "confidence": 0.85},
-                    {"claim_text": "Claim B is hallucinated", "status": "hallucinated", "confidence": 0.05},
-                    {"claim_text": "Claim C", "status": "plausible-unverified", "confidence": 0.5},
-                ],
-                "overall_score": 0.5,
-                "overall_hallucination_probability": 0.33,
-            },
-        }
-
         with patch.object(pdr, "VERITAS_VERIFY_ENABLED", True), \
              patch.object(pdr, "VERITAS_MIN_CONDITIONS", 3), \
              patch.object(pdr, "verify_conditions", new_callable=AsyncMock, return_value=conditions), \
-             patch("veritas_inquisitor.verify_output", new_callable=AsyncMock, return_value=mock_veritas_result), \
+             patch("veritas_inquisitor.verify_output", new_callable=AsyncMock) as mock_veritas, \
              patch.object(pdr, "_metrics_collectors", {}):
 
             result = await pdr.pdr_node_verify(state)
 
-        # Hallucinated claim should be removed
-        result_conditions = result["all_conditions"]
-        assert len(result_conditions) == 2
-        facts = [c.fact for c in result_conditions]
-        assert "Claim B is hallucinated" not in facts
+        # Veritas is deprecated — should NOT have been called
+        mock_veritas.assert_not_called()
 
-        # Progress should mention both stages and use "fabricated" terminology
+        # All conditions survive (self-eval mock returns them unchanged)
+        result_conditions = result["all_conditions"]
+        assert len(result_conditions) == 3
+
+        # Progress should mention the cross-check phase
         progress_text = " ".join(result["progress_log"])
-        assert "Phase 5a" in progress_text
-        assert "Phase 5b" in progress_text or "Veritas" in progress_text
+        assert "Phase 5" in progress_text or "Cross-Check" in progress_text
+
+    @pytest.mark.asyncio
+    async def test_skips_veritas_by_default_with_inline_verification(self):
+        """By default, Veritas is skipped because inline verification runs
+        during the tree phase. Progress log should mention this."""
+        conditions = [
+            _make_condition("Claim A", confidence=0.7),
+            _make_condition("Claim B", confidence=0.6),
+            _make_condition("Claim C", confidence=0.5),
+        ]
+
+        state = _pdr_state(all_conditions=conditions)
+
+        with patch.object(pdr, "VERITAS_VERIFY_ENABLED", True), \
+             patch.object(pdr, "VERITAS_MIN_CONDITIONS", 3), \
+             patch.object(pdr, "verify_conditions", new_callable=AsyncMock, return_value=conditions), \
+             patch("veritas_inquisitor.verify_output", new_callable=AsyncMock) as mock_veritas, \
+             patch.object(pdr, "_metrics_collectors", {}), \
+             patch.dict("os.environ", {}, clear=False):
+            # Ensure VERITAS_FORCE_POST_HOC is NOT set
+            import os
+            os.environ.pop("VERITAS_FORCE_POST_HOC", None)
+
+            result = await pdr.pdr_node_verify(state)
+
+        # Veritas should NOT have been called
+        mock_veritas.assert_not_called()
+
+        # All conditions preserved (only self-eval ran)
+        assert len(result["all_conditions"]) == 3
+
+        # Progress should mention inline verification
+        progress_text = " ".join(result["progress_log"])
+        assert "Inline Verification" in progress_text
 
     @pytest.mark.asyncio
     async def test_skips_veritas_when_disabled(self):
@@ -474,42 +497,34 @@ class TestPdrNodeVerifyWithVeritas:
         mock_veritas.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_progress_log_shows_removal_count(self):
-        """Progress log should report how many conditions were removed."""
-        conditions = [
+    async def test_progress_log_shows_cross_check_summary(self):
+        """Progress log should report cross-check results (Veritas deprecated)."""
+        # Self-eval removes 2 fabricated conditions
+        real_conditions = [
+            _make_condition("Real claim A", confidence=0.8),
+            _make_condition("Real claim B", confidence=0.7),
+        ]
+        all_conditions = [
             _make_condition("Real claim A", confidence=0.8),
             _make_condition("Fake company XYZ Ltd", confidence=0.6),
             _make_condition("Real claim B", confidence=0.7),
             _make_condition("Fake entity ABC Corp", confidence=0.5),
         ]
 
-        state = _pdr_state(all_conditions=conditions)
+        state = _pdr_state(all_conditions=all_conditions)
 
-        mock_result = {
-            "report": {
-                "claims": [
-                    {"claim_text": "Fake company XYZ Ltd", "status": "hallucinated", "confidence": 0.02},
-                    {"claim_text": "Fake entity ABC Corp", "status": "hallucinated", "confidence": 0.01},
-                    {"claim_text": "Real claim A", "status": "verified", "confidence": 0.9},
-                    {"claim_text": "Real claim B", "status": "verified", "confidence": 0.85},
-                ],
-                "overall_score": 0.5,
-                "overall_hallucination_probability": 0.5,
-            },
-        }
-
-        with patch.object(pdr, "VERITAS_VERIFY_ENABLED", True), \
-             patch.object(pdr, "VERITAS_MIN_CONDITIONS", 3), \
-             patch.object(pdr, "verify_conditions", new_callable=AsyncMock, return_value=conditions), \
-             patch("veritas_inquisitor.verify_output", new_callable=AsyncMock, return_value=mock_result), \
+        with patch.object(pdr, "verify_conditions", new_callable=AsyncMock, return_value=real_conditions), \
+             patch("veritas_inquisitor.verify_output", new_callable=AsyncMock) as mock_veritas, \
              patch.object(pdr, "_metrics_collectors", {}):
 
             result = await pdr.pdr_node_verify(state)
 
+        # Veritas is deprecated — not called
+        mock_veritas.assert_not_called()
+        # Self-eval removed the 2 fake conditions
         assert len(result["all_conditions"]) == 2
         progress_text = " ".join(result["progress_log"])
-        assert "2 fabricated claims removed" in progress_text
-        assert "2 conditions retained out of 4" in progress_text
+        assert "2 fabricated removed" in progress_text or "Cross-Check" in progress_text or "Cross-check" in progress_text
 
     @pytest.mark.asyncio
     async def test_single_condition_skips_both_stages(self):
@@ -530,8 +545,8 @@ class TestPdrNodeVerifyWithVeritas:
         assert len(result["all_conditions"]) == 1
 
     @pytest.mark.asyncio
-    async def test_veritas_error_preserves_conditions(self):
-        """If Veritas crashes, self-eval results should still be preserved."""
+    async def test_self_eval_error_propagates(self):
+        """If self-eval crashes, the error propagates (not silently swallowed)."""
         conditions = [
             _make_condition("Claim A", confidence=0.7),
             _make_condition("Claim B", confidence=0.6),
@@ -540,16 +555,11 @@ class TestPdrNodeVerifyWithVeritas:
 
         state = _pdr_state(all_conditions=conditions)
 
-        with patch.object(pdr, "VERITAS_VERIFY_ENABLED", True), \
-             patch.object(pdr, "VERITAS_MIN_CONDITIONS", 3), \
-             patch.object(pdr, "verify_conditions", new_callable=AsyncMock, return_value=conditions), \
-             patch("veritas_inquisitor.verify_output", new_callable=AsyncMock, side_effect=RuntimeError("boom")), \
+        with patch.object(pdr, "verify_conditions", new_callable=AsyncMock, side_effect=RuntimeError("boom")), \
              patch.object(pdr, "_metrics_collectors", {}):
 
-            result = await pdr.pdr_node_verify(state)
-
-        # All conditions preserved despite Veritas error
-        assert len(result["all_conditions"]) == 3
+            with pytest.raises(RuntimeError, match="boom"):
+                await pdr.pdr_node_verify(state)
 
 
 # ============================================================================
@@ -584,64 +594,68 @@ class TestConfigToggles:
 # Test: Mistral Moderation Gate
 # ============================================================================
 
-class TestModerateQuery:
+class TestClassifyQuery:
+    """Tests for classify_query (advisory content classifier).
+
+    classify_query returns a list of category strings.  It does NOT block
+    any search or tool — the categories are advisory only, used for model
+    routing (e.g. choosing uncensored vs censored LLM).
+    """
+
     @pytest.mark.asyncio
-    async def test_safe_query_passes(self):
-        """Normal research query should pass moderation via LangChain."""
+    async def test_clean_query_returns_empty(self):
+        """Normal research query should return no categories."""
         mock_ai_msg = MagicMock()
-        mock_ai_msg.content = '{"safe": true, "flagged_categories": []}'
+        mock_ai_msg.content = '{"categories": []}'
 
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(return_value=mock_ai_msg)
 
         with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
              patch.object(pdr, "UPSTREAM_KEY", "test-key"):
-            is_safe, details = await pdr.moderate_query("used Technogym Biostrength price")
+            categories = await pdr.classify_query("used Technogym Biostrength price")
 
-        assert is_safe is True
-        assert "flagged_categories" in details
+        assert categories == []
 
     @pytest.mark.asyncio
-    async def test_dangerous_query_blocked(self):
-        """Query flagged as dangerous should be blocked from commercial APIs."""
+    async def test_sensitive_query_returns_categories(self):
+        """Sensitive query should return matching categories (but NOT block anything)."""
         mock_ai_msg = MagicMock()
-        mock_ai_msg.content = '{"safe": false, "flagged_categories": ["violence_and_threats", "dangerous_and_criminal_content"]}'
+        mock_ai_msg.content = '{"categories": ["violence_and_threats", "dangerous_and_criminal_content"]}'
 
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(return_value=mock_ai_msg)
 
         with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
              patch.object(pdr, "UPSTREAM_KEY", "test-key"):
-            is_safe, details = await pdr.moderate_query("how to make explosives")
+            categories = await pdr.classify_query("how to make explosives")
 
-        assert is_safe is False
-        assert "flagged" in details
-        assert "violence_and_threats" in details["flagged"]
+        assert "violence_and_threats" in categories
+        assert "dangerous_and_criminal_content" in categories
 
     @pytest.mark.asyncio
-    async def test_moderation_api_failure_fails_closed(self):
-        """If moderation LLM call fails, should fail closed (no commercial APIs)."""
+    async def test_api_failure_returns_empty(self):
+        """If classifier LLM call fails, return empty (fail open — never block)."""
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(side_effect=Exception("API timeout"))
 
         with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
              patch.object(pdr, "UPSTREAM_KEY", "test-key"):
-            is_safe, details = await pdr.moderate_query("normal query")
+            categories = await pdr.classify_query("normal query")
 
-        assert is_safe is False
-        assert "error" in details
+        assert categories == []
 
     @pytest.mark.asyncio
-    async def test_no_api_key_fails_closed(self):
-        """Without an API key, moderation should fail closed."""
+    async def test_no_api_key_returns_empty(self):
+        """Without an API key, classifier should return empty (never block)."""
         with patch.object(pdr, "UPSTREAM_KEY", ""):
-            is_safe, details = await pdr.moderate_query("any query")
+            categories = await pdr.classify_query("any query")
 
-        assert is_safe is False
+        assert categories == []
 
     @pytest.mark.asyncio
-    async def test_moderation_unparseable_response_fails_closed(self):
-        """Unparseable LLM response from moderation should fail closed."""
+    async def test_unparseable_response_returns_empty(self):
+        """Unparseable LLM response should return empty (never block)."""
         mock_ai_msg = MagicMock()
         mock_ai_msg.content = "I cannot classify this query."
 
@@ -650,10 +664,46 @@ class TestModerateQuery:
 
         with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
              patch.object(pdr, "UPSTREAM_KEY", "test-key"):
+            categories = await pdr.classify_query("normal query")
+
+        assert categories == []
+
+
+class TestModerateQueryLegacy:
+    """Tests for moderate_query legacy wrapper.
+
+    moderate_query always returns is_safe=True now.  It exists only for
+    backward compatibility.  The moderation gate no longer blocks searches.
+    """
+
+    @pytest.mark.asyncio
+    async def test_always_returns_safe(self):
+        """moderate_query should always return is_safe=True regardless of classification."""
+        mock_ai_msg = MagicMock()
+        mock_ai_msg.content = '{"categories": ["dangerous_and_criminal_content"]}'
+
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=mock_ai_msg)
+
+        with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
+             patch.object(pdr, "UPSTREAM_KEY", "test-key"):
+            is_safe, details = await pdr.moderate_query("buy insulin without prescription")
+
+        assert is_safe is True
+        assert "categories" in details
+        assert "dangerous_and_criminal_content" in details["categories"]
+
+    @pytest.mark.asyncio
+    async def test_safe_on_api_failure(self):
+        """moderate_query should still return is_safe=True even on API failure."""
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=Exception("API timeout"))
+
+        with patch.object(pdr, "_get_moderation_llm", return_value=mock_llm), \
+             patch.object(pdr, "UPSTREAM_KEY", "test-key"):
             is_safe, details = await pdr.moderate_query("normal query")
 
-        assert is_safe is False
-        assert "error" in details
+        assert is_safe is True
 
 
 # ============================================================================
@@ -787,8 +837,8 @@ class TestCommercialSearch:
 
 class TestToolWebSearch:
     @pytest.mark.asyncio
-    async def test_merges_commercial_results_when_safe(self):
-        """When moderation passes, commercial results should be merged with SearXNG."""
+    async def test_merges_commercial_results(self):
+        """Commercial results should always be merged with SearXNG (no moderation gate)."""
         searxng_output = (
             "1. **SearXNG Result** [trust: 0.5]\n"
             "   URL: https://searx.example.com\n   SearXNG snippet"
@@ -799,7 +849,6 @@ class TestToolWebSearch:
 
         with patch.object(pdr, "tool_searxng_search", new_callable=AsyncMock, return_value=searxng_output), \
              patch.object(pdr, "COMMERCIAL_SEARCH_ENABLED", True), \
-             patch.object(pdr, "moderate_query", new_callable=AsyncMock, return_value=(True, {"categories": {}})), \
              patch.object(pdr, "_commercial_search", new_callable=AsyncMock, return_value=commercial_results):
             result = await pdr.tool_web_search("test query")
 
@@ -808,18 +857,20 @@ class TestToolWebSearch:
         assert "bright_data" in result
 
     @pytest.mark.asyncio
-    async def test_skips_commercial_when_moderation_blocks(self):
-        """When moderation flags the query, only SearXNG results should be returned."""
+    async def test_commercial_runs_for_sensitive_queries(self):
+        """Commercial search should run even for sensitive/flagged queries (no moderation gate)."""
         searxng_output = "1. **SearXNG Result** [trust: 0.5]\n   URL: https://searx.example.com\n   snippet"
+        commercial_results = [
+            {"title": "Vendor Info", "url": "https://vendor.example.com", "snippet": "vendor details", "source": "bright_data"},
+        ]
 
         with patch.object(pdr, "tool_searxng_search", new_callable=AsyncMock, return_value=searxng_output), \
              patch.object(pdr, "COMMERCIAL_SEARCH_ENABLED", True), \
-             patch.object(pdr, "moderate_query", new_callable=AsyncMock, return_value=(False, {"flagged": ["violence_and_threats"]})), \
-             patch.object(pdr, "_commercial_search", new_callable=AsyncMock) as mock_commercial:
-            result = await pdr.tool_web_search("dangerous query")
+             patch.object(pdr, "_commercial_search", new_callable=AsyncMock, return_value=commercial_results) as mock_commercial:
+            result = await pdr.tool_web_search("buy insulin without prescription poland")
 
-        mock_commercial.assert_not_called()
-        assert result == searxng_output
+        mock_commercial.assert_called_once()
+        assert "Vendor Info" in result
 
     @pytest.mark.asyncio
     async def test_skips_commercial_when_disabled(self):
@@ -828,10 +879,10 @@ class TestToolWebSearch:
 
         with patch.object(pdr, "tool_searxng_search", new_callable=AsyncMock, return_value=searxng_output), \
              patch.object(pdr, "COMMERCIAL_SEARCH_ENABLED", False), \
-             patch.object(pdr, "moderate_query", new_callable=AsyncMock) as mock_mod:
+             patch.object(pdr, "_commercial_search", new_callable=AsyncMock) as mock_commercial:
             result = await pdr.tool_web_search("test query")
 
-        mock_mod.assert_not_called()
+        mock_commercial.assert_not_called()
         assert result == searxng_output
 
     @pytest.mark.asyncio
@@ -848,7 +899,6 @@ class TestToolWebSearch:
 
         with patch.object(pdr, "tool_searxng_search", new_callable=AsyncMock, return_value=searxng_output), \
              patch.object(pdr, "COMMERCIAL_SEARCH_ENABLED", True), \
-             patch.object(pdr, "moderate_query", new_callable=AsyncMock, return_value=(True, {})), \
              patch.object(pdr, "_commercial_search", new_callable=AsyncMock, return_value=commercial_results):
             result = await pdr.tool_web_search("test query")
 

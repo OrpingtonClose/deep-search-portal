@@ -1,4 +1,8 @@
-"""Trust scoring and serendipity detection for research findings."""
+"""
+Trust scoring and serendipity scoring functions.
+"""
+from __future__ import annotations
+
 import re
 
 
@@ -66,3 +70,5 @@ def serendipity_score(fact: str, query: str, known_facts: list[str]) -> float:
     surprise = min(max(surprise, 0.05), 1.0)
 
     return (relevance * novelty * surprise) ** (1.0 / 3.0)
+
+

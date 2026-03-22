@@ -1,12 +1,27 @@
-"""Data structures for the persistent deep research pipeline.
-
-Contains the core dataclasses used across all modules:
-- AtomicCondition: A single research finding
-- SubagentResult: Result from a subagent research loop
-- ResearchNode: A node in the research exploration tree
 """
+Data models: CrossRef, AtomicCondition, SubagentResult, ResearchNode.
+"""
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Optional
+
+
+# ============================================================================
+# Data structures
+# ============================================================================
+
+@dataclass
+class CrossRef:
+    """A directional link between two conditions in the knowledge net.
+
+    relation is one of: "confirms", "contradicts", "related"
+    target_idx is the index of the linked condition in the ConditionStore.
+    similarity is the Jaccard similarity score that triggered the link.
+    """
+    relation: str   # "confirms" | "contradicts" | "related"
+    target_idx: int
+    similarity: float = 0.0
 
 
 @dataclass
@@ -29,6 +44,8 @@ class AtomicCondition:
     author: str = ""             # Author or creator name
     content_type: str = ""       # e.g. "academic_paper", "news", "forum_post", "video"
     source_type: str = ""        # e.g. "pubmed", "arxiv", "hackernews", "substack"
+    # Cross-reference links to other conditions — forms the knowledge net
+    cross_refs: list[CrossRef] = field(default_factory=list)
 
     def to_text(self) -> str:
         parts = [f"- {self.fact}"]
@@ -89,3 +106,5 @@ class ResearchNode:
     def __lt__(self, other: "ResearchNode") -> bool:
         """PriorityQueue needs ordering; higher pressure = higher priority."""
         return self.pressure > other.pressure
+
+

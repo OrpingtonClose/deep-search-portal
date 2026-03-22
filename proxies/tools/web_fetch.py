@@ -1,43 +1,49 @@
-"""Multi-tier web fetch: httpx, Playwright, Selenium, Bright Data, Oxylabs, Wayback.
-
-Extracted from persistent_deep_research_proxy.py lines 1881-2297.
+"""
+Enhanced web fetch: multi-tier fallback chain (httpx -> Playwright -> Selenium ->
+Bright Data -> Oxylabs -> Wayback Machine), plus 4chan archive searches.
 """
 from __future__ import annotations
 
 import asyncio
 import html
-import logging
 import re
+from datetime import datetime, timezone
 from typing import Optional
-from urllib.parse import urlparse
 
 import httpx
 
-from shared import get_throttler
-
-from . import _get_http_client
+from shared import get_throttler, http_client
 
 from .config import (
-    WEBPAGE_MAX_CHARS,
     BRIGHT_DATA_API_KEY,
     BRIGHT_DATA_CUSTOMER_ID,
     BRIGHT_DATA_ZONE,
-    OXYLABS_USERNAME,
     OXYLABS_PASSWORD,
-    PLAYWRIGHT_AVAILABLE,
-    SELENIUM_AVAILABLE,
+    OXYLABS_USERNAME,
+    WEBPAGE_MAX_CHARS,
+    _PLAYWRIGHT_AVAILABLE,
+    _SELENIUM_AVAILABLE,
+    log,
 )
 
-log = logging.getLogger("persistent-research")
+# Conditional imports for browser automation
+if _PLAYWRIGHT_AVAILABLE:
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        pass
 
-# Conditional imports for JS rendering
-if PLAYWRIGHT_AVAILABLE:
-    from playwright.async_api import async_playwright
+if _SELENIUM_AVAILABLE:
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options as ChromeOptions
+    except ImportError:
+        pass
 
-if SELENIUM_AVAILABLE:
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options as ChromeOptions
-    from selenium.webdriver.chrome.service import Service as ChromeService
+
+# ============================================================================
+# Enhanced Web Fetch — multi-tier fallback chain
+# ============================================================================
 
 _CENSORSHIP_KEYWORDS = [
     "access denied", "403 forbidden", "blocked", "not available in your",
@@ -49,54 +55,6 @@ _ERROR_PREFIXES = (
     "Fetch error", "Non-text content", "PDF document", "No readable text",
     "Search error", "Page returned no readable",
 )
-
-
-async def _tool_fetch_webpage_direct(url: str, extract_info: str = "") -> str:
-    """Direct fetch — original implementation."""
-    # (identical to old tool_fetch_webpage, now an internal helper)
-    try:
-        client = _get_http_client()
-        resp = await client.get(
-            url,
-            timeout=20.0,
-            follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
-        )
-        if resp.status_code != 200:
-            return f"Fetch error: HTTP {resp.status_code} for {url}"
-
-        content_type = resp.headers.get("content-type", "")
-        if "pdf" in content_type.lower():
-            return f"PDF document at {url} (binary content, cannot extract text directly)"
-        if ("text/html" not in content_type and "text/plain" not in content_type
-                and "text/xml" not in content_type and "application/json" not in content_type):
-            return f"Non-text content type: {content_type} at {url}"
-
-        raw = resp.text
-        text = re.sub(r'<script[^>]*>.*?</script>', '', raw, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'<[^>]+>', ' ', text)
-        text = html.unescape(text)
-        text = re.sub(r'\s+', ' ', text).strip()
-
-        if not text:
-            return f"No readable text content found at {url}"
-
-        if len(text) > WEBPAGE_MAX_CHARS:
-            text = text[:WEBPAGE_MAX_CHARS] + "\n[...truncated...]\n"
-
-        result = f"Content from {url}:\n{text}"
-        if extract_info:
-            result = f"Instructions: {extract_info}\n\n{result}"
-        return result
-
-    except Exception as e:
-        return f"Fetch error for {url}: {e}"
-
-
-async def tool_fetch_webpage(url: str, extract_info: str = "") -> str:
-    """Fetch a webpage with enhanced scraping fallback chain."""
-    return await enhanced_web_fetch(url, extract_info)
 
 
 def _strip_html(raw_html: str) -> str:
@@ -124,10 +82,11 @@ def _is_censored_response(text: str) -> bool:
 
 async def _fetch_via_httpx(url: str) -> str:
     """Tier 0: Fast HTTP fetch via httpx (no JS rendering)."""
-    client = _get_http_client()
+    client = http_client()
     resp = await client.get(
         url,
         timeout=20.0,
+        follow_redirects=True,
         headers={
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -157,7 +116,7 @@ async def _fetch_via_playwright(url: str) -> Optional[str]:
 
     Returns None if Playwright is not available.
     """
-    if not PLAYWRIGHT_AVAILABLE:
+    if not _PLAYWRIGHT_AVAILABLE:
         return None
     try:
         async with async_playwright() as pw:
@@ -188,7 +147,7 @@ async def _fetch_via_selenium(url: str) -> Optional[str]:
 
     Returns None if Selenium is not available.
     """
-    if not SELENIUM_AVAILABLE:
+    if not _SELENIUM_AVAILABLE:
         return None
     try:
         loop = asyncio.get_running_loop()
@@ -305,7 +264,7 @@ async def _fetch_via_wayback_cdx(url: str) -> Optional[str]:
     """
     try:
         async with get_throttler("wayback").throttle():
-            client = _get_http_client()
+            client = http_client()
             # CDX API returns the most recent successful capture
             cdx_resp = await client.get(
                 "https://web.archive.org/cdx/search/cdx",
@@ -453,4 +412,182 @@ async def enhanced_web_fetch(url: str, extract_info: str = "") -> str:
     if extract_info:
         result = f"**Looking for: {extract_info}**\n\n{result}"
     return result
+
+
+# ============================================================================
+# 4chan Archive Tools (Board-Specific)
+# ============================================================================
+
+async def tool_4plebs_search(query: str, board: str = "pol") -> str:
+    """Search 4plebs archive (covers /pol/, /sp/, /int/, /tv/, /k/, /vg/, etc.).
+
+    Returns formatted search results from the 4plebs full-text search API.
+    """
+    board = board.strip("/").lower()
+    try:
+        async with get_throttler("imageboard").throttle():
+            client = http_client()
+            resp = await client.get(
+                "https://archive.4plebs.org/_/api/chan/search/",
+                params={"boards": board, "text": query},
+                timeout=20.0,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
+            )
+        if resp.status_code != 200:
+            return f"4plebs search error: HTTP {resp.status_code}"
+
+        data = resp.json()
+        posts = data.get("0", {}).get("posts", [])
+        if not posts:
+            return f"No results found on /{board}/ for: {query}"
+
+        formatted = []
+        for i, post in enumerate(list(posts.values())[:10] if isinstance(posts, dict) else posts[:10], 1):
+            thread_num = post.get("thread_num", "")
+            num = post.get("num", "")
+            comment = post.get("comment") or ""
+            # Strip HTML from comment
+            comment = re.sub(r'<[^>]+>', ' ', comment)
+            comment = html.unescape(comment).strip()
+            if len(comment) > 500:
+                comment = comment[:500] + "..."
+            timestamp = post.get("timestamp", 0)
+            date_str = ""
+            if timestamp:
+                try:
+                    date_str = datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%d")
+                except (ValueError, OSError):
+                    pass
+
+            url = f"https://archive.4plebs.org/{board}/thread/{thread_num}/#p{num}"
+            formatted.append(
+                f"{i}. **/{board}/** [{date_str}] (thread #{thread_num})\n"
+                f"   URL: {url}\n"
+                f"   {comment}"
+            )
+
+        return "\n\n".join(formatted)
+
+    except httpx.TimeoutException:
+        return "4plebs search error: request timed out"
+    except Exception as e:
+        return f"4plebs search error: {str(e)}"
+
+
+async def tool_b4k_search(query: str) -> str:
+    """Search arch.b4k.co archive for /biz/ (crypto/financial discussions).
+
+    This is the only reliable /biz/ archive, covering 2017–present.
+    """
+    try:
+        async with get_throttler("imageboard").throttle():
+            client = http_client()
+            resp = await client.get(
+                "https://arch.b4k.co/_/api/chan/search/",
+                params={"boards": "biz", "text": query},
+                timeout=20.0,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
+            )
+        if resp.status_code != 200:
+            return f"b4k search error: HTTP {resp.status_code}"
+
+        data = resp.json()
+        posts = data.get("0", {}).get("posts", [])
+        if not posts:
+            return f"No results found on /biz/ for: {query}"
+
+        formatted = []
+        for i, post in enumerate(list(posts.values())[:10] if isinstance(posts, dict) else posts[:10], 1):
+            thread_num = post.get("thread_num", "")
+            num = post.get("num", "")
+            comment = post.get("comment") or ""
+            comment = re.sub(r'<[^>]+>', ' ', comment)
+            comment = html.unescape(comment).strip()
+            if len(comment) > 500:
+                comment = comment[:500] + "..."
+            timestamp = post.get("timestamp", 0)
+            date_str = ""
+            if timestamp:
+                try:
+                    date_str = datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%d")
+                except (ValueError, OSError):
+                    pass
+
+            url = f"https://arch.b4k.co/biz/thread/{thread_num}/#p{num}"
+            formatted.append(
+                f"{i}. **/biz/** [{date_str}] (thread #{thread_num})\n"
+                f"   URL: {url}\n"
+                f"   {comment}"
+            )
+
+        return "\n\n".join(formatted)
+
+    except httpx.TimeoutException:
+        return "b4k search error: request timed out"
+    except Exception as e:
+        return f"b4k search error: {str(e)}"
+
+
+async def tool_warosu_search(query: str, board: str = "g") -> str:
+    """Search warosu.org archive (covers /g/, /sci/, /lit/, /jp/, /vr/, /fa/).
+
+    Warosu archives technology, science, and literature boards.
+    """
+    board = board.strip("/").lower()
+    try:
+        async with get_throttler("imageboard").throttle():
+            client = http_client()
+            # Warosu uses a GET search endpoint
+            resp = await client.get(
+                f"https://warosu.org/{board}/",
+                params={"task": "search2", "search_text": query, "offset": 0},
+                timeout=20.0,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                },
+            )
+        if resp.status_code != 200:
+            return f"Warosu search error: HTTP {resp.status_code}"
+
+        # Warosu returns HTML, not JSON — parse results from HTML
+        raw = resp.text
+        # Extract post blocks: <td class="reply" id="pNNNNN">
+        post_blocks = re.findall(
+            r'<td[^>]*class="reply"[^>]*id="p(\d+)"[^>]*>(.*?)</td>',
+            raw, re.DOTALL,
+        )
+        if not post_blocks:
+            return f"No results found on /{board}/ for: {query}"
+
+        formatted = []
+        for i, (post_id, block) in enumerate(post_blocks[:10], 1):
+            # Extract comment text
+            comment_m = re.search(r'<blockquote>(.*?)</blockquote>', block, re.DOTALL)
+            comment = ""
+            if comment_m:
+                comment = re.sub(r'<[^>]+>', ' ', comment_m.group(1))
+                comment = html.unescape(comment).strip()
+                if len(comment) > 500:
+                    comment = comment[:500] + "..."
+
+            # Extract thread number from reply link
+            thread_m = re.search(r'href="/\w+/thread/(\d+)', block)
+            thread_num = thread_m.group(1) if thread_m else post_id
+
+            url = f"https://warosu.org/{board}/thread/{thread_num}#p{post_id}"
+            formatted.append(
+                f"{i}. **/{board}/** (post #{post_id})\n"
+                f"   URL: {url}\n"
+                f"   {comment}"
+            )
+
+        return "\n\n".join(formatted)
+
+    except httpx.TimeoutException:
+        return "Warosu search error: request timed out"
+    except Exception as e:
+        return f"Warosu search error: {str(e)}"
 

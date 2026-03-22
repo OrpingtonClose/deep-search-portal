@@ -1,35 +1,206 @@
-"""Subagent research loop: single-agent tool-calling for one research angle.
-
-Extracted from persistent_deep_research_proxy.py lines 4529-5043.
+"""
+Planning agent, AoT reflection, and subagent research loop.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import re
-import time
 import traceback
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
 from .config import (
+    MAX_RECURSIVE_DEPTH,
     MAX_SUBAGENT_TURNS,
-    SUBAGENT_MODEL,
+    MAX_SUBAGENTS,
     NOVELTY_EXPAND_THRESHOLD,
     NOVELTY_STOP_THRESHOLD,
-    MAX_RECURSIVE_DEPTH,
+    SUBAGENT_MODEL,
+    log,
 )
 from .models import AtomicCondition, SubagentResult
-from .scoring import trust_score_url, serendipity_score
+from .scoring import serendipity_score, trust_score_url
 from .llm import call_llm
+from .planning import route_research_question
 from .tool_executor import execute_tools_parallel
 
 if TYPE_CHECKING:
-    from .heartbeat import LiveFindingsCollector
+    from .pipeline import ConditionStore
+    from .synthesis import LiveFindingsCollector
 
-log = logging.getLogger("persistent-research")
+
+# ============================================================================
+# Planning Agent
+# ============================================================================
+
+PLANNING_PROMPT = """You are a research planning agent. Your job is to decompose a user's question into distinct research angles that can be investigated independently and in parallel.
+
+Given the user's query, produce a JSON object with exactly this structure:
+{
+  "angles": [
+    {"title": "short angle title", "query": "specific search query for this angle", "description": "what this angle investigates"},
+    ...
+  ],
+  "bridge_queries": [
+    {"query": "cross-domain search query", "domains": ["domain1", "domain2"], "rationale": "why this unexpected connection might be useful"}
+  ]
+}
+
+Rules:
+1. Generate 3-7 angles covering: factual/technical, historical/context, contrarian/alternative views, practical/applied, and recent developments.
+2. Generate 0-2 bridge queries ONLY if a genuinely useful cross-domain insight exists. Do NOT force connections — if none are natural, output an empty array. Bridge queries must still directly help answer the user's original question.
+3. Each angle should be independent enough to research separately.
+4. Make search queries specific and actionable — they must be queries a human would type to answer the original question.
+5. STAY ON TOPIC: Every angle and bridge query must serve the user's actual intent. If the user asks about buying X, research buying X — do not research side effects, alternative uses, or tangential associations of X.
+6. Output ONLY valid JSON, no markdown fences or commentary."""
+
+
+async def plan_research(
+    user_query: str,
+    prior_conditions: list[dict],
+    graph_neighbors: list[dict],
+    req_id: str,
+) -> dict:
+    """Use the small model to decompose the query into research angles."""
+    messages = [{"role": "system", "content": PLANNING_PROMPT}]
+
+    user_content = f"User query: {user_query}"
+    if prior_conditions:
+        prior_text = "\n".join(
+            f"- {c['fact']} [from prior research on: {c['original_query']}]"
+            for c in prior_conditions[:10]
+        )
+        user_content += f"\n\nPrior knowledge from previous research sessions:\n{prior_text}"
+        user_content += "\n\nConsider these prior findings when planning angles. Avoid redundant research."
+
+    if graph_neighbors:
+        graph_text = "\n".join(
+            f"- {g['fact']} (via entity: {g.get('via_entity', '?')})"
+            for g in graph_neighbors[:5]
+        )
+        user_content += f"\n\nRelated entities from knowledge graph:\n{graph_text}"
+
+    messages.append({"role": "user", "content": user_content})
+
+    result = await call_llm(messages, req_id, model=SUBAGENT_MODEL, max_tokens=2048, temperature=0.4)
+
+    if "error" in result:
+        log.error(f"[{req_id}] Planning agent error: {result['error']}")
+        return {
+            "angles": [{"title": "General research", "query": user_query, "description": "Direct research"}],
+            "bridge_queries": [],
+        }
+
+    content = result.get("content", "")
+
+    try:
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+            cleaned = re.sub(r'\s*```$', '', cleaned)
+        plan = json.loads(cleaned)
+
+        angles = plan.get("angles", [])
+        bridge_queries = plan.get("bridge_queries", [])
+
+        if not angles:
+            raise ValueError("No angles in plan")
+
+        angles = angles[:MAX_SUBAGENTS]
+
+        for bq in bridge_queries[:3]:
+            if len(angles) < MAX_SUBAGENTS + 3:
+                domains = bq.get("domains", ["?", "?"])
+                d1 = domains[0] if len(domains) > 0 else "?"
+                d2 = domains[1] if len(domains) > 1 else "?"
+                angles.append({
+                    "title": f"Bridge: {d1} x {d2}",
+                    "query": bq.get("query", ""),
+                    "description": bq.get("rationale", "Cross-domain exploration"),
+                    "is_bridge": True,
+                })
+
+        return {"angles": angles, "bridge_queries": bridge_queries}
+
+    except (json.JSONDecodeError, ValueError) as e:
+        log.warning(f"[{req_id}] Planning agent returned invalid JSON: {e}, content={content[:200]}")
+        return {
+            "angles": [
+                {"title": "General research", "query": user_query, "description": "Direct research on the topic"},
+                {"title": "Recent developments", "query": f"{user_query} recent news 2024 2025", "description": "Latest developments"},
+                {"title": "Expert analysis", "query": f"{user_query} expert analysis review", "description": "Expert perspectives"},
+                {"title": "Academic research", "query": f"{user_query} research paper study", "description": "Academic sources"},
+            ],
+            "bridge_queries": [],
+        }
+
+
+# ============================================================================
+# AoT Reflection Mechanism
+# ============================================================================
+
+AOT_REFLECTION_PROMPT = """You are an AoT (Atom of Thoughts) reflection agent. Evaluate the quality of the following research decomposition and conditions.
+
+Check for:
+1. Missing parallel relationships (false dependencies between conditions)
+2. Unnecessary complexity (conditions that overlap significantly)
+3. Non-atomic conditions (statements that need further decomposition)
+4. Poor contraction quality (conditions that don't reduce complexity)
+
+Output ONLY a JSON object:
+{
+  "quality_score": 0.8,
+  "issues": [
+    {"type": "overlap", "indices": [0, 2], "description": "These conditions say essentially the same thing"},
+    {"type": "non_atomic", "index": 4, "description": "This condition contains multiple claims"},
+    {"type": "missing_angle", "description": "No conditions cover X perspective"}
+  ],
+  "should_redecompose": false,
+  "suggested_queries": ["additional search query if gaps found"]
+}
+
+Output ONLY valid JSON, no markdown fences."""
+
+
+async def reflect_on_conditions(
+    conditions: list[AtomicCondition],
+    user_query: str,
+    req_id: str,
+) -> dict:
+    """Validate decomposition quality and suggest improvements."""
+    if not conditions:
+        return {"quality_score": 0.0, "issues": [], "should_redecompose": True, "suggested_queries": [user_query]}
+
+    conditions_text = "\n".join(
+        f"{i}. [{c.angle}] {c.fact} (confidence: {c.confidence:.1f})"
+        for i, c in enumerate(conditions)
+    )
+
+    messages = [
+        {"role": "system", "content": AOT_REFLECTION_PROMPT},
+        {"role": "user", "content": (
+            f"Original query: {user_query}\n\n"
+            f"Current atomic conditions:\n{conditions_text}"
+        )},
+    ]
+
+    result = await call_llm(messages, req_id, model=SUBAGENT_MODEL, max_tokens=1024, temperature=0.1)
+
+    if "error" in result:
+        return {"quality_score": 0.5, "issues": [], "should_redecompose": False, "suggested_queries": []}
+
+    content = result.get("content", "")
+    try:
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+            cleaned = re.sub(r'\s*```$', '', cleaned)
+        return json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        return {"quality_score": 0.5, "issues": [], "should_redecompose": False, "suggested_queries": []}
+
 
 # ============================================================================
 # Subagent Research (with AoT State Contraction + Saturation Detection)
@@ -51,27 +222,44 @@ Initial search query: {angle_query}
 7. Use wayback_fetch if a link is dead or unavailable.
 8. Use news_search (not searxng_search) for anything about current events, recent news, market movements, or time-sensitive topics.
 
-**USE THE FULL TOOL ECOSYSTEM — do NOT rely only on web search:**
-- knowledge_graph_search: Query the Neo4j knowledge graph FIRST for prior research, ingested documents, and known entities. This is your most valuable source for topics the system has seen before.
-- knowledge_discover: Run graph discovery algorithms (spreading_activation, swanson_abc, information_gaps) to find hidden connections and serendipitous links in prior knowledge.
-- twitter_search: Real-time signals, expert commentary, breaking news, public discourse. Use Twitter search operators (from:, since:, "exact phrase").
-- youtube_search: Video content, expert lectures, documentaries, tutorials, interviews. Often contains information not found in text-based sources.
+**TOOL PRIORITY — community and underground sources FIRST:**
+Your FIRST tool calls must come from community/underground sources. Do NOT default to searxng_search.
+
+PRIMARY (use these FIRST — real people, real discussions, real experiences):
 - reddit_search: Community discussions, niche expertise, first-hand experiences. Specify subreddits for targeted results.
+- forum_search: Niche internet forums (SomethingAwful, Bodybuilding.com, XDA, Head-Fi, AVSForum, Overclock.net, ResetEra, etc.). First-hand experiences and underground knowledge.
 - chan_4plebs_search: Anonymous intelligence from /pol/, /sp/, /int/, /tv/. Early narrative tracking, political discourse, uncensored discussion.
 - chan_b4k_search: /biz/ archive — cryptocurrency, DeFi, financial alpha, early-stage project sentiment.
 - chan_warosu_search: /g/ (tech), /sci/ (science), /lit/ (literature) archives. Niche technical and scientific discussion.
-- social_media_search: Instagram, TikTok, LinkedIn, YouTube via commercial scrapers.
-- hackernews_search: Tech industry discourse, startup culture, programming debates, security incidents, expert opinions from engineers/founders.
-- stackexchange_search: Expert Q&A from hundreds of niche communities (stackoverflow, math, physics, chemistry, biology, electronics, diy, cooking, gaming, rpg, worldbuilding, law, money, academia, etc.).
-- pubmed_search: Biomedical and life science research — medical journals, clinical trials, pharmacology, genetics, epidemiology, public health.
-- wikipedia_search: Encyclopedic background context, definitions, historical facts. Fast reference.
-- archiveorg_search: Internet Archive full-text search — rare historical documents, out-of-print books, government reports, primary sources.
-- forum_search: Niche internet forums (SomethingAwful, Bodybuilding.com, XDA, Head-Fi, AVSForum, Overclock.net, ResetEra, etc.). First-hand experiences and underground knowledge.
-- scholar_search: Academic literature beyond arXiv — Google Scholar, Semantic Scholar, SSRN, JSTOR. Journal articles, theses, patents, court opinions.
-- substack_search: Independent journalism and long-form analysis from Substack newsletters. Expert commentary not found in mainstream media.
-- DIVERSIFY your sources. Do NOT use only searxng_search. Each research node should use at least 2-3 different tool types.
+- twitter_search: Real-time signals, expert commentary, breaking news, public discourse.
+- substack_search: Independent journalism and long-form analysis from Substack newsletters.
+- hackernews_search: Tech industry discourse, startup culture, expert opinions from engineers/founders.
+- stackexchange_search: Expert Q&A from hundreds of niche communities.
+- youtube_search: Search YouTube for videos. After finding results, ALWAYS follow up with youtube_transcript and youtube_video_metadata.
+- youtube_transcript: Extract full spoken content (transcript/subtitles) from a YouTube video URL. This is the PRIMARY way to get knowledge from videos.
+- youtube_video_metadata: Extract title, description, chapters, comments, tags from a YouTube video. Comments contain corrections and community knowledge.
+- youtube_video_analyze: Analyze video VISUALS using Qwen Omni vision model — diagrams, code on screen, product teardowns, demonstrations. Use when transcript alone isn't enough.
+- social_media_search: Instagram, TikTok, LinkedIn via commercial scrapers.
+- telegram_search: Encrypted community channels, alternative discourse.
+- darknet_market_search: Underground marketplace intelligence.
+
+SECONDARY (use for depth/verification AFTER primary sources):
+- scholar_search: Academic literature — journal articles, theses, patents, court opinions.
+- pubmed_search: Biomedical research — medical journals, clinical trials.
+- arxiv_search: Pre-print academic papers.
+- archiveorg_search: Historical documents, out-of-print materials, primary sources.
+- knowledge_graph_search: Query Neo4j for prior research and known entities.
+- knowledge_discover: Graph discovery algorithms for hidden connections.
+
+FALLBACK ONLY (use ONLY when primary and secondary return nothing):
+- searxng_search: Generic web search. NEVER use as your first tool call.
+- news_search: Mainstream news results.
+- wikipedia_search: Background context only.
+
+{tool_routing_instruction}
 
 **CRITICAL RULES:**
+- Your FIRST 2 tool calls MUST be from PRIMARY sources. Do NOT start with searxng_search.
 - NEVER fabricate or invent source names. Only cite sources you actually fetched via tools.
 - NEVER claim you checked Bloomberg Terminal, Reuters, or any specific service unless a tool actually returned results from that service.
 - If tools return no useful results, say so honestly — do NOT invent plausible-sounding conclusions.
@@ -90,10 +278,10 @@ Initial search query: {angle_query}
 After gathering information, you must output your findings as atomic conditions.
 When you are done researching, output your findings in this exact JSON format:
 ```json
-{"conditions": [
-    {"fact": "clear factual statement", "source_url": "url", "confidence": 0.8},
+{{"conditions": [
+    {{"fact": "clear factual statement", "source_url": "url", "confidence": 0.8}},
     ...
-]}
+]}}
 ```
 
 **TOOL USAGE:**
@@ -102,10 +290,24 @@ When you are done researching, output your findings in this exact JSON format:
 - If a tool call fails, try a different approach.
 - Use different tools for different needs (web search, arxiv for papers, wikidata for facts).
 
+**INLINE VERIFICATION (CRITICAL):**
+When you discover a CONCRETE ENTITY (a specific vendor, product, person, organization, website, or service):
+1. IMMEDIATELY search for that entity by name across at least 2 different source types
+   - Example: found "buysteroids.ws"? Search for `"buysteroids.ws" review`, `"buysteroids.ws" scam`, `"buysteroids.ws" reddit`
+   - Use forum_search, reddit_search, hackernews_search, twitter_search — not just web search
+2. Record what you find (or explicitly note "no independent mentions found")
+3. Adjust your confidence based on corroboration:
+   - Multiple independent mentions confirming = confidence 0.8-0.9
+   - Single mention only = confidence 0.5-0.6
+   - Zero independent mentions = confidence 0.2-0.3 (flag as unverified)
+   - Contradictory mentions ("scam", "fake") = confidence 0.1-0.2
+This is NOT optional. Every concrete entity MUST be cross-referenced before you stop.
+
 **WHEN TO STOP:**
 - You have found 3-10 distinct facts about your angle
 - Additional searches return information you already have (saturation)
-- You have verified key claims across sources"""
+- You have verified key claims across sources
+- Every concrete entity discovered has been cross-referenced via at least 2 source types"""
 
 SERENDIPITY_INSTRUCTION = """**SERENDIPITY HUNTING:**
 You are not just looking for direct answers. You are hunting for "happy accidents" --
@@ -143,12 +345,12 @@ Current findings:
 Original query: {query}
 
 Output ONLY a JSON object:
-{
+{{
   "gaps": [
-    {"title": "gap description", "query": "specific search query to fill this gap", "priority": "high|medium|low"}
+    {{"title": "gap description", "query": "specific search query to fill this gap", "priority": "high|medium|low"}}
   ],
   "saturation_estimate": 0.7
-}
+}}
 
 Rules:
 - Identify 1-3 gaps maximum
@@ -165,11 +367,13 @@ async def run_subagent(
     user_query: str,
     depth: int = 0,
     collector: Optional["LiveFindingsCollector"] = None,
+    condition_store: Optional["ConditionStore"] = None,
 ) -> SubagentResult:
     """Run a single subagent's research loop on one angle.
 
     Uses AoT-style state contraction and dynamic saturation detection.
     May spawn recursive sub-subagents for rabbit holes.
+    Conditions are admitted through the global ConditionStore at birth.
     """
     angle_title = angle.get("title", f"Angle {subagent_index + 1}")
     angle_query = angle.get("query", user_query)
@@ -179,20 +383,43 @@ async def run_subagent(
 
     log.info(f"[{sa_id}] Starting subagent: {angle_title} (depth={depth})")
 
+    # Smart question routing: determine which tools to use for this angle
+    tool_routing_inst = ""
+    if condition_store is not None:
+        routing = await route_research_question(
+            angle_query, user_query, condition_store, req_id,
+        )
+        mandatory = routing.get("mandatory_tools", [])
+        preferred = routing.get("preferred_tools", [])
+        avoid = routing.get("avoid_topics", [])
+        suggested_qs = routing.get("suggested_queries", [])
+
+        parts = []
+        if mandatory:
+            parts.append(f"MANDATORY tools for this angle (use ALL of these): {', '.join(mandatory)}")
+        if preferred:
+            parts.append(f"Preferred tools (use at least 1): {', '.join(preferred)}")
+        if suggested_qs:
+            parts.append(f"Suggested search queries: {'; '.join(suggested_qs)}")
+        if avoid:
+            parts.append(f"AVOID these saturated topics: {', '.join(avoid)}")
+
+        saturation = condition_store._get_saturation_signal()
+        if saturation:
+            parts.append(saturation)
+
+        if parts:
+            tool_routing_inst = "**ROUTING INSTRUCTIONS FOR THIS ANGLE:**\n" + "\n".join(f"- {p}" for p in parts)
+
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     serendipity_inst = SERENDIPITY_INSTRUCTION if is_bridge else ""
-    # Use .replace() instead of .format() to avoid KeyError when
-    # angle_query or angle_desc contains { or } characters.
-    system_prompt = SUBAGENT_PROMPT_TEMPLATE.replace(
-        "{date}", today
-    ).replace(
-        "{angle_title}", angle_title
-    ).replace(
-        "{angle_description}", angle_desc
-    ).replace(
-        "{angle_query}", angle_query
-    ).replace(
-        "{serendipity_instruction}", serendipity_inst
+    system_prompt = SUBAGENT_PROMPT_TEMPLATE.format(
+        date=today,
+        angle_title=angle_title,
+        angle_description=angle_desc,
+        angle_query=angle_query,
+        serendipity_instruction=serendipity_inst,
+        tool_routing_instruction=tool_routing_inst,
     )
 
     agent_messages: list[dict] = [
@@ -239,16 +466,25 @@ async def run_subagent(
                 result.turns_used = turn
                 conditions = _parse_conditions(content, angle_title, is_bridge)
                 if conditions:
-                    for c in conditions:
-                        c.trust_score = trust_score_url(c.source_url)
-                        c.serendipity_score_val = serendipity_score(c.fact, user_query, known_facts)
+                    # Admit conditions through global store (admission pipeline)
+                    if condition_store is not None:
+                        admission_results = await condition_store.admit_batch(conditions)
+                        admitted = [ar.condition for ar in admission_results if ar.admitted and ar.condition]
+                        rejected_count = len(conditions) - len(admitted)
+                        if rejected_count > 0:
+                            log.info(f"[{sa_id}] Admission: {len(admitted)} admitted, {rejected_count} rejected")
+                        conditions = admitted
+                    else:
+                        for c in conditions:
+                            c.trust_score = trust_score_url(c.source_url)
+                            c.serendipity_score_val = serendipity_score(c.fact, user_query, known_facts)
                     result.conditions.extend(conditions)
-                    # Feed live findings to heartbeat collector
-                    await progress_queue.put({
-                        "type": "conditions",
-                        "subagent": subagent_index,
-                        "conditions": conditions,
-                    })
+                    if conditions:
+                        await progress_queue.put({
+                            "type": "conditions",
+                            "subagent": subagent_index,
+                            "conditions": conditions,
+                        })
                 break
 
             assistant_msg: dict = {"role": "assistant", "content": content or None, "tool_calls": tool_calls}
@@ -326,9 +562,23 @@ async def run_subagent(
                         extract_result.get("content", ""), angle_title, is_bridge
                     )
                     if mid_conditions:
-                        for c in mid_conditions:
-                            c.trust_score = trust_score_url(c.source_url)
-                            c.serendipity_score_val = serendipity_score(c.fact, user_query, known_facts)
+                        # Admit through global store
+                        if condition_store is not None:
+                            admission_results = await condition_store.admit_batch(mid_conditions)
+                            admitted = [ar.condition for ar in admission_results if ar.admitted and ar.condition]
+                            rejected = len(mid_conditions) - len(admitted)
+                            if rejected > 0:
+                                log.info(f"[{sa_id}] Mid-turn admission: {len(admitted)} admitted, {rejected} rejected")
+                                # Inject saturation signal into next context reset
+                                dup_results = [ar for ar in admission_results if ar.reason == "duplicate" and ar.saturation_signal]
+                                if dup_results:
+                                    saturation_msg = dup_results[0].saturation_signal
+                                    agent_messages.append({"role": "user", "content": f"RESEARCH REDIRECT: {saturation_msg}"})
+                            mid_conditions = admitted
+                        else:
+                            for c in mid_conditions:
+                                c.trust_score = trust_score_url(c.source_url)
+                                c.serendipity_score_val = serendipity_score(c.fact, user_query, known_facts)
 
                         # Dynamic Saturation Detection
                         new_fact_texts = [c.fact for c in mid_conditions]
@@ -352,12 +602,12 @@ async def run_subagent(
                         known_facts.extend(new_fact_texts)
                         result.conditions.extend(mid_conditions)
 
-                        # Feed live findings to heartbeat collector
-                        await progress_queue.put({
-                            "type": "conditions",
-                            "subagent": subagent_index,
-                            "conditions": mid_conditions,
-                        })
+                        if mid_conditions:
+                            await progress_queue.put({
+                                "type": "conditions",
+                                "subagent": subagent_index,
+                                "conditions": mid_conditions,
+                            })
 
                         if len(result.novelty_history) >= 2 and novelty < NOVELTY_STOP_THRESHOLD:
                             log.info(f"[{sa_id}] Saturation detected (novelty={novelty:.2f}), stopping early")
@@ -401,16 +651,20 @@ async def run_subagent(
                     final_extract.get("content", ""), angle_title, is_bridge
                 )
                 if conditions:
-                    for c in conditions:
-                        c.trust_score = trust_score_url(c.source_url)
-                        c.serendipity_score_val = serendipity_score(c.fact, user_query, known_facts)
+                    if condition_store is not None:
+                        admission_results = await condition_store.admit_batch(conditions)
+                        conditions = [ar.condition for ar in admission_results if ar.admitted and ar.condition]
+                    else:
+                        for c in conditions:
+                            c.trust_score = trust_score_url(c.source_url)
+                            c.serendipity_score_val = serendipity_score(c.fact, user_query, known_facts)
                     result.conditions.extend(conditions)
-                    # Feed live findings to heartbeat collector
-                    await progress_queue.put({
-                        "type": "conditions",
-                        "subagent": subagent_index,
-                        "conditions": conditions,
-                    })
+                    if conditions:
+                        await progress_queue.put({
+                            "type": "conditions",
+                            "subagent": subagent_index,
+                            "conditions": conditions,
+                        })
 
         # Recursive subagent spawning for rabbit holes
         if (depth < MAX_RECURSIVE_DEPTH
@@ -419,10 +673,8 @@ async def run_subagent(
                 and result.novelty_history[-1] > NOVELTY_EXPAND_THRESHOLD):
             findings_text = "\n".join(c.to_text() for c in result.conditions[:15])
             gap_messages = [
-                {"role": "system", "content": GAP_ANALYSIS_PROMPT.replace(
-                    "{findings}", findings_text
-                ).replace(
-                    "{query}", angle_query
+                {"role": "system", "content": GAP_ANALYSIS_PROMPT.format(
+                    findings=findings_text, query=angle_query
                 )},
                 {"role": "user", "content": "Identify research gaps."},
             ]
@@ -457,7 +709,7 @@ async def run_subagent(
                             }
                             child_tasks.append(
                                 asyncio.create_task(
-                                    run_subagent(child_angle, subagent_index * 100 + gi, progress_queue, req_id, user_query, depth + 1, collector=collector)
+                                    run_subagent(child_angle, subagent_index * 100 + gi, progress_queue, req_id, user_query, depth + 1, collector=collector, condition_store=condition_store)
                                 )
                             )
 

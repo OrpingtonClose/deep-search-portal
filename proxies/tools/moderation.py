@@ -1,40 +1,38 @@
-"""Mistral moderation gate and commercial SERP APIs (Bright Data, Oxylabs).
-
-Extracted from persistent_deep_research_proxy.py lines 1547-1741.
+"""
+Content classification (advisory only), moderation, and commercial SERP APIs.
 """
 from __future__ import annotations
 
 import json
-import logging
 import re
 from urllib.parse import quote_plus
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from shared import get_throttler
-
-from . import _get_http_client
+from shared import get_throttler, http_client
 
 from .config import (
-    UPSTREAM_BASE,
-    UPSTREAM_KEY,
-    MODERATION_MODEL,
     BRIGHT_DATA_API_KEY,
     BRIGHT_DATA_SERP_ZONE,
-    OXYLABS_USERNAME,
+    MODERATION_MODEL,
     OXYLABS_PASSWORD,
-    COMMERCIAL_SEARCH_ENABLED,
+    OXYLABS_USERNAME,
+    UPSTREAM_BASE,
+    UPSTREAM_KEY,
+    log,
 )
 
-log = logging.getLogger("persistent-research")
 
 # ============================================================================
-# Mistral Moderation Gate
+# Content Classifier (advisory only — does NOT block searches)
 # ============================================================================
 
-# Categories that indicate content too risky for commercial APIs.
-_MODERATION_BLOCK_CATEGORIES = frozenset({
+# Categories for content classification.  These are ADVISORY only — they
+# inform model routing (e.g. use uncensored model for flagged queries) but
+# do NOT block any search or tool execution.  The whole point of the research
+# proxy is to investigate topics that mainstream APIs refuse to touch.
+_MODERATION_CATEGORIES = frozenset({
     "sexual",
     "hate_and_discrimination",
     "violence_and_threats",
@@ -43,7 +41,9 @@ _MODERATION_BLOCK_CATEGORIES = frozenset({
 })
 
 
-_MODERATION_PROMPT = """You are a content safety classifier. Evaluate the user query below and determine if it falls into any of these blocked categories:
+_MODERATION_PROMPT = """You are a content classifier. Categorise the user query below.
+
+Categories:
 - sexual
 - hate_and_discrimination
 - violence_and_threats
@@ -51,12 +51,11 @@ _MODERATION_PROMPT = """You are a content safety classifier. Evaluate the user q
 - selfharm
 
 Respond with ONLY valid JSON (no markdown, no explanation):
-{"safe": true/false, "flagged_categories": ["category1", ...]}
+{{"categories": ["category1", ...]}}
 
-If the query is safe for commercial search APIs, set safe=true and flagged_categories=[].
-If any blocked category applies, set safe=false and list the matching categories.
-Be permissive — only flag content that clearly and primarily promotes the listed harms.
-Research queries about sensitive topics (drugs, weapons, conflicts) for informational purposes are SAFE."""
+If no category applies, return {{"categories": []}}.
+Be precise — only tag categories that clearly apply to the query's primary topic.
+Research or informational queries about sensitive topics should still be categorised accurately."""
 
 
 def _get_moderation_llm() -> ChatOpenAI:
@@ -70,18 +69,18 @@ def _get_moderation_llm() -> ChatOpenAI:
     )
 
 
-async def moderate_query(query: str) -> tuple[bool, dict]:
-    """Check a query with Mistral moderation via LangChain before sending to commercial APIs.
+async def classify_query(query: str) -> list[str]:
+    """Classify a query into content categories (advisory only).
 
-    Uses ChatOpenAI with the moderation model so the call is tracked
-    by LangChain callbacks (metrics, tracing).
+    This is used for MODEL ROUTING — choosing uncensored vs censored LLMs.
+    It does NOT gate or block any search, tool, or API call.  The research
+    proxy must be able to investigate any topic the user asks about.
 
     Returns:
-        (is_safe, details)  —  is_safe=True means commercial APIs can be used.
-        details contains the flagged categories for logging.
+        List of category strings that apply (empty list = no flags).
     """
     if not UPSTREAM_KEY:
-        return False, {"error": "no API key"}
+        return []
 
     try:
         llm = _get_moderation_llm()
@@ -102,28 +101,34 @@ async def moderate_query(query: str) -> tuple[bool, dict]:
             if m:
                 data = json.loads(m.group())
             else:
-                log.warning(f"Moderation returned unparseable response: {content[:200]}")
-                return False, {"error": "unparseable response"}
+                log.warning(f"Classifier returned unparseable response: {content[:200]}")
+                return []
 
-        is_safe = data.get("safe", False)
-        flagged_cats = [
-            cat for cat in data.get("flagged_categories", [])
-            if cat in _MODERATION_BLOCK_CATEGORIES
+        categories = [
+            cat for cat in data.get("categories", data.get("flagged_categories", []))
+            if cat in _MODERATION_CATEGORIES
         ]
 
-        if not is_safe or flagged_cats:
+        if categories:
             log.info(
-                f"Moderation blocked commercial search: query='{query[:60]}' "
-                f"flagged={flagged_cats}"
+                f"Query classified: query='{query[:60]}' "
+                f"categories={categories}"
             )
-            return False, {"flagged": flagged_cats}
-
-        return True, {"flagged_categories": []}
+        return categories
 
     except Exception as e:
-        log.warning(f"Moderation check failed: {e}")
-        # Fail closed — don't use commercial APIs if we can't moderate.
-        return False, {"error": str(e)}
+        log.warning(f"Classification failed: {e}")
+        return []
+
+
+async def moderate_query(query: str) -> tuple[bool, dict]:
+    """Legacy wrapper — always returns is_safe=True.
+
+    Kept for backward compatibility.  The moderation gate no longer blocks
+    any search or tool.  Use classify_query() for advisory classification.
+    """
+    categories = await classify_query(query)
+    return True, {"categories": categories}
 
 
 # ============================================================================
@@ -137,7 +142,7 @@ async def _search_bright_data_serp(query: str) -> list[dict]:
         return []
     try:
         async with get_throttler("bright_data").throttle():
-            client = _get_http_client()
+            client = http_client()
             search_url = f"https://www.google.com/search?q={quote_plus(query)}&hl=en&gl=us"
             resp = await client.post(
                 "https://api.brightdata.com/request",
@@ -180,7 +185,7 @@ async def _search_oxylabs_serp(query: str) -> list[dict]:
         return []
     try:
         async with get_throttler("oxylabs").throttle():
-            client = _get_http_client()
+            client = http_client()
             resp = await client.post(
                 "https://realtime.oxylabs.io/v1/queries",
                 auth=(OXYLABS_USERNAME, OXYLABS_PASSWORD),
@@ -224,4 +229,3 @@ async def _commercial_search(query: str) -> list[dict]:
     if results:
         return results
     return await _search_oxylabs_serp(query)
-

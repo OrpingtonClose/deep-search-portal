@@ -1,68 +1,30 @@
-"""LLM factory functions, message conversion, and call_llm with retry logic.
-
-Extracted from persistent_deep_research_proxy.py lines 222-252, 3867-3999.
+"""
+LLM communication: message conversion, call_llm with retry logic.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import re
 import uuid
 from typing import Any, Optional
 
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_openai import ChatOpenAI
 
 from shared import get_throttler
 
 from .config import (
-    UPSTREAM_BASE,
-    UPSTREAM_KEY,
     UPSTREAM_MODEL,
-    SUBAGENT_MODEL,
+    _get_llm,
+    log,
 )
-
-log = logging.getLogger("persistent-research")
-
-# Per-request LangGraph callback config, keyed by req_id.
-# call_llm looks up the config for the current request so that
-# ResearchMetricsCallback fires on every LLM call automatically.
-_request_configs: dict[str, dict] = {}
-
-def _get_llm(
-    model: str = "",
-    *,
-    max_tokens: int = 4096,
-    temperature: float = 0.3,
-    timeout: float = 300.0,
-) -> ChatOpenAI:
-    """Create a LangChain ChatOpenAI instance pointing at the Mistral API.
-
-    Note: We pass max_tokens via extra_body instead of the native parameter
-    because langchain-openai >=1.0 converts max_tokens to
-    max_completion_tokens, which the Mistral API rejects with a 422.
-    """
-    return ChatOpenAI(
-        model=model or UPSTREAM_MODEL,
-        api_key=UPSTREAM_KEY,
-        base_url=UPSTREAM_BASE,
-        temperature=temperature,
-        timeout=timeout,
-        extra_body={"max_tokens": max_tokens},
-    )
+from .tool_defs import LANGCHAIN_TOOLS
 
 
-def _get_synthesis_llm(**kwargs: Any) -> ChatOpenAI:
-    """LLM for synthesis / revision (upstream large model)."""
-    return _get_llm(model=UPSTREAM_MODEL, max_tokens=8192, temperature=0.3, **kwargs)
-
-
-def _get_subagent_llm(**kwargs: Any) -> ChatOpenAI:
-    """LLM for subagents, heartbeat, relevance gate (small/fast model)."""
-    return _get_llm(model=SUBAGENT_MODEL, max_tokens=4096, temperature=0.3, **kwargs)
-
+# ============================================================================
+# LLM Communication
+# ============================================================================
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 MAX_LLM_RETRIES = 3
@@ -99,6 +61,11 @@ def _dicts_to_langchain_messages(
     return lc_msgs
 
 
+# Per-request LangGraph callback config, keyed by req_id.
+# call_llm looks up the config for the current request so that
+# ResearchMetricsCallback fires on every LLM call automatically.
+_request_configs: dict[str, dict] = {}
+
 
 async def call_llm(
     messages: list[dict],
@@ -124,7 +91,6 @@ async def call_llm(
     )
 
     if include_tools:
-        from .tool_defs import LANGCHAIN_TOOLS
         llm = llm.bind_tools(LANGCHAIN_TOOLS)
 
     lc_messages = _dicts_to_langchain_messages(messages)
@@ -193,4 +159,5 @@ async def call_llm(
             return {"error": last_error}
 
     return {"error": last_error or "[LLM Error: Max retries exceeded]"}
+
 

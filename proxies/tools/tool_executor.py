@@ -1,38 +1,94 @@
-"""Tool execution: routing, retries, parallel execution, PDF extraction.
-
-Extracted from persistent_deep_research_proxy.py lines 3470-3860.
+"""
+Tool execution: retry wrappers, PDF text extraction, execute_tool dispatcher,
+knowledge graph tools, and parallel tool execution.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
+import re
 import time
 import uuid
 from typing import Optional
 
 import httpx
 
-import knowledge_client
 import social_media_scrapers
-from . import _get_http_client
 
-from .config import WEBPAGE_MAX_CHARS
-from .llm import _request_configs
+from shared import http_client
 
-log = logging.getLogger("persistent-research")
-
-# Import all tool functions for routing
-from .search_tools import (
-    tool_searxng_search, tool_news_search, tool_4plebs_search,
-    tool_b4k_search, tool_warosu_search, tool_twitter_search,
-    tool_python_exec, tool_arxiv_search, tool_wayback_fetch,
-    tool_wikidata_query, tool_web_search, tool_hackernews_search,
-    tool_stackexchange_search, tool_pubmed_search, tool_wikipedia_search,
-    tool_archiveorg_search, tool_forum_search, tool_scholar_search,
-    tool_substack_search,
+from .config import (
+    log,
 )
-from .web_fetch import tool_fetch_webpage, enhanced_web_fetch
+from .llm import _request_configs
+from .search_tools import (
+    tool_news_search,
+)
+from .web_fetch import (
+    enhanced_web_fetch,
+    tool_4plebs_search,
+    tool_b4k_search,
+    tool_warosu_search,
+)
+from .search_tools2 import (
+    tool_twitter_search,
+    tool_python_exec,
+    tool_arxiv_search,
+    tool_wayback_fetch,
+    tool_wikidata_query,
+    tool_web_search,
+    tool_hackernews_search,
+    tool_stackexchange_search,
+    tool_pubmed_search,
+    tool_wikipedia_search,
+    tool_archiveorg_search,
+    tool_forum_search,
+    tool_scholar_search,
+    tool_substack_search,
+    tool_youtube_search,
+    tool_youtube_transcript,
+    tool_youtube_video_metadata,
+    tool_youtube_video_analyze,
+)
+
+
+# ============================================================================
+# Retry Wrapper for Tool Execution
+# ============================================================================
+
+def _simplify_query(query: str) -> str:
+    """Strip a long query down to its core keywords for retry.
+
+    Community/underground search APIs often choke on long natural-language
+    queries.  This extracts the 3-5 most significant words.
+    """
+    stop = {
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "shall", "can", "need", "dare", "ought",
+        "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
+        "as", "into", "through", "during", "before", "after", "above",
+        "below", "between", "out", "off", "over", "under", "again",
+        "further", "then", "once", "here", "there", "when", "where", "why",
+        "how", "all", "both", "each", "few", "more", "most", "other", "some",
+        "such", "no", "nor", "not", "only", "own", "same", "so", "than",
+        "too", "very", "just", "about", "what", "which", "who", "whom",
+        "this", "that", "these", "those", "i", "me", "my", "we", "our",
+        "you", "your", "he", "him", "his", "she", "her", "it", "its",
+        "they", "them", "their", "and", "but", "or", "if",
+    }
+    words = [w for w in re.split(r'\W+', query.lower()) if w and w not in stop]
+    return " ".join(words[:5]) if words else query
+
+
+# Tools that benefit from retry with simplified queries
+_RARE_SOURCE_TOOLS = {
+    "chan_4plebs_search", "chan_b4k_search", "chan_warosu_search",
+    "forum_search", "telegram_search", "darknet_market_search",
+    "twitter_search", "substack_search", "youtube_search",
+    "youtube_transcript", "youtube_video_metadata", "youtube_video_analyze",
+}
+
 
 async def _retry_tool_call(
     coro_factory,
@@ -71,6 +127,46 @@ async def _retry_tool_call(
     return f"Tool failed after {max_retries + 1} attempts: {last_error}"
 
 
+async def _retry_rare_tool(
+    tool_name: str,
+    arguments: dict,
+    req_id: str = "",
+) -> str:
+    """Retry a rare/community source tool with query simplification.
+
+    For community/underground tools, if the first attempt returns no useful
+    results, retry once with a simplified (keyword-only) query.  This handles
+    the common case where long natural-language queries return empty on APIs
+    that expect short keyword searches.
+    """
+    result = await execute_tool(tool_name, arguments, req_id)
+    prefix = result.lower()[:120]
+
+    # If result looks empty or error-ish, retry with simplified query
+    is_empty = (
+        "no results" in prefix
+        or "0 results" in prefix
+        or len(result.strip()) < 30
+    )
+    is_error = "error" in prefix or "failed" in prefix or "timed out" in prefix
+
+    if (is_empty or is_error) and "query" in arguments:
+        original_q = arguments["query"]
+        simplified = _simplify_query(original_q)
+        if simplified != original_q.lower().strip():
+            log.info(
+                f"[{req_id}] Retrying {tool_name} with simplified query: "
+                f"'{original_q[:60]}' → '{simplified}'"
+            )
+            retry_args = {**arguments, "query": simplified}
+            result2 = await execute_tool(tool_name, retry_args, req_id)
+            prefix2 = result2.lower()[:120]
+            if len(result2.strip()) > len(result.strip()):
+                return result2
+
+    return result
+
+
 # ============================================================================
 # PDF Text Extraction
 # ============================================================================
@@ -82,7 +178,7 @@ async def _extract_pdf_text(url: str) -> Optional[str]:
     Returns extracted text or None on failure.
     """
     try:
-        client = _get_http_client()
+        client = http_client()
         resp = await client.get(
             url,
             timeout=30.0,
@@ -254,6 +350,18 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
         return await tool_scholar_search(arguments.get("query", ""))
     elif tool_name == "substack_search":
         return await tool_substack_search(arguments.get("query", ""))
+    elif tool_name == "youtube_transcript":
+        return await tool_youtube_transcript(
+            arguments.get("url", ""),
+            arguments.get("lang", "en"),
+        )
+    elif tool_name == "youtube_video_metadata":
+        return await tool_youtube_video_metadata(arguments.get("url", ""))
+    elif tool_name == "youtube_video_analyze":
+        return await tool_youtube_video_analyze(
+            arguments.get("url", ""),
+            arguments.get("question", ""),
+        )
     else:
         return f"Unknown tool: {tool_name}"
 
@@ -305,6 +413,7 @@ async def execute_tool(
 async def tool_knowledge_graph_search(arguments: dict) -> str:
     """Search the knowledge graph via the knowledge engine microservice."""
     try:
+        import knowledge_client
         result = await knowledge_client.search(
             namespace=arguments.get("namespace", "default"),
             query=arguments.get("query", ""),
@@ -351,6 +460,7 @@ async def tool_knowledge_graph_search(arguments: dict) -> str:
 async def tool_knowledge_discover(arguments: dict) -> str:
     """Run graph discovery algorithms via the knowledge engine microservice."""
     try:
+        import knowledge_client
         algorithm = arguments.get("algorithm", "")
         namespace = arguments.get("namespace", "default")
         seed_concepts = arguments.get("seed_concepts", [])

@@ -1,7 +1,10 @@
 # =============================================================================
-# SearXNG Settings Patch
+# SearXNG Settings Patch — Maximum Engine Coverage
 # Apply these overrides to the default SearXNG settings.yml
 # The full default settings are in searxng_settings_full.yml for reference.
+#
+# FIRST PRINCIPLE: Enable as many sources as possible.
+# This patch enables ~210 engines (up from ~58 default active).
 # =============================================================================
 
 # REQUIRED: Change from default "ultrasecretkey" or SearXNG refuses to start
@@ -12,57 +15,558 @@ server:
 search:
   formats: [html, csv, json, rss]
   safe_search: 0
-  autocomplete: ""
+  autocomplete: "duckduckgo"
+
+# Increase outgoing limits to handle 200+ engines concurrently
+outgoing:
+  request_timeout: 6.0
+  pool_connections: 200
+  pool_maxsize: 50
+  enable_http2: true
 
 # NOTE: From a datacenter IP, expect these engine issues:
-#   - Google: "access denied" (suspended)
+#   - Google: "access denied" (suspended by Google)
 #   - Startpage: CAPTCHA (suspended)
 #   - DuckDuckGo: frequent timeouts
 #   - Brave: works reliably
 #   - Bing: works reliably
 #   - Wikipedia: works reliably
+#   - Most long-tail engines: work fine from datacenter
 
-# Long-tail search engines: index the "small web" that Google/Bing ignore.
-# These surface text-heavy, non-commercial, uncensored content ideal for research.
 engines:
-  # Marginalia — indexes the non-commercial, text-heavy web (indie blogs,
+
+  # =========================================================================
+  # CUSTOM XPATH ENGINES -- handcrafted scrapers for the "small web"
+  # These are ADDITIONS (new engines not in the default config).
+  # =========================================================================
+
+  # Marginalia -- indexes the non-commercial, text-heavy web (indie blogs,
   # personal sites, academic pages). High signal-to-noise for research queries.
-  - name: marginalia
+  # NOTE: This is a custom xpath scraper, separate from the native marginalia
+  #       engine (which needs an API key). This scrapes the public web UI.
+  - name: marginalia custom
     engine: xpath
     search_url: https://search.marginalia.nu/search?query={query}&profile=default&js=default
     results_xpath: //div[contains(@class, "search-result")]
     url_xpath: .//a[contains(@class, "search-result-url")]/@href
     title_xpath: .//a[contains(@class, "search-result-title")]
     content_xpath: .//p[contains(@class, "search-result-description")]
-    shortcut: mar
+    shortcut: mar2
     categories: [general]
     timeout: 10
     disabled: false
 
-  # Wiby — curates old-school, handmade web pages. Good for niche hobbyist
+  # Wiby -- curates old-school, handmade web pages. Good for niche hobbyist
   # knowledge, retro-computing, and content de-ranked by mainstream engines.
-  - name: wiby
+  # NOTE: This is a custom xpath scraper, separate from the native wiby engine.
+  - name: wiby custom
     engine: xpath
     search_url: https://wiby.me/?q={query}
     results_xpath: //div[@id="results"]/div
     url_xpath: .//a/@href
     title_xpath: .//a
     content_xpath: .//span
-    shortcut: wiby
+    shortcut: wiby2
     categories: [general]
     timeout: 10
     disabled: false
 
-  # Mojeek — independent crawler (not a Google/Bing proxy). No tracking,
-  # no filter bubbles. Indexes content that other engines suppress.
-  - name: mojeek
-    engine: xpath
-    search_url: https://www.mojeek.com/search?q={query}
-    results_xpath: //ul[@class="results-standard"]/li
-    url_xpath: .//a[contains(@class, "ob")]/@href
-    title_xpath: .//a[contains(@class, "ob")]
-    content_xpath: .//p[contains(@class, "s")]
-    shortcut: mjk
-    categories: [general]
-    timeout: 10
+  # =========================================================================
+  # ENABLE ALL DISABLED ENGINES (152 engines)
+  # These are built-in SearXNG engines that ship disabled by default.
+  # We override disabled: false to activate them.
+  # =========================================================================
+
+  # --- MAJOR SEARCH ENGINES ---
+  - name: bing
     disabled: false
+  - name: yahoo
+    disabled: false
+  - name: yandex
+    disabled: false
+  - name: qwant
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: presearch
+    disabled: false
+  - name: ask
+    disabled: false
+  - name: seznam
+    disabled: false
+  - name: yep
+    disabled: false
+
+  # --- INDEPENDENT / ALTERNATIVE WEB INDEXES ---
+  - name: wiby
+    disabled: false
+  - name: mwmbl
+    disabled: false
+  - name: searchmysite
+    disabled: false
+  - name: crowdview
+    disabled: false
+  - name: fynd
+    disabled: false
+
+  # --- DUCKDUCKGO EXTRAS ---
+  - name: ddg definitions
+    disabled: false
+  - name: duckduckgo weather
+    disabled: false
+
+  # --- NEWS ---
+  - name: mojeek news
+    disabled: false
+  - name: presearch news
+    disabled: false
+  - name: yep news
+    disabled: false
+  - name: naver news
+    disabled: false
+  - name: tagesschau
+    disabled: false
+  - name: ansa
+    disabled: false
+  - name: il post
+    disabled: false
+
+  # --- IMAGES ---
+  - name: yandex images
+    disabled: false
+  - name: mojeek images
+    disabled: false
+  - name: presearch images
+    disabled: false
+  - name: yep images
+    disabled: false
+  - name: naver images
+    disabled: false
+  - name: quark images
+    disabled: false
+  - name: pixabay images
+    disabled: false
+  - name: artstation
+    disabled: false
+  - name: 1x
+    disabled: false
+  - name: adobe stock
+    disabled: false
+  - name: library of congress
+    disabled: false
+  - name: public domain image archive
+    disabled: false
+  - name: tineye
+    disabled: false
+  - name: findthatmeme
+    disabled: false
+
+  # --- VIDEOS ---
+  - name: presearch videos
+    disabled: false
+  - name: naver videos
+    disabled: false
+  - name: pixabay videos
+    disabled: false
+  - name: google play movies
+    disabled: false
+  - name: peertube
+    disabled: false
+  - name: rumble
+    disabled: false
+  - name: bitchute
+    disabled: false
+  - name: odysee
+    disabled: false
+  - name: niconico
+    disabled: false
+  - name: adobe stock video
+    disabled: false
+  - name: media.ccc.de
+    disabled: false
+  - name: mediathekviewweb
+    disabled: false
+  - name: ina
+    disabled: false
+
+  # --- SCIENCE & ACADEMIA ---
+  - name: crossref
+    disabled: false
+  - name: openalex
+    disabled: false
+  - name: wikispecies
+    disabled: false
+
+  # --- KNOWLEDGE & ENCYCLOPEDIAS ---
+  - name: wikibooks
+    disabled: false
+  - name: wikiquote
+    disabled: false
+  - name: wikisource
+    disabled: false
+  - name: wikiversity
+    disabled: false
+  - name: wikivoyage
+    disabled: false
+  - name: wikimini
+    disabled: false
+  - name: wolframalpha
+    disabled: false
+  - name: emojipedia
+    disabled: false
+  - name: duden
+    disabled: false
+  - name: woxikon.de synonyme
+    disabled: false
+  - name: encyclosearch
+    disabled: false
+
+  # --- IT / DEVELOPER ---
+  - name: gitlab
+    disabled: false
+  - name: codeberg
+    disabled: false
+  - name: gitea.com
+    disabled: false
+  - name: bitbucket
+    disabled: false
+  - name: sourcehut
+    disabled: false
+  - name: hackernews
+    disabled: false
+  - name: lobste.rs
+    disabled: false
+  - name: habrahabr
+    disabled: false
+  - name: discuss.python
+    disabled: false
+  - name: caddy.community
+    disabled: false
+  - name: pi-hole.community
+    disabled: false
+  - name: microsoft learn
+    disabled: false
+  - name: nixos wiki
+    disabled: false
+  - name: free software directory
+    disabled: false
+  - name: minecraft wiki
+    disabled: false
+
+  # --- PACKAGE MANAGERS ---
+  - name: npm
+    disabled: false
+  - name: crates.io
+    disabled: false
+  - name: hex
+    disabled: false
+  - name: lib.rs
+    disabled: false
+  - name: pkg.go.dev
+    disabled: false
+  - name: metacpan
+    disabled: false
+  - name: packagist
+    disabled: false
+  - name: pub.dev
+    disabled: false
+  - name: rubygems
+    disabled: false
+  - name: alpine linux packages
+    disabled: false
+  - name: cachy os packages
+    disabled: false
+  - name: voidlinux
+    disabled: false
+  - name: anaconda
+    disabled: false
+  - name: national vulnerability database
+    disabled: false
+  - name: huggingface
+    disabled: false
+  - name: huggingface datasets
+    disabled: false
+  - name: huggingface spaces
+    disabled: false
+
+  # --- SOCIAL MEDIA & FORUMS ---
+  - name: reddit
+    disabled: false
+  - name: imgur
+    disabled: false
+  - name: 9gag
+    disabled: false
+
+  # --- ENTERTAINMENT & MEDIA ---
+  - name: imdb
+    disabled: false
+  - name: tmdb
+    disabled: false
+  - name: rottentomatoes
+    disabled: false
+  - name: moviepilot
+    disabled: false
+  - name: senscritique
+    disabled: false
+  - name: steam
+    disabled: false
+  - name: goodreads
+    disabled: false
+  - name: openlibrary
+    disabled: false
+  - name: deezer
+    disabled: false
+  - name: yandex music
+    disabled: false
+  - name: adobe stock audio
+    disabled: false
+  - name: frinkiac
+    disabled: false
+
+  # --- APPS & FILES ---
+  - name: fdroid
+    disabled: false
+  - name: apple app store
+    disabled: false
+  - name: apk mirror
+    disabled: false
+  - name: google play apps
+    disabled: false
+  - name: annas archive
+    disabled: false
+  - name: library genesis
+    disabled: false
+  - name: openrepos
+    disabled: false
+
+  # --- TORRENTS ---
+  - name: 1337x
+    disabled: false
+  - name: btdigg
+    disabled: false
+  - name: nyaa
+    disabled: false
+  - name: tokyotoshokan
+    disabled: false
+
+  # --- MAPS & WEATHER ---
+  - name: apple maps
+    disabled: false
+  - name: openmeteo
+    disabled: false
+
+  # --- TRANSLATION ---
+  - name: mozhi
+    disabled: false
+
+  # --- SHOPPING / STATISTICS ---
+  - name: geizhals
+    disabled: false
+  - name: bpb
+    disabled: false
+  - name: destatis
+    disabled: false
+
+  # --- ICONS & DESIGN ---
+  - name: svgrepo
+    disabled: false
+  - name: selfhst icons
+    disabled: false
+  - name: material icons
+    disabled: false
+  - name: uxwing
+    disabled: false
+
+  # --- MISC / NICHE ---
+  - name: ipernity
+    disabled: false
+  - name: erowid
+    disabled: false
+  - name: fyyd
+    disabled: false
+
+  # --- REGIONAL: CHINESE ---
+  - name: baidu
+    disabled: false
+  - name: baidu images
+    disabled: false
+  - name: baidu kaifa
+    disabled: false
+  - name: quark
+    disabled: false
+  - name: sogou
+    disabled: false
+  - name: sogou images
+    disabled: false
+  - name: sogou videos
+    disabled: false
+  - name: sogou wechat
+    disabled: false
+  - name: bilibili
+    disabled: false
+  - name: acfun
+    disabled: false
+  - name: iqiyi
+    disabled: false
+  - name: 360search
+    disabled: false
+  - name: 360search videos
+    disabled: false
+
+  # --- REGIONAL: KOREAN ---
+  - name: naver
+    disabled: false
+
+  # --- REGIONAL: JAPANESE ---
+  - name: jisho
+    disabled: false
+
+  # --- DECENTRALIZED / P2P ---
+  - name: yacy
+    disabled: false
+  - name: yacy images
+    disabled: false
+
+  # --- SELF-HOSTED LLM (fails gracefully if no local Ollama) ---
+  - name: ollama
+    disabled: false
+
+  # =========================================================================
+  # API-KEY ENGINES -- currently inactive, activated with empty keys.
+  # SearXNG will load them but they'll fail gracefully until keys are set.
+  # Provide the key value to make each one operational.
+  # =========================================================================
+
+  # Marginalia native (independent web index, non-commercial content)
+  # Key: https://about.marginalia-search.com/article/api/ (free)
+  - name: marginalia
+    inactive: false
+    api_key: ""
+
+  # Springer Nature (55M+ academic papers)
+  # Key: https://dev.springernature.com/ (free for non-commercial)
+  - name: springer nature
+    inactive: false
+    api_key: ""
+
+  # Core.ac.uk (200M+ open access papers)
+  # Key: https://core.ac.uk/services/api (free tier available)
+  - name: core.ac.uk
+    inactive: false
+    api_key: ""
+
+  # NASA ADS (astrophysics / astronomy papers)
+  # Key: https://ui.adsabs.harvard.edu/user/settings/token (free with account)
+  - name: astrophysics data system
+    inactive: false
+    api_key: ""
+
+  # Wolfram Alpha API (computational knowledge engine)
+  # Key: https://products.wolframalpha.com/api/ (free tier: 2000 queries/month)
+  - name: wolframalpha_api
+    inactive: false
+    api_key: ""
+
+  # Brave Search API (premium structured results, separate from free scraper)
+  # Key: https://brave.com/search/api/ (free tier: 2000 queries/month)
+  - name: braveapi
+    inactive: false
+    api_key: ""
+
+  # YouTube Data API (structured video search)
+  # Key: https://console.developers.google.com/ (free tier: 10000 units/day)
+  - name: youtube_api
+    inactive: false
+    api_key: ""
+
+  # DeepL (machine translation, 500K chars/month free)
+  # Key: https://www.deepl.com/pro-api
+  - name: deepl
+    inactive: false
+    api_key: ""
+
+  # Wallhaven (high-quality art/wallpapers)
+  # Key: https://wallhaven.cc/settings/account (free with account)
+  - name: wallhaven
+    inactive: false
+    api_key: ""
+
+  # Flickr API (image search with rich metadata)
+  # Key: https://www.flickr.com/services/apps/create/ (free)
+  - name: flickr_api
+    inactive: false
+    api_key: ""
+
+  # Freesound (creative commons audio samples)
+  # Key: https://freesound.org/apiv2/apply/ (free)
+  - name: freesound
+    inactive: false
+    api_key: ""
+
+  # GitHub Code Search (search inside code across all repos)
+  # Key: https://github.com/settings/tokens (personal access token, free)
+  - name: github code
+    inactive: false
+
+  # Repology (cross-distro package search)
+  - name: repology
+    inactive: false
+
+  # OpenClipart (public domain clip art)
+  - name: openclipart
+    inactive: false
+
+  # =========================================================================
+  # CANNOT ENABLE -- exact reasons for each:
+  # =========================================================================
+  #
+  # 1. cloudflareai -- needs Cloudflare account_id + API token + AI Gateway
+  #    name + model name. Not a simple API key; requires Cloudflare Workers
+  #    AI subscription and gateway setup.
+  #    Signup: https://developers.cloudflare.com/workers-ai/get-started/rest-api/
+  #
+  # 2. azure -- needs Azure AD tenant_id + client_id + client_secret.
+  #    Requires an Azure subscription with configured app registration.
+  #    Signup: Azure Portal -> App registrations
+  #
+  # 3. elasticsearch -- self-hosted only. Needs a running Elasticsearch
+  #    instance with base_url, username, password, and index name.
+  #
+  # 4. ebay -- marked inactive by SearXNG upstream. Needs regional base_url
+  #    configuration. Maintainers disabled it due to reliability issues.
+  #
+  # 5. chinaso (news/images/videos) -- Chinese government search engine.
+  #    SearXNG docs explicitly warn: "links from chinaso.com violate users
+  #    privacy." Marked inactive upstream for safety. See:
+  #    https://github.com/searxng/searxng/issues/4694
+  #
+  # 6. z-library -- Tor-only, frequently seized/blocked by authorities.
+  #    SearXNG issue #3610 documents ongoing instability.
+  #
+  # 7. pixiv -- needs a self-hosted image proxy server to render results.
+  #    Engine works but images are blank without proxy infrastructure.
+  #    Setup: https://pixivfe-docs.pages.dev/hosting/image-proxy-server/
+  #
+  # 8. piped / piped.music -- needs a self-hosted Piped instance (YouTube
+  #    frontend). Public instances are unreliable/overloaded.
+  #
+  # 9. Torznab EZTV -- needs a self-hosted Jackett indexer proxy.
+  #    Setup: https://github.com/Jackett/Jackett
+  #
+  # 10. libretranslate -- needs a self-hosted LibreTranslate instance.
+  #     No centralized API key available.
+  #
+  # 11. grokipedia -- marked inactive upstream, experimental/broken.
+  #
+  # 12. spotify -- commented out in upstream config entirely. Needs OAuth
+  #     client_id + client_secret from Spotify Developer Dashboard.
+  #     Signup: https://developer.spotify.com/dashboard
+  #
+  # SELF-HOSTED DATABASES (commented out, need local infrastructure):
+  #   meilisearch, mongodb, postgresql, mysql, mariadb, solr, recoll,
+  #   opensemanticsearch, tubearchivist, valkey/redis, mediathekview (sqlite),
+  #   invidious, doku wiki
+  #
+  # SHELL COMMANDS (security risk, commented out upstream):
+  #   git grep, locate, find, fgrep, grep
+  # =========================================================================

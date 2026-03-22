@@ -1,6 +1,5 @@
-"""Native tool definitions (OpenAI function-calling format) and LangChain tool list.
-
-Extracted from persistent_deep_research_proxy.py lines 836-1540.
+"""
+Native and LangChain tool definitions (OpenAI function-calling format).
 """
 from __future__ import annotations
 
@@ -681,6 +680,74 @@ NATIVE_TOOLS = [
                     "query": {"type": "string", "description": "Search query"},
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "youtube_transcript",
+            "description": (
+                "Extract the full transcript/subtitles from a YouTube video. Returns "
+                "timestamped spoken content — the actual knowledge: practitioner "
+                "explanations, lecture content, interview dialogue, tutorial steps. "
+                "No API key needed. Works with auto-generated and manual captions. "
+                "This is the PRIMARY way to extract knowledge from YouTube videos."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "YouTube video URL or video ID"},
+                    "lang": {
+                        "type": "string",
+                        "description": "Language code for transcript (default: en). Falls back to any available.",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "youtube_video_metadata",
+            "description": (
+                "Extract rich metadata from a YouTube video: title, channel, upload date, "
+                "view/like counts, full description, chapter markers, tags, categories, "
+                "and top comments. Comments contain corrections, additional knowledge, "
+                "and community reactions. Chapter markers help navigate long videos. "
+                "Description often has links, timestamps, and context not in spoken content."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "YouTube video URL or video ID"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "youtube_video_analyze",
+            "description": (
+                "Analyze a YouTube video's VISUAL content using Qwen Omni vision model. "
+                "Extracts key frames and sends to a vision-language model for in-depth "
+                "analysis. Use when the video contains diagrams, charts, code on screen, "
+                "product teardowns, demonstrations, or visual evidence that the transcript "
+                "alone cannot capture. Requires QWEN_OMNI_BASE_URL to be configured."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "YouTube video URL or video ID"},
+                    "question": {
+                        "type": "string",
+                        "description": "Specific question about the video visuals (optional). If empty, does general visual analysis.",
+                    },
+                },
+                "required": ["url"],
             },
         },
     },

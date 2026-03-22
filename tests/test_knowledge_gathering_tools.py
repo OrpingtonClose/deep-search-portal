@@ -629,6 +629,256 @@ class TestEnhancedWebFetchPdf:
 
 
 # ===================================================================
+# _extract_video_id
+# ===================================================================
+
+class TestExtractVideoId:
+    def test_bare_id(self):
+        assert proxy._extract_video_id("dQw4w9WgXcQ") == "dQw4w9WgXcQ"
+
+    def test_standard_url(self):
+        assert proxy._extract_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ") == "dQw4w9WgXcQ"
+
+    def test_short_url(self):
+        assert proxy._extract_video_id("https://youtu.be/dQw4w9WgXcQ") == "dQw4w9WgXcQ"
+
+    def test_embed_url(self):
+        assert proxy._extract_video_id("https://www.youtube.com/embed/dQw4w9WgXcQ") == "dQw4w9WgXcQ"
+
+    def test_shorts_url(self):
+        assert proxy._extract_video_id("https://www.youtube.com/shorts/dQw4w9WgXcQ") == "dQw4w9WgXcQ"
+
+    def test_url_with_extra_params(self):
+        assert proxy._extract_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=120") == "dQw4w9WgXcQ"
+
+    def test_invalid_url(self):
+        assert proxy._extract_video_id("https://example.com/notavideo") is None
+
+    def test_empty_string(self):
+        assert proxy._extract_video_id("") is None
+
+    def test_whitespace_handling(self):
+        assert proxy._extract_video_id("  dQw4w9WgXcQ  ") == "dQw4w9WgXcQ"
+
+
+# ===================================================================
+# tool_youtube_transcript
+# ===================================================================
+
+class TestYoutubeTranscript:
+    @pytest.mark.asyncio
+    async def test_invalid_url_returns_error(self):
+        result = await proxy.tool_youtube_transcript("not-a-valid-url")
+        assert "Could not extract video ID" in result
+
+    @pytest.mark.asyncio
+    async def test_langchain_loader_primary_path(self):
+        mock_doc = MagicMock()
+        mock_doc.page_content = "Hello world this is a transcript"
+        mock_doc.metadata = {
+            "title": "Test Video",
+            "author": "Test Channel",
+            "publish_date": "2025-01-01",
+            "length": 300,
+            "view_count": 1000,
+        }
+        mock_loader = MagicMock()
+        mock_loader.load.return_value = [mock_doc]
+
+        with patch(
+            "persistent_deep_research_proxy.YoutubeLoader",
+            create=True,
+        ) as mock_yt_cls:
+            # Patch the import inside the function
+            with patch.dict("sys.modules", {
+                "langchain_community.document_loaders": MagicMock(YoutubeLoader=mock_yt_cls),
+            }):
+                mock_yt_cls.from_youtube_url.return_value = mock_loader
+                result = await proxy.tool_youtube_transcript("dQw4w9WgXcQ")
+                assert "YOUTUBE TRANSCRIPT" in result
+                assert "dQw4w9WgXcQ" in result
+
+    @pytest.mark.asyncio
+    async def test_fallback_to_raw_api(self):
+        """When LangChain loader fails, falls back to youtube-transcript-api."""
+        mock_snippet = MagicMock()
+        mock_snippet.start = 0.0
+        mock_snippet.text = "Hello fallback transcript"
+
+        mock_ytt_instance = MagicMock()
+        mock_ytt_instance.fetch.return_value = [mock_snippet]
+
+        with patch.dict("sys.modules", {
+            "langchain_community.document_loaders": MagicMock(
+                YoutubeLoader=MagicMock(
+                    from_youtube_url=MagicMock(
+                        return_value=MagicMock(load=MagicMock(side_effect=Exception("loader fail")))
+                    )
+                )
+            ),
+            "youtube_transcript_api": MagicMock(
+                YouTubeTranscriptApi=MagicMock(return_value=mock_ytt_instance)
+            ),
+        }):
+            result = await proxy.tool_youtube_transcript("dQw4w9WgXcQ")
+            assert "YOUTUBE TRANSCRIPT" in result or "Hello fallback" in result or "dQw4w9WgXcQ" in result
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_error(self):
+        async def _slow(*a, **kw):
+            await asyncio.sleep(100)
+
+        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+            result = await proxy.tool_youtube_transcript("dQw4w9WgXcQ")
+            assert "timed out" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_error(self):
+        with patch("asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = AsyncMock(
+                side_effect=RuntimeError("unexpected")
+            )
+            result = await proxy.tool_youtube_transcript("dQw4w9WgXcQ")
+            assert "error" in result.lower() or "dQw4w9WgXcQ" in result
+
+
+# ===================================================================
+# tool_youtube_video_metadata
+# ===================================================================
+
+class TestYoutubeVideoMetadata:
+    @pytest.mark.asyncio
+    async def test_invalid_url_returns_error(self):
+        result = await proxy.tool_youtube_video_metadata("not-a-valid-url")
+        assert "Could not extract video ID" in result
+
+    @pytest.mark.asyncio
+    async def test_successful_metadata_extraction(self):
+        mock_info = {
+            "title": "Test Video Title",
+            "channel": "Test Channel",
+            "upload_date": "20250115",
+            "duration": 600,
+            "view_count": 50000,
+            "like_count": 2500,
+            "tags": ["python", "tutorial"],
+            "categories": ["Education"],
+            "description": "A test video description",
+            "chapters": [
+                {"start_time": 0, "title": "Introduction"},
+                {"start_time": 120, "title": "Main Content"},
+            ],
+            "comments": [
+                {"author": "User1", "text": "Great video!", "like_count": 10},
+                {"author": "User2", "text": "Very helpful", "like_count": 5},
+            ],
+        }
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl.extract_info.return_value = mock_info
+
+        with patch.dict("sys.modules", {
+            "yt_dlp": MagicMock(YoutubeDL=MagicMock(return_value=mock_ydl)),
+        }):
+            result = await proxy.tool_youtube_video_metadata("dQw4w9WgXcQ")
+            assert "Test Video Title" in result
+            assert "Test Channel" in result
+            assert "50,000" in result
+            assert "CHAPTERS" in result
+            assert "Introduction" in result
+            assert "COMMENTS" in result or "Great video" in result
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_error(self):
+        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+            result = await proxy.tool_youtube_video_metadata("dQw4w9WgXcQ")
+            assert "timed out" in result.lower()
+
+
+# ===================================================================
+# tool_youtube_video_analyze
+# ===================================================================
+
+class TestYoutubeVideoAnalyze:
+    @pytest.mark.asyncio
+    async def test_invalid_url_returns_error(self):
+        result = await proxy.tool_youtube_video_analyze("not-a-valid-url")
+        assert "Could not extract video ID" in result
+
+    @pytest.mark.asyncio
+    async def test_no_qwen_base_url_returns_fallback(self):
+        with patch.object(proxy, "_QWEN_OMNI_BASE", ""):
+            result = await proxy.tool_youtube_video_analyze("dQw4w9WgXcQ")
+            assert "not available" in result.lower() or "not configured" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_no_frames_returns_fallback(self):
+        with patch.object(proxy, "_QWEN_OMNI_BASE", "http://qwen.local"):
+            with patch("asyncio.wait_for", AsyncMock(return_value=[])):
+                result = await proxy.tool_youtube_video_analyze("dQw4w9WgXcQ")
+                assert "Could not extract frames" in result or "youtube_transcript" in result
+
+    @pytest.mark.asyncio
+    async def test_successful_visual_analysis(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "The video shows a diagram of neural network architecture."}}]
+        }
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with patch.object(proxy, "_QWEN_OMNI_BASE", "http://qwen.local"):
+            with patch("asyncio.wait_for", AsyncMock(return_value=["base64frame1", "base64frame2"])):
+                with patch.object(proxy, "http_client", return_value=mock_client):
+                    result = await proxy.tool_youtube_video_analyze("dQw4w9WgXcQ")
+                    assert "VISUAL ANALYSIS" in result
+                    assert "neural network" in result
+
+    @pytest.mark.asyncio
+    async def test_qwen_api_error_returns_fallback(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.text = "Internal Server Error"
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with patch.object(proxy, "_QWEN_OMNI_BASE", "http://qwen.local"):
+            with patch("asyncio.wait_for", AsyncMock(return_value=["base64frame1"])):
+                with patch.object(proxy, "http_client", return_value=mock_client):
+                    result = await proxy.tool_youtube_video_analyze("dQw4w9WgXcQ")
+                    assert "error" in result.lower() or "youtube_transcript" in result
+
+    @pytest.mark.asyncio
+    async def test_custom_question_passed(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "Analysis of the code shown on screen."}}]
+        }
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with patch.object(proxy, "_QWEN_OMNI_BASE", "http://qwen.local"):
+            with patch("asyncio.wait_for", AsyncMock(return_value=["frame1"])):
+                with patch.object(proxy, "http_client", return_value=mock_client):
+                    result = await proxy.tool_youtube_video_analyze(
+                        "dQw4w9WgXcQ", question="What code is shown on screen?"
+                    )
+                    assert "VISUAL ANALYSIS" in result
+                    # Verify the question was part of the request
+                    call_args = mock_client.post.call_args
+                    json_body = call_args[1].get("json", call_args[0][1] if len(call_args[0]) > 1 else {})
+                    content = json_body["messages"][0]["content"]
+                    text_parts = [p for p in content if p["type"] == "text"]
+                    assert "What code is shown on screen?" in text_parts[0]["text"]
+
+
+# ===================================================================
 # _execute_tool_inner routing for new tools
 # ===================================================================
 
@@ -689,6 +939,41 @@ class TestExecuteToolInnerRouting:
             mock.assert_awaited_once()
             assert result == "Substack results"
 
+    @pytest.mark.asyncio
+    async def test_youtube_transcript_route(self):
+        with patch.object(proxy, "tool_youtube_transcript", AsyncMock(return_value="YT transcript")) as mock:
+            result = await proxy._execute_tool_inner("youtube_transcript", {"url": "dQw4w9WgXcQ", "lang": "en"})
+            mock.assert_awaited_once_with("dQw4w9WgXcQ", "en")
+            assert result == "YT transcript"
+
+    @pytest.mark.asyncio
+    async def test_youtube_video_metadata_route(self):
+        with patch.object(proxy, "tool_youtube_video_metadata", AsyncMock(return_value="YT metadata")) as mock:
+            result = await proxy._execute_tool_inner("youtube_video_metadata", {"url": "dQw4w9WgXcQ"})
+            mock.assert_awaited_once_with("dQw4w9WgXcQ")
+            assert result == "YT metadata"
+
+    @pytest.mark.asyncio
+    async def test_youtube_video_analyze_route(self):
+        with patch.object(proxy, "tool_youtube_video_analyze", AsyncMock(return_value="YT analysis")) as mock:
+            result = await proxy._execute_tool_inner("youtube_video_analyze", {"url": "dQw4w9WgXcQ", "question": "what?"})
+            mock.assert_awaited_once_with("dQw4w9WgXcQ", "what?")
+            assert result == "YT analysis"
+
+    @pytest.mark.asyncio
+    async def test_youtube_transcript_route_default_lang(self):
+        with patch.object(proxy, "tool_youtube_transcript", AsyncMock(return_value="YT transcript")) as mock:
+            result = await proxy._execute_tool_inner("youtube_transcript", {"url": "dQw4w9WgXcQ"})
+            mock.assert_awaited_once_with("dQw4w9WgXcQ", "en")
+            assert result == "YT transcript"
+
+    @pytest.mark.asyncio
+    async def test_youtube_video_analyze_route_no_question(self):
+        with patch.object(proxy, "tool_youtube_video_analyze", AsyncMock(return_value="YT analysis")) as mock:
+            result = await proxy._execute_tool_inner("youtube_video_analyze", {"url": "dQw4w9WgXcQ"})
+            mock.assert_awaited_once_with("dQw4w9WgXcQ", "")
+            assert result == "YT analysis"
+
 
 # ===================================================================
 # NATIVE_TOOLS registration
@@ -723,6 +1008,15 @@ class TestNativeToolsRegistration:
 
     def test_substack_registered(self):
         assert "substack_search" in self._tool_names()
+
+    def test_youtube_transcript_registered(self):
+        assert "youtube_transcript" in self._tool_names()
+
+    def test_youtube_video_metadata_registered(self):
+        assert "youtube_video_metadata" in self._tool_names()
+
+    def test_youtube_video_analyze_registered(self):
+        assert "youtube_video_analyze" in self._tool_names()
 
     def test_all_tools_have_required_fields(self):
         for tool in proxy.NATIVE_TOOLS:

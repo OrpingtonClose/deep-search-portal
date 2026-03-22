@@ -736,7 +736,7 @@ async def graph_active_nodes(request: Request):
     if not await _validate_owui_token(request):
         return _auth_denied()
 
-    node_status = phoenix_config.get_node_status()
+    node_status: dict[str, dict[str, set[str]]] = {}
 
     # Aggregate across all active requests
     active: set[str] = set()

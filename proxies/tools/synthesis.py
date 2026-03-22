@@ -26,6 +26,7 @@ from research_metrics import (
 )
 import research_report
 import langfuse_config
+import phoenix_config
 
 from shared import make_sse_chunk
 
@@ -1763,6 +1764,7 @@ async def _pipeline_producer(
         report_url = final_state.get("report_url", "")
         metrics_url = final_state.get("metrics_url", "")
         langfuse_url = initial_state.get("_langfuse_trace_url", "")
+        phoenix_url = initial_state.get("_phoenix_url", "")
         link_lines = []
         if report_url:
             link_lines.append(f"**[Full Report]({report_url})**")
@@ -1770,6 +1772,8 @@ async def _pipeline_producer(
             link_lines.append(f"[Metrics JSON]({metrics_url})")
         if langfuse_url:
             link_lines.append(f"[Langfuse Trace]({langfuse_url})")
+        if phoenix_url:
+            link_lines.append(f"[Phoenix Traces]({phoenix_url})")
         if link_lines:
             await output_queue.put(chunk_fn(" | ".join(link_lines) + "\n\n"))
 
@@ -1872,6 +1876,7 @@ async def run_persistent_research(
         "report_url": "",
         "metrics_url": "",
         "_langfuse_trace_url": langfuse_trace_url or "",
+        "_phoenix_url": phoenix_config.get_project_url(),
         # Feedback-loop fields
         "research_iterations": 0,
         "targeted_questions": [],

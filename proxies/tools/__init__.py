@@ -18,4 +18,5 @@ Module map:
     subagent        — planning agent, AoT reflection, run_subagent
     tree_reactor    — tree research reactor
     synthesis       — live findings, heartbeat, draft-synthesis-revision, LangGraph pipeline
+    conversation    — conversation state persistence, follow-up detection, snapshot store
 """

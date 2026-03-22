@@ -59,7 +59,7 @@ wait_for_health "http://localhost:3000" "Open WebUI" 60
 # --- Sync Models (YAML → DB) ---
 if [ -f /opt/sync_models.py ] && [ -f /opt/models.yaml ]; then
     echo "Syncing models from models.yaml..."
-    python3 /opt/sync_models.py /opt/models.yaml --db-path /opt/openwebui-data/webui.db
+    python3 /opt/sync_models.py /opt/models.yaml --db-path /opt/openwebui-data/webui.db || echo "WARNING: sync_models.py failed (exit $?), continuing startup"
 fi
 
 # --- Cloudflare Tunnel ---

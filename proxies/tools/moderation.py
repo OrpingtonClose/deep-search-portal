@@ -262,6 +262,7 @@ async def _search_oxylabs_serp(query: str) -> list[dict]:
                         "source": "oxylabs",
                     })
                 return results
+            return []
 
         # SERP API failed — try Web Scraper proxy as fallback
         if resp.status_code in (401, 403):

@@ -16,11 +16,12 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
                                     Persistent Research (9300)
                                          │         │
                                     Knowledge Engine (9400) ←── Neo4j
-                                         │
-                                    Swarm Proxy (9500)
+
+                                    Swarm Proxy (9500) ← fully self-contained
                                          │
                                   Background Swarm Workers
-                                    (corpus decomposition)
+                                 (in-memory knowledge store,
+                                  LLM-powered extraction)
 ```
 
 ## Components
@@ -243,11 +244,12 @@ A swarm-based proxy (inspired by [swarms.world](https://swarms.world)) that deco
 
 1. User sends a large body of text via the chat interface
 2. The swarm proxy detects it as a corpus (>5K chars, low question density) and queues it
-3. A background worker picks it up and submits it to the Knowledge Engine for full ETL
-4. While processing continues, the user can ask questions at any time
-5. Queries search the knowledge graph for whatever has been extracted so far
-6. The proxy prefixes every response with an honest status of what the swarm is doing
-7. Sending more text adds to the queue — it never resets or interrupts existing work
+3. Background workers chunk the text and use the LLM to extract entities, relationships, and claims
+4. All extracted knowledge is stored in an in-memory knowledge store (no external DB)
+5. While processing continues, the user can ask questions at any time
+6. Queries search the in-memory knowledge store using TF-IDF-like scoring
+7. The proxy prefixes every response with an honest status of what the swarm is doing
+8. Sending more text adds to the queue — it never resets or interrupts existing work
 
 ### Swarm API
 
@@ -258,6 +260,7 @@ A swarm-based proxy (inspired by [swarms.world](https://swarms.world)) that deco
 | `/v1/swarm/corpora` | GET | List all submitted corpora with processing status |
 | `/v1/swarm/sincerity` | GET | Current sincerity preamble (what the swarm would tell a user) |
 | `/v1/swarm/submit` | POST | Direct corpus submission API |
+| `/v1/swarm/knowledge` | GET | Knowledge store statistics (entities, relationships, claims, chunks) |
 
 ### Configuration
 
@@ -266,7 +269,6 @@ A swarm-based proxy (inspired by [swarms.world](https://swarms.world)) that deco
 | `SWARM_PROXY_PORT` | `9500` | Listen port |
 | `SWARM_SYNTHESIS_MODEL` | `mistral-large-latest` | Model for query synthesis |
 | `SWARM_WORKER_MODEL` | `mistral-small-latest` | Model for worker tasks |
-| `SWARM_NAMESPACE` | `swarm` | Neo4j namespace for swarm data |
 | `SWARM_MAX_WORKERS` | `6` | Max concurrent background workers |
 | `SWARM_MAX_CONCURRENT_QUERIES` | `4` | Max concurrent query handlers |
 | `SWARM_CHUNK_SIZE` | `2000` | Characters per chunk |
@@ -280,7 +282,7 @@ A swarm-based proxy (inspired by [swarms.world](https://swarms.world)) that deco
 - **Full transparency** — all reasoning visible in thinking traces; all errors surfaced to the user
 - **Self-hosted search** — SearXNG means no dependence on commercial search APIs
 - **API-provider architecture** — uses Mistral cloud API, not local model hosting
-- **Neo4j-centric knowledge** — graph database as single source of truth for extracted knowledge; enables graph algorithms for serendipitous discovery
+- **Self-contained swarm** — the swarm proxy builds its own in-memory knowledge store with no external infrastructure dependencies
 
 ## License
 

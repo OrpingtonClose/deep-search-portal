@@ -2,43 +2,49 @@
 """
 Swarm Deep Search Proxy for Open WebUI.
 
-A swarm-based proxy that decomposes large corpora of text using a
-hierarchical agent swarm (inspired by swarms.world).  Background workers
-continuously process corpora — chunking, extracting entities, building
-knowledge graphs — while queries are answered non-disruptively from
-whatever knowledge the swarm has built so far.
+A fully self-contained swarm-based proxy that decomposes large corpora of text
+using an agentic swarm -- no external infrastructure required.  Background
+worker agents continuously process corpora -- chunking, extracting entities
+and relationships via the LLM, building an in-memory knowledge graph -- while
+queries are answered non-disruptively from whatever knowledge the swarm has
+built so far.
 
 Key design principles:
   * Sending a prompt does NOT disturb the swarm from what it is doing.
   * The proxy is *sincere* about what is happening: it reports real
     swarm state, processing progress, and knowledge coverage honestly.
-  * Further large corpora are treated identically to the initial send —
+  * Further large corpora are treated identically to the initial send --
     they are queued additively without resetting existing work.
+  * Zero external infrastructure -- everything runs within this process.
 
 Architecture:
-  Browser → Open WebUI → Swarm Proxy (port 9500)
-                              │
-              ┌───────────────┼───────────────┐
-              │               │               │
+  Browser -> Open WebUI -> Swarm Proxy (port 9500)
+                              |
+              +---------------+---------------+
+              |               |               |
         Swarm Director   Query Handler   Status Reporter
-              │                               │
-        Worker Pool ──→ Knowledge Engine (Neo4j, port 9400)
+              |
+        Worker Pool (LLM-powered agents)
+              |
+        In-Memory Knowledge Store
+         (chunks, entities, relationships, claims)
 """
 
 import asyncio
+import collections
 import json
+import math
 import os
+import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import AsyncGenerator, Optional
 
 from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
-
-import knowledge_client
 
 from shared import (
     ConcurrencyLimiter,
@@ -66,11 +72,10 @@ UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://api.mistral.ai/v1")
 UPSTREAM_KEY = require_env("UPSTREAM_KEY")
 UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "mistral-large-latest")
 SYNTHESIS_MODEL = os.getenv("SWARM_SYNTHESIS_MODEL", "mistral-large-latest")
-# WORKER_MODEL reserved for future per-chunk analysis workers
+WORKER_MODEL = os.getenv("SWARM_WORKER_MODEL", "mistral-small-latest")
 LISTEN_PORT = env_int("SWARM_PROXY_PORT", 9500, minimum=1)
 MAX_CONCURRENT_QUERIES = env_int("SWARM_MAX_CONCURRENT_QUERIES", 4, minimum=1)
 MAX_SWARM_WORKERS = env_int("SWARM_MAX_WORKERS", 6, minimum=1)
-SWARM_NAMESPACE = os.getenv("SWARM_NAMESPACE", "swarm")
 
 # Chunk parameters for corpus decomposition
 CHUNK_SIZE = int(os.getenv("SWARM_CHUNK_SIZE", "2000"))
@@ -80,10 +85,9 @@ CHUNK_OVERLAP = int(os.getenv("SWARM_CHUNK_OVERLAP", "200"))
 LARGE_DOC_THRESHOLD = int(os.getenv("SWARM_LARGE_DOC_THRESHOLD", "5000"))
 
 log.info(
-    f"Config: synthesis_model={SYNTHESIS_MODEL}, "
+    f"Config: synthesis_model={SYNTHESIS_MODEL}, worker_model={WORKER_MODEL}, "
     f"upstream={UPSTREAM_BASE}, port={LISTEN_PORT}, "
-    f"max_queries={MAX_CONCURRENT_QUERIES}, max_workers={MAX_SWARM_WORKERS}, "
-    f"namespace={SWARM_NAMESPACE}"
+    f"max_queries={MAX_CONCURRENT_QUERIES}, max_workers={MAX_SWARM_WORKERS}"
 )
 
 # ---------------------------------------------------------------------------
@@ -96,14 +100,263 @@ worker_semaphore = asyncio.Semaphore(MAX_SWARM_WORKERS)
 
 
 # ---------------------------------------------------------------------------
-# Data models
+# In-memory Knowledge Store
+# ---------------------------------------------------------------------------
+
+@dataclass
+class KnowledgeChunk:
+    """A text chunk from a decomposed corpus."""
+    id: str
+    corpus_id: str
+    corpus_title: str
+    text: str
+    chunk_index: int
+    total_chunks: int
+    word_freq: dict = field(default_factory=dict)
+
+
+@dataclass
+class Entity:
+    """An entity extracted from a chunk by the LLM."""
+    name: str
+    entity_type: str  # person, org, concept, location, event, etc.
+    description: str
+    corpus_id: str
+    chunk_id: str
+    mentions: int = 1
+
+
+@dataclass
+class Relationship:
+    """A relationship between two entities."""
+    source: str
+    target: str
+    relation_type: str
+    description: str
+    corpus_id: str
+    chunk_id: str
+
+
+@dataclass
+class Claim:
+    """An atomic claim / fact extracted from the corpus."""
+    text: str
+    confidence: str  # high, medium, low
+    source_chunk_id: str
+    corpus_id: str
+    entities: list[str] = field(default_factory=list)
+
+
+class KnowledgeStore:
+    """Thread-safe in-memory knowledge store.
+
+    This is the swarm's brain -- all extracted knowledge lives here.
+    Workers write to it as they process chunks; query handlers read
+    from it without blocking.
+    """
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._chunks: dict[str, KnowledgeChunk] = {}
+        self._entities: dict[str, Entity] = {}  # keyed by lowercase name
+        self._relationships: list[Relationship] = []
+        self._claims: list[Claim] = []
+
+    async def add_chunk(self, chunk: KnowledgeChunk) -> None:
+        async with self._lock:
+            self._chunks[chunk.id] = chunk
+
+    async def add_entity(self, entity: Entity) -> None:
+        async with self._lock:
+            key = entity.name.lower().strip()
+            if key in self._entities:
+                existing = self._entities[key]
+                existing.mentions += 1
+                if len(entity.description) > len(existing.description):
+                    existing.description = entity.description
+            else:
+                self._entities[key] = entity
+
+    async def add_relationship(self, rel: Relationship) -> None:
+        async with self._lock:
+            self._relationships.append(rel)
+
+    async def add_claim(self, claim: Claim) -> None:
+        async with self._lock:
+            self._claims.append(claim)
+
+    async def search(self, query: str, limit: int = 20) -> dict:
+        """Search knowledge store using TF-IDF-like scoring.
+
+        Returns matching chunks, entities, relationships, and claims
+        ranked by relevance to the query.
+        """
+        query_terms = _tokenize(query)
+        if not query_terms:
+            return {
+                "chunks": [], "entities": [],
+                "relationships": [], "claims": [],
+            }
+
+        async with self._lock:
+            # Score chunks by term overlap
+            chunk_scores: list[tuple[float, KnowledgeChunk]] = []
+            total_chunks = max(len(self._chunks), 1)
+            for chunk in self._chunks.values():
+                score = _score_text(
+                    query_terms, chunk.word_freq, total_chunks,
+                )
+                if score > 0:
+                    chunk_scores.append((score, chunk))
+            chunk_scores.sort(key=lambda x: x[0], reverse=True)
+
+            # Score entities by name and description match
+            entity_scores: list[tuple[float, Entity]] = []
+            for entity in self._entities.values():
+                name_score = _score_text_raw(
+                    query_terms, entity.name.lower(),
+                )
+                desc_score = (
+                    _score_text_raw(
+                        query_terms, entity.description.lower(),
+                    ) * 0.5
+                )
+                total = name_score + desc_score
+                if total > 0:
+                    entity_scores.append((total, entity))
+            entity_scores.sort(key=lambda x: x[0], reverse=True)
+
+            # Score claims
+            claim_scores: list[tuple[float, Claim]] = []
+            for claim in self._claims:
+                score = _score_text_raw(query_terms, claim.text.lower())
+                if score > 0:
+                    claim_scores.append((score, claim))
+            claim_scores.sort(key=lambda x: x[0], reverse=True)
+
+            # Gather relevant relationships (connected to top entities)
+            top_entity_names = {
+                e.name.lower() for _, e in entity_scores[:10]
+            }
+            relevant_rels = [
+                r for r in self._relationships
+                if r.source.lower() in top_entity_names
+                or r.target.lower() in top_entity_names
+            ]
+
+            return {
+                "chunks": [
+                    {
+                        "id": c.id,
+                        "corpus_title": c.corpus_title,
+                        "text": c.text[:1500],
+                        "score": round(s, 4),
+                        "chunk_index": c.chunk_index,
+                    }
+                    for s, c in chunk_scores[:limit]
+                ],
+                "entities": [
+                    {
+                        "name": e.name,
+                        "type": e.entity_type,
+                        "description": e.description,
+                        "mentions": e.mentions,
+                        "score": round(s, 4),
+                    }
+                    for s, e in entity_scores[:limit]
+                ],
+                "relationships": [
+                    {
+                        "source": r.source,
+                        "target": r.target,
+                        "type": r.relation_type,
+                        "description": r.description,
+                    }
+                    for r in relevant_rels[:limit]
+                ],
+                "claims": [
+                    {
+                        "text": c.text,
+                        "confidence": c.confidence,
+                        "entities": c.entities,
+                        "score": round(s, 4),
+                    }
+                    for s, c in claim_scores[:limit]
+                ],
+            }
+
+    async def stats(self) -> dict:
+        async with self._lock:
+            return {
+                "chunks": len(self._chunks),
+                "entities": len(self._entities),
+                "relationships": len(self._relationships),
+                "claims": len(self._claims),
+            }
+
+
+def _tokenize(text: str) -> list[str]:
+    """Split text into lowercase tokens, removing short/stop words."""
+    stop_words = {
+        "the", "a", "an", "is", "are", "was", "were", "be", "been",
+        "being", "have", "has", "had", "do", "does", "did", "will",
+        "would", "could", "should", "may", "might", "can", "shall",
+        "to", "of", "in", "for", "on", "with", "at", "by", "from",
+        "as", "into", "through", "during", "before", "after", "and",
+        "but", "or", "not", "no", "nor", "so", "yet", "both", "each",
+        "this", "that", "these", "those", "it", "its", "i", "me", "my",
+        "we", "our", "you", "your", "he", "she", "they", "them", "his",
+        "her", "their", "what", "which", "who", "whom", "how", "when",
+        "where", "why", "if", "then", "than", "more", "very", "just",
+        "about", "also", "some", "any", "all", "most", "other", "such",
+    }
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return [w for w in words if len(w) > 2 and w not in stop_words]
+
+
+def _build_word_freq(text: str) -> dict[str, int]:
+    """Build word frequency map for a text."""
+    freq: dict[str, int] = collections.Counter(_tokenize(text))
+    return dict(freq)
+
+
+def _score_text(
+    query_terms: list[str], word_freq: dict, total_docs: int,
+) -> float:
+    """TF-IDF-like scoring of a document against query terms."""
+    if not word_freq:
+        return 0.0
+    total_words = max(sum(word_freq.values()), 1)
+    score = 0.0
+    for term in query_terms:
+        tf = word_freq.get(term, 0) / total_words
+        if tf > 0:
+            score += tf * (1.0 + math.log(max(total_docs, 1)))
+    return score
+
+
+def _score_text_raw(query_terms: list[str], text: str) -> float:
+    """Simple term-overlap scoring against raw text."""
+    text_lower = text.lower()
+    score = 0.0
+    for term in query_terms:
+        if term in text_lower:
+            score += 1.0
+    return score
+
+
+# Global knowledge store
+knowledge = KnowledgeStore()
+
+
+# ---------------------------------------------------------------------------
+# Data models for swarm state
 # ---------------------------------------------------------------------------
 
 class CorpusStatus(str, Enum):
     """Processing status for an ingested corpus."""
     QUEUED = "queued"
     CHUNKING = "chunking"
-    SUBMITTING = "submitting"
     EXTRACTING = "extracting"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -114,7 +367,6 @@ class WorkerStatus(str, Enum):
     IDLE = "idle"
     CHUNKING = "chunking"
     EXTRACTING = "extracting"
-    INDEXING = "indexing"
     DONE = "done"
     ERROR = "error"
 
@@ -136,7 +388,6 @@ class CorpusRecord:
     submitted_at: str = ""
     started_at: str = ""
     completed_at: str = ""
-    knowledge_engine_job_id: str = ""
 
 
 @dataclass
@@ -150,7 +401,7 @@ class SwarmWorkerInfo:
 
 
 class SwarmState:
-    """Global swarm state — holds all corpora, workers, and knowledge stats.
+    """Global swarm state -- holds all corpora, workers, and knowledge stats.
 
     This is the single source of truth for the swarm's current activity.
     Query handlers read from this without blocking; corpus ingestion
@@ -186,7 +437,6 @@ class SwarmState:
         error: Optional[str] = None,
         started_at: Optional[str] = None,
         completed_at: Optional[str] = None,
-        knowledge_engine_job_id: Optional[str] = None,
     ) -> None:
         async with self._lock:
             rec = self._corpora.get(corpus_id)
@@ -210,8 +460,6 @@ class SwarmState:
                 rec.started_at = started_at
             if completed_at is not None:
                 rec.completed_at = completed_at
-            if knowledge_engine_job_id is not None:
-                rec.knowledge_engine_job_id = knowledge_engine_job_id
 
     async def register_worker(self, worker_id: str) -> None:
         async with self._lock:
@@ -248,7 +496,9 @@ class SwarmState:
             self._total_queries_answered += 1
 
     async def get_status_snapshot(self) -> dict:
-        """Return a complete snapshot of swarm state for status reporting."""
+        """Return a complete snapshot of swarm state for reporting."""
+        kstats = await knowledge.stats()
+
         async with self._lock:
             corpora_list = []
             for c in self._corpora.values():
@@ -273,38 +523,61 @@ class SwarmState:
 
             workers_list = []
             for w in self._workers.values():
+                uptime = (
+                    round(time.monotonic() - w.started_at, 1)
+                    if w.started_at else 0
+                )
                 workers_list.append({
                     "id": w.id,
                     "status": w.status.value,
                     "corpus_id": w.corpus_id,
                     "current_task": w.current_task,
-                    "uptime_s": round(time.monotonic() - w.started_at, 1) if w.started_at else 0,
+                    "uptime_s": uptime,
                 })
 
-            completed = sum(1 for c in self._corpora.values() if c.status == CorpusStatus.COMPLETED)
-            processing = sum(1 for c in self._corpora.values() if c.status not in (CorpusStatus.COMPLETED, CorpusStatus.FAILED, CorpusStatus.QUEUED))
-            queued = sum(1 for c in self._corpora.values() if c.status == CorpusStatus.QUEUED)
-            failed = sum(1 for c in self._corpora.values() if c.status == CorpusStatus.FAILED)
-
-            total_entities = sum(c.entities_extracted for c in self._corpora.values())
-            total_relationships = sum(c.relationships_extracted for c in self._corpora.values())
-            total_claims = sum(c.claims_extracted for c in self._corpora.values())
-            total_chars = sum(c.total_chars for c in self._corpora.values())
+            completed = sum(
+                1 for c in self._corpora.values()
+                if c.status == CorpusStatus.COMPLETED
+            )
+            processing = sum(
+                1 for c in self._corpora.values()
+                if c.status not in (
+                    CorpusStatus.COMPLETED, CorpusStatus.FAILED,
+                    CorpusStatus.QUEUED,
+                )
+            )
+            queued = sum(
+                1 for c in self._corpora.values()
+                if c.status == CorpusStatus.QUEUED
+            )
+            failed = sum(
+                1 for c in self._corpora.values()
+                if c.status == CorpusStatus.FAILED
+            )
+            total_chars = sum(
+                c.total_chars for c in self._corpora.values()
+            )
+            active = sum(
+                1 for w in self._workers.values()
+                if w.status not in (WorkerStatus.IDLE, WorkerStatus.DONE)
+            )
 
             return {
-                "swarm_uptime_s": round(time.monotonic() - self._started_at, 1),
+                "swarm_uptime_s": round(
+                    time.monotonic() - self._started_at, 1,
+                ),
                 "total_corpora": len(self._corpora),
                 "corpora_completed": completed,
                 "corpora_processing": processing,
                 "corpora_queued": queued,
                 "corpora_failed": failed,
                 "total_chars_ingested": total_chars,
-                "total_entities": total_entities,
-                "total_relationships": total_relationships,
-                "total_claims": total_claims,
-                "active_workers": sum(1 for w in self._workers.values() if w.status not in (WorkerStatus.IDLE, WorkerStatus.DONE)),
+                "total_entities": kstats["entities"],
+                "total_relationships": kstats["relationships"],
+                "total_claims": kstats["claims"],
+                "total_chunks": kstats["chunks"],
+                "active_workers": active,
                 "total_queries_answered": self._total_queries_answered,
-                "namespace": SWARM_NAMESPACE,
                 "corpora": corpora_list,
                 "workers": workers_list,
             }
@@ -327,8 +600,8 @@ class SwarmState:
     async def build_sincerity_preamble(self) -> str:
         """Build an honest status message about the swarm's current state.
 
-        This is the 'sincerity' mechanism — the proxy tells the user exactly
-        what is happening right now, no sugar-coating.
+        This is the 'sincerity' mechanism -- the proxy tells the user
+        exactly what is happening right now, no sugar-coating.
         """
         snapshot = await self.get_status_snapshot()
 
@@ -336,35 +609,37 @@ class SwarmState:
             return (
                 "**[Swarm Status]** No corpora have been submitted yet. "
                 "Send me a large body of text and I will begin decomposing "
-                "and understanding it. You can ask questions at any time.\n\n"
+                "and understanding it. "
+                "You can ask questions at any time.\n\n"
             )
 
         parts = ["**[Swarm Status]**"]
 
-        # Overall summary
         parts.append(
             f" {snapshot['total_corpora']} corpus/corpora ingested "
             f"({snapshot['total_chars_ingested']:,} chars total)."
         )
 
-        # Processing state
         if snapshot["corpora_processing"] > 0:
             parts.append(
-                f" **Currently processing {snapshot['corpora_processing']} "
-                f"corpus/corpora** with {snapshot['active_workers']} active worker(s)."
+                f" **Currently processing "
+                f"{snapshot['corpora_processing']} corpus/corpora** "
+                f"with {snapshot['active_workers']} active worker(s)."
             )
-            # Show per-corpus progress for actively processing ones
             for c in snapshot["corpora"]:
                 if c["status"] not in ("completed", "failed", "queued"):
                     pct = int(c["progress"] * 100)
                     parts.append(
-                        f"\n  → *{c['title'][:60]}*: {c['status']} — "
-                        f"{pct}% ({c['chunks_processed']}/{c['total_chunks']} chunks)"
+                        f"\n  -> *{c['title'][:60]}*: "
+                        f"{c['status']} -- {pct}% "
+                        f"({c['chunks_processed']}/"
+                        f"{c['total_chunks']} chunks)"
                     )
 
         if snapshot["corpora_queued"] > 0:
             parts.append(
-                f" {snapshot['corpora_queued']} corpus/corpora waiting in queue."
+                f" {snapshot['corpora_queued']} corpus/corpora "
+                f"waiting in queue."
             )
 
         if snapshot["corpora_completed"] > 0:
@@ -374,23 +649,30 @@ class SwarmState:
 
         if snapshot["corpora_failed"] > 0:
             parts.append(
-                f" ⚠ {snapshot['corpora_failed']} failed."
+                f" WARNING: {snapshot['corpora_failed']} failed."
             )
 
-        # Knowledge built so far
-        if snapshot["total_entities"] > 0 or snapshot["total_claims"] > 0:
+        if (
+            snapshot["total_entities"] > 0
+            or snapshot["total_claims"] > 0
+        ):
             parts.append(
-                f"\n**Knowledge built:** {snapshot['total_entities']} entities, "
+                f"\n**Knowledge built:** "
+                f"{snapshot['total_entities']} entities, "
                 f"{snapshot['total_relationships']} relationships, "
-                f"{snapshot['total_claims']} claims."
+                f"{snapshot['total_claims']} claims across "
+                f"{snapshot['total_chunks']} chunks."
             )
 
-        # Honest caveat if still processing
-        if snapshot["corpora_processing"] > 0 or snapshot["corpora_queued"] > 0:
+        if (
+            snapshot["corpora_processing"] > 0
+            or snapshot["corpora_queued"] > 0
+        ):
             parts.append(
-                "\n*Note: The swarm is still working. My answers reflect "
-                "knowledge extracted so far — they may become more complete "
-                "as processing continues. This does not affect the swarm's work.*"
+                "\n*Note: The swarm is still working. My answers "
+                "reflect knowledge extracted so far -- they may become "
+                "more complete as processing continues. "
+                "This does not affect the swarm's work.*"
             )
 
         return "".join(parts) + "\n\n"
@@ -404,17 +686,291 @@ _worker_tasks: list[asyncio.Task] = []
 
 
 # ---------------------------------------------------------------------------
-# Swarm worker: corpus processing pipeline
+# LLM helpers
 # ---------------------------------------------------------------------------
+
+_EXTRACTION_PROMPT = (
+    "You are a knowledge extraction agent in a swarm system. "
+    "Your job is to extract structured knowledge from a text chunk.\n\n"
+    'Given the following text chunk from "{corpus_title}" '
+    "(chunk {chunk_index}/{total_chunks}), extract:\n\n"
+    "1. **Entities**: Named things (people, organizations, concepts, "
+    "locations, events, technologies, theories, etc.)\n"
+    "2. **Relationships**: How entities relate to each other\n"
+    "3. **Claims**: Atomic factual statements / assertions made in "
+    "the text\n\n"
+    "Respond with ONLY valid JSON in this exact format "
+    "(no markdown, no code fences):\n"
+    "{{\n"
+    '  "entities": [\n'
+    '    {{"name": "Entity Name", "type": '
+    '"person|org|concept|location|event|technology|theory|other", '
+    '"description": "Brief description"}}\n'
+    "  ],\n"
+    '  "relationships": [\n'
+    '    {{"source": "Entity A", "target": "Entity B", '
+    '"type": "relationship_type", '
+    '"description": "How they relate"}}\n'
+    "  ],\n"
+    '  "claims": [\n'
+    '    {{"text": "Atomic factual claim", '
+    '"confidence": "high|medium|low", '
+    '"entities": ["Entity A", "Entity B"]}}\n'
+    "  ]\n"
+    "}}\n\n"
+    "Extract as many entities, relationships, and claims as the text "
+    "supports. Be thorough but accurate. Only extract what the text "
+    "actually states or strongly implies.\n\n"
+    "TEXT CHUNK:\n{chunk_text}"
+)
+
+_QUERY_SYSTEM_PROMPT = (
+    "You are a research analyst powered by a swarm knowledge system. "
+    "The swarm has decomposed large corpora of text into structured "
+    "knowledge: entities, relationships, and claims.\n\n"
+    "**SWARM STATUS:**\n{swarm_status}\n\n"
+    "**YOUR JOB:**\n"
+    "Answer the user's question using ONLY the knowledge results "
+    "provided below. Be thorough, specific, and cite the source "
+    "documents when possible.\n\n"
+    "**RULES:**\n"
+    "- If the knowledge store has relevant information, synthesise "
+    "it into a clear, comprehensive answer.\n"
+    "- If the knowledge store has partial information, say what you "
+    "know and clearly state what gaps remain.\n"
+    "- If no relevant knowledge exists yet, say so honestly -- "
+    "do not fabricate.\n"
+    "- Reference specific entities, claims, and relationships from "
+    "the results.\n"
+    "- If the swarm is still processing corpora, mention that more "
+    "complete answers may be available once processing finishes.\n"
+    "- Be direct. No moralising, no disclaimers, no hedging. "
+    "Just answer.\n\n"
+    "**KNOWLEDGE RESULTS:**\n{knowledge_results}"
+)
+
+
+async def _call_llm(
+    messages: list[dict],
+    *,
+    model: str = "",
+    max_tokens: int = 4096,
+    temperature: float = 0.2,
+) -> dict:
+    """Call the upstream LLM.
+
+    Returns {"content": str} or {"error": str}.
+    """
+    resolved_model = model or WORKER_MODEL
+    body = {
+        "model": resolved_model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    headers = {
+        "Authorization": f"Bearer {UPSTREAM_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    for attempt in range(3):
+        try:
+            async with get_throttler("mistral").throttle():
+                client = http_client()
+                resp = await client.post(
+                    f"{UPSTREAM_BASE}/chat/completions",
+                    json=body,
+                    headers=headers,
+                    timeout=120.0,
+                )
+
+            if resp.status_code == 200:
+                data = resp.json()
+                choices = data.get("choices", [])
+                if choices:
+                    content = (
+                        choices[0].get("message", {}).get("content", "")
+                    )
+                    return {"content": content}
+                return {"error": "No choices in response"}
+
+            if resp.status_code in (429, 500, 502, 503, 504):
+                wait_secs = [5, 15, 30][min(attempt, 2)]
+                log.warning(
+                    f"LLM {resp.status_code}, retrying in {wait_secs}s "
+                    f"(attempt {attempt + 1}/3)"
+                )
+                await asyncio.sleep(wait_secs)
+                continue
+
+            return {
+                "error": f"HTTP {resp.status_code}: {resp.text[:300]}",
+            }
+
+        except Exception as e:
+            if attempt < 2:
+                await asyncio.sleep(5)
+                continue
+            return {"error": str(e)}
+
+    return {"error": "Max retries exceeded"}
+
+
+# ---------------------------------------------------------------------------
+# Corpus chunking
+# ---------------------------------------------------------------------------
+
+def _chunk_text(text: str) -> list[str]:
+    """Split text into overlapping chunks."""
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + CHUNK_SIZE
+        chunk = text[start:end]
+        if chunk.strip():
+            chunks.append(chunk)
+        start += CHUNK_SIZE - CHUNK_OVERLAP
+    return chunks if chunks else [text]
+
+
+# ---------------------------------------------------------------------------
+# Swarm worker: corpus processing pipeline (fully self-contained)
+# ---------------------------------------------------------------------------
+
+async def _extract_from_chunk(
+    chunk_text: str,
+    corpus_id: str,
+    corpus_title: str,
+    chunk_index: int,
+    total_chunks: int,
+    worker_id: str,
+) -> tuple[int, int, int]:
+    """Use LLM to extract entities, relationships, and claims.
+
+    Returns (entities_count, relationships_count, claims_count).
+    """
+    chunk_id = f"{corpus_id}-chunk-{chunk_index}"
+
+    # Store the raw chunk in the knowledge store
+    kchunk = KnowledgeChunk(
+        id=chunk_id,
+        corpus_id=corpus_id,
+        corpus_title=corpus_title,
+        text=chunk_text,
+        chunk_index=chunk_index,
+        total_chunks=total_chunks,
+        word_freq=_build_word_freq(chunk_text),
+    )
+    await knowledge.add_chunk(kchunk)
+
+    # Ask the LLM to extract structured knowledge
+    prompt = _EXTRACTION_PROMPT.format(
+        corpus_title=corpus_title,
+        chunk_index=chunk_index + 1,
+        total_chunks=total_chunks,
+        chunk_text=chunk_text[:3000],
+    )
+
+    result = await _call_llm(
+        [{"role": "user", "content": prompt}],
+        model=WORKER_MODEL,
+        max_tokens=4096,
+        temperature=0.1,
+    )
+
+    if "error" in result:
+        log.warning(
+            f"[{worker_id}] Extraction error for chunk "
+            f"{chunk_index}: {result['error']}"
+        )
+        return (0, 0, 0)
+
+    # Parse the JSON response
+    content = result["content"].strip()
+    # Strip markdown code fences if present
+    if content.startswith("```"):
+        content = re.sub(r"^```(?:json)?\s*", "", content)
+        content = re.sub(r"\s*```$", "", content)
+
+    try:
+        extracted = json.loads(content)
+    except json.JSONDecodeError:
+        # Try to find JSON object in the response
+        match = re.search(r"\{[\s\S]*\}", content)
+        if match:
+            try:
+                extracted = json.loads(match.group())
+            except json.JSONDecodeError:
+                log.warning(
+                    f"[{worker_id}] Failed to parse extraction "
+                    f"for chunk {chunk_index}"
+                )
+                return (0, 0, 0)
+        else:
+            log.warning(
+                f"[{worker_id}] No JSON found in extraction "
+                f"for chunk {chunk_index}"
+            )
+            return (0, 0, 0)
+
+    entities_count = 0
+    rels_count = 0
+    claims_count = 0
+
+    # Store entities
+    for e in extracted.get("entities", []):
+        name = e.get("name", "").strip()
+        if not name:
+            continue
+        await knowledge.add_entity(Entity(
+            name=name,
+            entity_type=e.get("type", "other"),
+            description=e.get("description", ""),
+            corpus_id=corpus_id,
+            chunk_id=chunk_id,
+        ))
+        entities_count += 1
+
+    # Store relationships
+    for r in extracted.get("relationships", []):
+        source = r.get("source", "").strip()
+        target = r.get("target", "").strip()
+        if not source or not target:
+            continue
+        await knowledge.add_relationship(Relationship(
+            source=source,
+            target=target,
+            relation_type=r.get("type", "related_to"),
+            description=r.get("description", ""),
+            corpus_id=corpus_id,
+            chunk_id=chunk_id,
+        ))
+        rels_count += 1
+
+    # Store claims
+    for c in extracted.get("claims", []):
+        claim_text = c.get("text", "").strip()
+        if not claim_text:
+            continue
+        await knowledge.add_claim(Claim(
+            text=claim_text,
+            confidence=c.get("confidence", "medium"),
+            source_chunk_id=chunk_id,
+            corpus_id=corpus_id,
+            entities=c.get("entities", []),
+        ))
+        claims_count += 1
+
+    return (entities_count, rels_count, claims_count)
+
 
 async def _process_corpus(corpus_id: str, text: str) -> None:
     """Process a single corpus through the swarm pipeline.
 
     Steps:
       1. Decompose text into overlapping chunks
-      2. Submit to Knowledge Engine for full ETL (entity extraction,
-         relationship extraction, cross-chunk inference, entity resolution)
-      3. Track progress by polling the Knowledge Engine job status
+      2. For each chunk, extract entities/relationships/claims via LLM
+      3. Store everything in the in-memory knowledge store
       4. Update swarm state at each stage
 
     This runs as a background task and does NOT block any queries.
@@ -427,14 +983,17 @@ async def _process_corpus(corpus_id: str, text: str) -> None:
         try:
             record = await swarm.get_corpus(corpus_id)
             if not record:
-                log.error(f"[{worker_id}] Corpus {corpus_id} not found")
+                log.error(
+                    f"[{worker_id}] Corpus {corpus_id} not found",
+                )
                 return
 
+            # Step 1: Chunking
             await swarm.update_worker(
                 worker_id,
                 status=WorkerStatus.CHUNKING,
                 corpus_id=corpus_id,
-                current_task=f"Chunking {record.title[:40]}",
+                current_task=f"Chunking: {record.title[:40]}",
                 started_at=time.monotonic(),
             )
             await swarm.update_corpus(
@@ -443,143 +1002,94 @@ async def _process_corpus(corpus_id: str, text: str) -> None:
                 started_at=datetime.now(timezone.utc).isoformat(),
             )
 
-            # Step 1: Compute chunk count for progress tracking
-            total_chunks = max(1, (record.total_chars - CHUNK_OVERLAP) // (CHUNK_SIZE - CHUNK_OVERLAP))
-            await swarm.update_corpus(corpus_id, total_chunks=total_chunks)
-
-            log.info(
-                f"[{worker_id}] Corpus {corpus_id} ({record.title[:40]}): "
-                f"{record.total_chars:,} chars → ~{total_chunks} chunks"
+            chunks = _chunk_text(text)
+            total_chunks = len(chunks)
+            await swarm.update_corpus(
+                corpus_id, total_chunks=total_chunks,
             )
 
-            # Step 2: Submit to Knowledge Engine
+            log.info(
+                f"[{worker_id}] Corpus {corpus_id} "
+                f"({record.title[:40]}): "
+                f"{record.total_chars:,} chars -> "
+                f"{total_chunks} chunks"
+            )
+
+            # Step 2: Extract knowledge from each chunk
             await swarm.update_worker(
                 worker_id,
                 status=WorkerStatus.EXTRACTING,
-                current_task=f"Submitting to Knowledge Engine: {record.title[:40]}",
+                current_task=f"Extracting: {record.title[:40]}",
             )
-            await swarm.update_corpus(corpus_id, status=CorpusStatus.SUBMITTING)
-
-            try:
-                ingest_result = await knowledge_client.ingest(
-                    namespace=SWARM_NAMESPACE,
-                    title=record.title,
-                    text=text,
-                    source=record.source or "swarm-ingestion",
-                    rebuild=False,  # Additive — never clear existing data
-                )
-                job_id = ingest_result.get("job_id", "")
-                actual_chunks = ingest_result.get("total_chunks", total_chunks)
-                await swarm.update_corpus(
-                    corpus_id,
-                    status=CorpusStatus.EXTRACTING,
-                    knowledge_engine_job_id=job_id,
-                    total_chunks=actual_chunks,
-                )
-
-                log.info(
-                    f"[{worker_id}] Knowledge Engine job {job_id} started "
-                    f"for corpus {corpus_id}"
-                )
-
-            except Exception as e:
-                log.error(f"[{worker_id}] Failed to submit corpus {corpus_id}: {e}")
-                await swarm.update_corpus(
-                    corpus_id,
-                    status=CorpusStatus.FAILED,
-                    error=f"Submission failed: {e}",
-                )
-                return
-
-            # Step 3: Poll Knowledge Engine for progress
-            await swarm.update_worker(
-                worker_id,
-                status=WorkerStatus.INDEXING,
-                current_task=f"Monitoring extraction: {record.title[:40]}",
+            await swarm.update_corpus(
+                corpus_id, status=CorpusStatus.EXTRACTING,
             )
 
-            max_polls = 600  # up to ~20 minutes
-            last_logged_status = ""
-            for poll_idx in range(max_polls):
-                await asyncio.sleep(2)
+            total_entities = 0
+            total_rels = 0
+            total_claims = 0
+
+            for i, chunk_text in enumerate(chunks):
+                await swarm.update_worker(
+                    worker_id,
+                    current_task=(
+                        f"Extracting chunk {i + 1}/{total_chunks}: "
+                        f"{record.title[:30]}"
+                    ),
+                )
 
                 try:
-                    status = await knowledge_client.ingest_status(job_id)
-                except Exception as e:
-                    if poll_idx % 10 == 0:
-                        log.warning(
-                            f"[{worker_id}] Poll error for {job_id}: {e}"
+                    ent_count, rel_count, claim_count = (
+                        await _extract_from_chunk(
+                            chunk_text,
+                            corpus_id,
+                            record.title,
+                            i,
+                            total_chunks,
+                            worker_id,
                         )
-                    continue
+                    )
+                    total_entities += ent_count
+                    total_rels += rel_count
+                    total_claims += claim_count
 
-                current_status = status.get("status", "unknown")
-                progress_text = status.get("progress", "")
-                stats = status.get("stats", {})
-
-                # Update progress counters from Knowledge Engine stats
-                if stats:
-                    await swarm.update_corpus(
-                        corpus_id,
-                        chunks_processed=stats.get("chunks_processed", 0),
-                        entities_extracted=stats.get("entities_created", 0),
-                        relationships_extracted=stats.get("relationships_created", 0),
-                        claims_extracted=stats.get("claims_created", 0),
+                except Exception as e:
+                    log.warning(
+                        f"[{worker_id}] Error extracting chunk "
+                        f"{i}/{total_chunks}: {e}"
                     )
 
-                if current_status != last_logged_status:
-                    log.info(
-                        f"[{worker_id}] Corpus {corpus_id} status: "
-                        f"{current_status} — {progress_text}"
-                    )
-                    await swarm.update_worker(
-                        worker_id,
-                        current_task=f"{current_status}: {progress_text}"[:80],
-                    )
-                    last_logged_status = current_status
-
-                if current_status == "completed":
-                    final_stats = status.get("stats", {})
-                    await swarm.update_corpus(
-                        corpus_id,
-                        status=CorpusStatus.COMPLETED,
-                        completed_at=datetime.now(timezone.utc).isoformat(),
-                        chunks_processed=final_stats.get("total_chunks", total_chunks),
-                        entities_extracted=final_stats.get("entities_created", 0),
-                        relationships_extracted=final_stats.get("relationships_created", 0),
-                        claims_extracted=final_stats.get("claims_created", 0),
-                    )
-                    log.info(
-                        f"[{worker_id}] Corpus {corpus_id} COMPLETED: "
-                        f"{final_stats.get('entities_created', 0)} entities, "
-                        f"{final_stats.get('relationships_created', 0)} rels, "
-                        f"{final_stats.get('claims_created', 0)} claims"
-                    )
-                    break
-
-                elif current_status == "failed":
-                    error_msg = status.get("error", "Unknown error")
-                    await swarm.update_corpus(
-                        corpus_id,
-                        status=CorpusStatus.FAILED,
-                        error=error_msg,
-                    )
-                    log.error(
-                        f"[{worker_id}] Corpus {corpus_id} FAILED: {error_msg}"
-                    )
-                    break
-            else:
-                # Timed out polling
+                # Update progress after each chunk
                 await swarm.update_corpus(
                     corpus_id,
-                    status=CorpusStatus.FAILED,
-                    error="Processing timed out after 20 minutes",
-                )
-                log.warning(
-                    f"[{worker_id}] Corpus {corpus_id} timed out"
+                    chunks_processed=i + 1,
+                    entities_extracted=total_entities,
+                    relationships_extracted=total_rels,
+                    claims_extracted=total_claims,
                 )
 
+                if i < total_chunks - 1:
+                    await asyncio.sleep(0.1)
+
+            # Step 3: Mark completed
+            await swarm.update_corpus(
+                corpus_id,
+                status=CorpusStatus.COMPLETED,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
+
+            log.info(
+                f"[{worker_id}] Corpus {corpus_id} COMPLETED: "
+                f"{total_entities} entities, "
+                f"{total_rels} relationships, "
+                f"{total_claims} claims from {total_chunks} chunks"
+            )
+
         except Exception as e:
-            log.error(f"[{worker_id}] Unexpected error processing {corpus_id}: {e}")
+            log.error(
+                f"[{worker_id}] Unexpected error processing "
+                f"{corpus_id}: {e}"
+            )
             await swarm.update_corpus(
                 corpus_id,
                 status=CorpusStatus.FAILED,
@@ -587,7 +1097,9 @@ async def _process_corpus(corpus_id: str, text: str) -> None:
             )
 
         finally:
-            await swarm.update_worker(worker_id, status=WorkerStatus.DONE)
+            await swarm.update_worker(
+                worker_id, status=WorkerStatus.DONE,
+            )
             await swarm.remove_worker(worker_id)
 
 
@@ -605,10 +1117,12 @@ def _is_large_document(text: str) -> bool:
     return question_density < 0.001
 
 
-async def _submit_corpus(text: str, title: str = "", source: str = "") -> CorpusRecord:
+async def _submit_corpus(
+    text: str, title: str = "", source: str = "",
+) -> CorpusRecord:
     """Submit a new corpus to the swarm for background processing.
 
-    Returns immediately — the actual processing happens asynchronously.
+    Returns immediately -- the actual processing happens asynchronously.
     """
     corpus_id = f"corpus-{uuid.uuid4().hex[:12]}"
     if not title:
@@ -624,7 +1138,7 @@ async def _submit_corpus(text: str, title: str = "", source: str = "") -> Corpus
 
     await swarm.add_corpus(record)
 
-    # Fire-and-forget background task — does NOT block the response
+    # Fire-and-forget background task -- does NOT block the response
     task = asyncio.create_task(_process_corpus(corpus_id, text))
     _worker_tasks.append(task)
 
@@ -643,102 +1157,64 @@ async def _submit_corpus(text: str, title: str = "", source: str = "") -> Corpus
 # Query handler: answer from current swarm knowledge
 # ---------------------------------------------------------------------------
 
-_QUERY_SYSTEM_PROMPT = """You are a research analyst powered by a swarm knowledge system. You have access to a knowledge graph that has been built by decomposing and analysing large corpora of text.
-
-**SWARM STATUS:**
-{swarm_status}
-
-**YOUR JOB:**
-Answer the user's question using ONLY the knowledge graph results provided below. Be thorough, specific, and cite the source documents when possible.
-
-**RULES:**
-- If the knowledge graph has relevant information, synthesise it into a clear, comprehensive answer.
-- If the knowledge graph has partial information, say what you know and clearly state what gaps remain.
-- If no relevant knowledge exists yet, say so honestly — do not fabricate.
-- Reference specific entities, claims, and relationships from the graph.
-- If the swarm is still processing corpora, mention that more complete answers may be available once processing finishes.
-- Be direct. No moralising, no disclaimers, no hedging. Just answer.
-
-**KNOWLEDGE GRAPH RESULTS:**
-{knowledge_results}
-"""
-
-
 async def _query_knowledge(query: str, req_id: str) -> str:
-    """Query the knowledge graph for information relevant to the user's question."""
-    results_parts: list[str] = []
+    """Query the in-memory knowledge store for relevant information."""
+    results = await knowledge.search(query, limit=20)
+    parts: list[str] = []
 
-    # 1. Hybrid search across the swarm namespace
-    try:
-        search_result = await knowledge_client.search(
-            namespace=SWARM_NAMESPACE,
-            query=query,
-            mode="hybrid",
-            limit=20,
+    # Format chunks
+    chunks = results.get("chunks", [])
+    if chunks:
+        formatted = []
+        for i, c in enumerate(chunks, 1):
+            header = (
+                f"{i}. [chunk] from *{c['corpus_title']}* "
+                f"[relevance: {c['score']:.3f}]"
+            )
+            formatted.append(f"{header}\n{c['text']}")
+        parts.append(
+            "**Matching Text Chunks:**\n"
+            + "\n\n---\n\n".join(formatted)
         )
-        results = search_result.get("results", [])
-        if results:
-            formatted = []
-            for i, r in enumerate(results, 1):
-                node_type = r.get("node_type", "")
-                name = r.get("name", "")
-                content = r.get("content", "")[:1500]
-                score = r.get("score", 0)
-                source_doc = r.get("source_doc", "")
 
-                header = f"{i}. [{node_type}]"
-                if name:
-                    header += f" **{name}**"
-                if source_doc:
-                    header += f" (from: {source_doc})"
-                header += f" [relevance: {score:.3f}]"
+    # Format entities
+    entities = results.get("entities", [])
+    if entities:
+        entity_text = "\n".join(
+            f"- **{e['name']}** ({e['type']}) -- "
+            f"{e['description']} "
+            f"[{e['mentions']} mentions, "
+            f"relevance: {e['score']:.3f}]"
+            for e in entities[:15]
+        )
+        parts.append(f"**Entities:**\n{entity_text}")
 
-                formatted.append(f"{header}\n{content}" if content else header)
+    # Format relationships
+    rels = results.get("relationships", [])
+    if rels:
+        rel_text = "\n".join(
+            f"- {r['source']} --[{r['type']}]--> "
+            f"{r['target']}: {r['description']}"
+            for r in rels[:15]
+        )
+        parts.append(f"**Relationships:**\n{rel_text}")
 
-            results_parts.append(
-                "**Hybrid Search Results:**\n" + "\n\n---\n\n".join(formatted)
-            )
-        else:
-            results_parts.append("**Hybrid Search:** No matching results found.")
-    except Exception as e:
-        log.warning(f"[{req_id}] Knowledge search error: {e}")
-        results_parts.append(f"**Hybrid Search:** Error — {e}")
+    # Format claims
+    claims = results.get("claims", [])
+    if claims:
+        claim_text = "\n".join(
+            f"- [{c['confidence']}] {c['text']}"
+            for c in claims[:15]
+        )
+        parts.append(f"**Claims:**\n{claim_text}")
 
-    # 2. Try spreading activation if we have search results with named entities
-    try:
-        # Extract entity names from search results for graph exploration
-        entity_names = []
-        if results:
-            for r in results[:5]:
-                name = r.get("name", "")
-                if name and len(name) > 2:
-                    entity_names.append(name)
+    if not parts:
+        return (
+            "(No knowledge available yet. "
+            "The swarm has not processed any corpora.)"
+        )
 
-        if entity_names:
-            activation_result = await knowledge_client.spreading_activation(
-                namespace=SWARM_NAMESPACE,
-                seed_concepts=entity_names[:3],
-                hops=2,
-                limit=10,
-            )
-            activations = activation_result.get("results", [])
-            if activations:
-                activation_text = "\n".join(
-                    f"- **{a.get('name', '?')}** "
-                    f"(activation: {a.get('activation', 0):.3f})"
-                    for a in activations
-                )
-                results_parts.append(
-                    f"**Graph Exploration (spreading activation from "
-                    f"{', '.join(entity_names[:3])}):**\n{activation_text}"
-                )
-    except Exception as e:
-        log.debug(f"[{req_id}] Spreading activation error (non-fatal): {e}")
-
-    if not results_parts:
-        return "(No knowledge available yet. The swarm has not processed any corpora.)"
-
-    return "\n\n".join(results_parts)
+    return "\n\n".join(parts)
 
 
 async def _handle_query(
@@ -746,15 +1222,17 @@ async def _handle_query(
     original_body: dict,
     req_id: str,
 ) -> AsyncGenerator[str, None]:
-    """Handle a query by searching the swarm's knowledge and synthesising an answer.
+    """Handle a query by searching knowledge and synthesising.
 
-    This does NOT disturb the swarm — it only reads from the knowledge graph.
+    This does NOT disturb the swarm -- it only reads from the store.
     """
     model_id = original_body.get("model", "swarm-miroflow")
     request_id = f"chatcmpl-swarm-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
-    def chunk(content: str, finish_reason: Optional[str] = None) -> str:
+    def sse(
+        content: str, finish_reason: Optional[str] = None,
+    ) -> str:
         return make_sse_chunk(
             content,
             request_id=request_id,
@@ -779,7 +1257,10 @@ async def _handle_query(
             break
 
     if not user_query:
-        yield chunk("No question found in the message.", finish_reason="stop")
+        yield sse(
+            "No question found in the message.",
+            finish_reason="stop",
+        )
         yield "data: [DONE]\n\n"
         return
 
@@ -787,19 +1268,19 @@ async def _handle_query(
     status_preamble = await swarm.build_sincerity_preamble()
 
     # Stream the thinking section with status
-    yield chunk("<think>\n")
-    yield chunk(status_preamble)
-    yield chunk(f"**Query:** {user_query[:200]}\n\n")
+    yield sse("<think>\n")
+    yield sse(status_preamble)
+    yield sse(f"**Query:** {user_query[:200]}\n\n")
 
-    # Query the knowledge graph
-    yield chunk("**[Searching knowledge graph...]**\n")
+    # Query the knowledge store
+    yield sse("**[Searching swarm knowledge...]**\n")
     knowledge_results = await _query_knowledge(user_query, req_id)
 
     # Show what we found
     result_summary = knowledge_results[:500]
     if len(knowledge_results) > 500:
         result_summary += "..."
-    yield chunk(f"Found knowledge:\n{result_summary}\n\n")
+    yield sse(f"Found knowledge:\n{result_summary}\n\n")
 
     # Build the synthesis prompt
     system_prompt = _QUERY_SYSTEM_PROMPT.format(
@@ -807,20 +1288,23 @@ async def _handle_query(
         knowledge_results=knowledge_results,
     )
 
-    # Include conversation history for context
     synthesis_messages = [
         {"role": "system", "content": system_prompt},
     ]
-    # Add recent conversation for context (last 5 messages max)
     for msg in messages[-5:]:
         if msg.get("role") in ("user", "assistant"):
+            msg_content = msg.get("content", "")
+            if isinstance(msg_content, str):
+                msg_content = msg_content[:2000]
+            else:
+                msg_content = ""
             synthesis_messages.append({
                 "role": msg["role"],
-                "content": msg.get("content", "")[:2000] if isinstance(msg.get("content", ""), str) else "",
+                "content": msg_content,
             })
 
-    yield chunk("**[Synthesising answer...]**\n")
-    yield chunk("</think>\n\n")
+    yield sse("**[Synthesising answer...]**\n")
+    yield sse("</think>\n\n")
 
     # Call LLM for synthesis and stream the response
     try:
@@ -847,9 +1331,18 @@ async def _handle_query(
             ) as resp:
                 if resp.status_code != 200:
                     error_body = await resp.aread()
-                    error_text = error_body.decode("utf-8", errors="replace")[:500]
-                    log.error(f"[{req_id}] Synthesis LLM error {resp.status_code}: {error_text}")
-                    yield chunk(f"Error synthesising answer: {error_text[:200]}", finish_reason="stop")
+                    error_text = error_body.decode(
+                        "utf-8", errors="replace",
+                    )[:500]
+                    log.error(
+                        f"[{req_id}] Synthesis LLM error "
+                        f"{resp.status_code}: {error_text}"
+                    )
+                    yield sse(
+                        "Error synthesising answer: "
+                        f"{error_text[:200]}",
+                        finish_reason="stop",
+                    )
                     yield "data: [DONE]\n\n"
                     return
 
@@ -865,19 +1358,22 @@ async def _handle_query(
                                 delta = choices[0].get("delta", {})
                                 content = delta.get("content", "")
                                 if content:
-                                    yield chunk(content)
+                                    yield sse(content)
                         except json.JSONDecodeError:
                             pass
 
     except Exception as e:
         log.error(f"[{req_id}] Synthesis streaming error: {e}")
-        yield chunk(f"\n\nError during synthesis: {e}", finish_reason="stop")
+        yield sse(
+            f"\n\nError during synthesis: {e}",
+            finish_reason="stop",
+        )
         yield "data: [DONE]\n\n"
         return
 
     await swarm.increment_queries()
 
-    yield chunk("", finish_reason="stop")
+    yield sse("", finish_reason="stop")
     yield "data: [DONE]\n\n"
 
 
@@ -888,14 +1384,16 @@ async def _handle_corpus_submission(
 ) -> AsyncGenerator[str, None]:
     """Handle a large document by submitting it to the swarm.
 
-    Returns immediately with a confirmation — the actual processing
+    Returns immediately with a confirmation -- the actual processing
     happens in the background without blocking.
     """
     model_id = original_body.get("model", "swarm-miroflow")
     request_id = f"chatcmpl-swarm-ingest-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
-    def chunk(content: str, finish_reason: Optional[str] = None) -> str:
+    def sse(
+        content: str, finish_reason: Optional[str] = None,
+    ) -> str:
         return make_sse_chunk(
             content,
             request_id=request_id,
@@ -906,36 +1404,42 @@ async def _handle_corpus_submission(
 
     title = text[:80].replace("\n", " ").strip()
 
-    yield chunk("<think>\n")
-    yield chunk(f"**[Corpus Received]** {len(text):,} characters\n")
-    yield chunk(f"Title: {title}...\n")
-    yield chunk("Submitting to the swarm for background processing...\n")
+    yield sse("<think>\n")
+    yield sse(f"**[Corpus Received]** {len(text):,} characters\n")
+    yield sse(f"Title: {title}...\n")
+    yield sse(
+        "Submitting to the swarm for background processing...\n",
+    )
 
-    # Submit to the swarm — this returns immediately
-    record = await _submit_corpus(text, title=title, source="chat-submission")
+    # Submit to the swarm -- this returns immediately
+    record = await _submit_corpus(
+        text, title=title, source="chat-submission",
+    )
 
-    yield chunk(f"Corpus ID: {record.id}\n")
-    yield chunk("Status: Queued for processing\n")
+    yield sse(f"Corpus ID: {record.id}\n")
+    yield sse("Status: Queued for processing\n")
 
     # Show current swarm state
     status = await swarm.build_sincerity_preamble()
-    yield chunk(f"\n{status}")
-    yield chunk("</think>\n\n")
+    yield sse(f"\n{status}")
+    yield sse("</think>\n\n")
 
     # User-facing response
     snapshot = await swarm.get_status_snapshot()
-    yield chunk(
+    yield sse(
         f"## Corpus Submitted to Swarm\n\n"
-        f"Your document ({len(text):,} characters) has been submitted to the "
-        f"swarm for background processing.\n\n"
+        f"Your document ({len(text):,} characters) has been submitted "
+        f"to the swarm for background processing.\n\n"
         f"**Corpus ID:** `{record.id}`\n"
         f"**Title:** {title}\n\n"
         f"The swarm will now:\n"
         f"1. Decompose the text into overlapping chunks\n"
-        f"2. Extract entities, claims, evidence, and relationships\n"
-        f"3. Resolve duplicate entities across all corpora\n"
-        f"4. Build the knowledge graph incrementally\n\n"
-        f"**You can ask questions immediately** — I will answer from "
+        f"2. Use LLM agents to extract entities, claims, and "
+        f"relationships from each chunk\n"
+        f"3. Merge extracted knowledge into the swarm's in-memory "
+        f"knowledge store\n"
+        f"4. Make all extracted knowledge immediately queryable\n\n"
+        f"**You can ask questions immediately** -- I will answer from "
         f"whatever knowledge the swarm has built so far and be honest "
         f"about what has and hasn't been processed yet.\n\n"
         f"This submission does not interrupt any ongoing processing. "
@@ -943,10 +1447,10 @@ async def _handle_corpus_submission(
         f"corpus when a worker becomes available.\n\n"
         f"**Current swarm:** {snapshot['total_corpora']} corpora, "
         f"{snapshot['active_workers']} active workers, "
-        f"{snapshot['total_entities']} entities in knowledge graph.\n"
+        f"{snapshot['total_entities']} entities in knowledge store.\n"
     )
 
-    yield chunk("", finish_reason="stop")
+    yield sse("", finish_reason="stop")
     yield "data: [DONE]\n\n"
 
 
@@ -964,7 +1468,7 @@ register_standard_routes(
     health_extras={
         "upstream": UPSTREAM_BASE,
         "synthesis_model": SYNTHESIS_MODEL,
-        "namespace": SWARM_NAMESPACE,
+        "worker_model": WORKER_MODEL,
         "max_workers": MAX_SWARM_WORKERS,
         "max_concurrent_queries": MAX_CONCURRENT_QUERIES,
     },
@@ -988,8 +1492,7 @@ async def list_models():
 
 @app.get("/v1/swarm/status")
 async def swarm_status():
-    """Return complete swarm status — what every worker is doing, progress
-    on each corpus, and overall knowledge graph statistics."""
+    """Return complete swarm status."""
     snapshot = await swarm.get_status_snapshot()
     return JSONResponse(snapshot)
 
@@ -1003,17 +1506,23 @@ async def swarm_corpora():
 
 @app.get("/v1/swarm/sincerity")
 async def swarm_sincerity():
-    """Return the current sincerity preamble — what the swarm would tell
-    a user about its state right now."""
+    """Return the current sincerity preamble."""
     preamble = await swarm.build_sincerity_preamble()
     return JSONResponse({"preamble": preamble})
+
+
+@app.get("/v1/swarm/knowledge")
+async def swarm_knowledge_stats():
+    """Return statistics about the in-memory knowledge store."""
+    stats = await knowledge.stats()
+    return JSONResponse(stats)
 
 
 @app.post("/v1/swarm/submit")
 async def submit_corpus_api(request: Request):
     """Direct API endpoint to submit a corpus for swarm processing.
 
-    Body: {"text": "...", "title": "optional title", "source": "optional source"}
+    Body: {"text": "...", "title": "optional", "source": "optional"}
     """
     try:
         body = await request.json()
@@ -1026,7 +1535,12 @@ async def submit_corpus_api(request: Request):
     text = body.get("text", "")
     if not text or len(text) < 100:
         return JSONResponse(
-            {"error": "text field is required and must be at least 100 characters"},
+            {
+                "error": (
+                    "text field is required and must be "
+                    "at least 100 characters"
+                ),
+            },
             status_code=400,
         )
 
@@ -1073,7 +1587,10 @@ async def chat_completions(request: Request):
             status_code=400,
             content={
                 "error": {
-                    "message": "messages array is required and must not be empty",
+                    "message": (
+                        "messages array is required "
+                        "and must not be empty"
+                    ),
                     "type": "invalid_request",
                 }
             },
@@ -1085,9 +1602,12 @@ async def chat_completions(request: Request):
         f"model={body.get('model', '?')}, utility={utility}"
     )
 
-    tracker.start(req_id, utility=utility, messages=len(messages), phase="init")
+    tracker.start(
+        req_id, utility=utility,
+        messages=len(messages), phase="init",
+    )
 
-    # Utility requests (title/tag generation) pass through to upstream
+    # Utility requests (title/tag generation) pass through
     if utility:
         log.info(f"[{req_id}] Routing to PASSTHROUGH")
         generator = stream_passthrough(
@@ -1112,12 +1632,13 @@ async def chat_completions(request: Request):
                     user_text = " ".join(
                         p.get("text", "")
                         for p in content
-                        if isinstance(p, dict) and p.get("type") == "text"
+                        if isinstance(p, dict)
+                        and p.get("type") == "text"
                     )
                 break
 
         if _is_large_document(user_text):
-            # Large document → submit to swarm (non-blocking)
+            # Large document -> submit to swarm (non-blocking)
             log.info(
                 f"[{req_id}] Routing to SWARM CORPUS SUBMISSION "
                 f"({len(user_text):,} chars)"
@@ -1126,7 +1647,7 @@ async def chat_completions(request: Request):
             async def _guarded_submit():
                 try:
                     async for event in _handle_corpus_submission(
-                        user_text, body, req_id
+                        user_text, body, req_id,
                     ):
                         yield event
                 finally:
@@ -1134,7 +1655,7 @@ async def chat_completions(request: Request):
 
             generator = _guarded_submit()
         else:
-            # Regular query → answer from swarm knowledge
+            # Regular query -> answer from swarm knowledge
             if not query_limiter.available():
                 tracker.finish(req_id)
                 return JSONResponse(
@@ -1142,8 +1663,9 @@ async def chat_completions(request: Request):
                     content={
                         "error": {
                             "message": (
-                                f"Too many concurrent queries "
-                                f"({query_limiter.max_concurrent}). Try again shortly."
+                                "Too many concurrent queries "
+                                f"({query_limiter.max_concurrent})"
+                                ". Try again shortly."
                             ),
                             "type": "rate_limit",
                         }
@@ -1155,7 +1677,9 @@ async def chat_completions(request: Request):
             async def _guarded_query():
                 try:
                     async with query_limiter.hold():
-                        async for event in _handle_query(messages, body, req_id):
+                        async for event in _handle_query(
+                            messages, body, req_id,
+                        ):
                             yield event
                 finally:
                     tracker.finish(req_id)
@@ -1179,4 +1703,6 @@ async def chat_completions(request: Request):
 
 if __name__ == "__main__":
     import uvicorn as _uvicorn
-    _uvicorn.run(app, host="0.0.0.0", port=LISTEN_PORT, log_level="info")
+    _uvicorn.run(
+        app, host="0.0.0.0", port=LISTEN_PORT, log_level="info",
+    )

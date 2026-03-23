@@ -70,6 +70,7 @@ from .conversation import (
     detect_followup,
     get_conversation_store,
 )
+from .ruflo_synthesis import needs_gossip_synthesis, ruflo_gossip_synthesize
 
 # SQLite checkpoint DB path (configurable via env)
 _CHECKPOINT_DB_PATH = os.getenv(
@@ -691,6 +692,36 @@ async def synthesize_with_revision(
     if not conditions_by_angle:
         return "No research findings were gathered. The subagents could not find relevant information."
 
+    # --- Ruflo gossip synthesis for large finding sets ---
+    # When findings exceed the LLM context window, route through ruflo's
+    # gossip protocol: chunk → parallel workers → gossip refinement → queen merge.
+    if needs_gossip_synthesis(subagent_results):
+        log.info(
+            f"[{req_id}] Routing to ruflo gossip synthesis: "
+            f"{total_conditions} conditions exceed single-shot threshold"
+        )
+        prior_text = ""
+        if prior_conditions:
+            prior_text = "\n**PRIOR KNOWLEDGE (from previous sessions):**\n"
+            prior_text += "\n".join(
+                f"- {c['fact']} [prior research: {c.get('original_query', c.get('source', ''))}]"
+                for c in prior_conditions[:10]
+            )
+        if prior_conversation_summary:
+            prior_text += (
+                "\n**PREVIOUS RESEARCH IN THIS CONVERSATION:**\n"
+                f"{prior_conversation_summary[:2000]}\n"
+            )
+        gossip_answer = await ruflo_gossip_synthesize(
+            user_query, subagent_results, req_id,
+            prior_text=prior_text,
+        )
+        if gossip_answer:
+            return await strip_moralizing(gossip_answer, user_query, req_id)
+        # If gossip returned empty (e.g., below threshold), fall through
+        # to single-shot synthesis.
+        log.info(f"[{req_id}] Ruflo gossip returned empty — falling back to single-shot")
+
     conditions_text = ""
     for angle, conds in conditions_by_angle.items():
         conditions_text += f"\n### {angle}\n"
@@ -716,7 +747,7 @@ async def synthesize_with_revision(
             "already covered. Focus on what is NEW in this follow-up query.\n"
         )
 
-    # --- Phase 1: Draft Synthesis ---
+    # --- Phase 1: Draft Synthesis (single-shot path) ---
     draft_prompt = DRAFT_SYNTHESIS_PROMPT.format(
         date=today,
         n_subagents=len(subagent_results),
@@ -1563,10 +1594,22 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
     mc = _metrics_collectors.get(req_id)
     if mc:
         mc.start_node("synthesize")
+    # Check if we need ruflo gossip synthesis for large finding sets
+    _use_gossip = needs_gossip_synthesis(state["subagent_results"])
     progress: list[str] = [
         f"\n**[Synthesis Phase]** (model: {UPSTREAM_MODEL})\n",
-        "Generating draft synthesis...\n",
     ]
+    if _use_gossip:
+        _n_conds = sum(
+            len(sr.conditions) for sr in state["subagent_results"]
+            if sr.conditions
+        )
+        progress.append(
+            f"Large finding set ({_n_conds} conditions) — "
+            f"routing through ruflo gossip synthesis (chunked map-reduce)...\n"
+        )
+    else:
+        progress.append("Generating draft synthesis...\n")
 
     prior_conv_summary = state.get("prior_conversation_summary", "")
     final_answer = await synthesize_with_revision(

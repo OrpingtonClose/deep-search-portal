@@ -17,6 +17,7 @@ Module map:
     planning        — question router, entity extraction, citation verification
     subagent        — planning agent, AoT reflection, run_subagent
     tree_reactor    — tree research reactor
+    ruflo_synthesis — ruflo gossip protocol for chunked synthesis of large finding sets
     synthesis       — live findings, heartbeat, draft-synthesis-revision, LangGraph pipeline
     conversation    — conversation state persistence, follow-up detection, snapshot store
 """

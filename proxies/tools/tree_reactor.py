@@ -715,6 +715,7 @@ async def tree_research_reactor(
             if matches:
                 # Connect to existing instead of seeding a duplicate
                 await question_registry.add_edge(root.id, matches[0].node_id)
+                root.connected_to.append(matches[0].node_id)
                 log.info(
                     f"[{req_id}] Seed angle deduped: \"{q[:60]}\" → "
                     f"existing \"{matches[0].question[:60]}\" "
@@ -870,7 +871,7 @@ async def tree_research_reactor(
                                 log.info(
                                     f"[{req_id}] Verification: "
                                     f"{len(raw_verify)} candidates, "
-                                    f"{len([c for c in children if c not in raw_verify or c in children])} "
+                                    f"{len([c for c in children if c in raw_verify])} "
                                     f"after net dedup"
                                 )
                         except Exception as e:

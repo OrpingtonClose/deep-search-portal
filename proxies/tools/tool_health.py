@@ -124,7 +124,7 @@ class ToolHealthMonitor:
     def __init__(self) -> None:
         self._stats: dict[str, ToolStats] = defaultdict(ToolStats)
         self._lock = threading.Lock()
-        self._analysis_queue: asyncio.Queue[tuple[str, ToolStats]] = asyncio.Queue()
+        self._analysis_queue: asyncio.Queue[tuple[str, dict]] = asyncio.Queue()
         self._analysis_task: Optional[asyncio.Task] = None
 
     def record_success(self, tool_name: str) -> None:

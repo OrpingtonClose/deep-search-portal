@@ -751,6 +751,46 @@ NATIVE_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "telegram_search",
+            "description": (
+                "Search for publicly indexed Telegram channel and group content. "
+                "Queries t.me links, Telegram aggregator sites (tgstat.com, telemetr.io, "
+                "telegramchannels.me), and general web results mentioning Telegram channels. "
+                "Does NOT access Telegram's private API — only publicly indexed content. "
+                "Useful for tracking communities, alternative discourse, and encrypted group discussions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search terms to find Telegram content"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "darknet_market_search",
+            "description": (
+                "Search for darknet market intelligence via publicly indexed OSINT sources. "
+                "Queries clearnet darknet-market discussion sites (darknetlive.com, dark.fail, "
+                "darknetmarkets.org, dread.support) and general web OSINT about darknet markets, "
+                "vendors, and products. Does NOT access .onion sites directly — only publicly "
+                "available intelligence about darknet markets indexed on the clearnet."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search terms for darknet market OSINT"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 

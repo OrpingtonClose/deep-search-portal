@@ -234,25 +234,27 @@ class ConversationStateStore:
             if db_dir:
                 os.makedirs(db_dir, exist_ok=True)
             conn = self._connect()
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS conversation_turns (
-                    conversation_id TEXT NOT NULL,
-                    turn_index INTEGER NOT NULL,
-                    data TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    PRIMARY KEY (conversation_id, turn_index)
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS conversation_turns (
+                        conversation_id TEXT NOT NULL,
+                        turn_index INTEGER NOT NULL,
+                        data TEXT NOT NULL,
+                        created_at REAL NOT NULL,
+                        PRIMARY KEY (conversation_id, turn_index)
+                    )
+                    """
                 )
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_conv_id
-                ON conversation_turns (conversation_id)
-                """
-            )
-            conn.commit()
-            conn.close()
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_conv_id
+                    ON conversation_turns (conversation_id)
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
             self._ready = True
             log.info(f"Conversation state store ready at {self._db_path}")
         except Exception as e:

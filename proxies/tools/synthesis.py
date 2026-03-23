@@ -1736,16 +1736,24 @@ def _should_reresearch_after_synthesis(state: PersistentResearchState) -> str:
     for another research pass.  Otherwise proceed to END.
 
     This implements the synthesis → tree_research feedback loop.
+    Safety: always respects MAX_RESEARCH_ITERATIONS to prevent infinite loops.
     """
     targeted = state.get("targeted_questions", [])
-    if targeted:
+    iterations = state.get("research_iterations", 0)
+    if targeted and iterations < MAX_RESEARCH_ITERATIONS:
         log.info(
             "[%s] Synthesis feedback loop: routing back to tree_research "
-            "with %d gap questions (iteration %d)",
+            "with %d gap questions (iteration %d/%d)",
             state["req_id"], len(targeted),
-            state.get("research_iterations", 0),
+            iterations, MAX_RESEARCH_ITERATIONS,
         )
         return "tree_research"
+    if targeted:
+        log.info(
+            "[%s] Synthesis feedback loop: would re-research but "
+            "MAX_RESEARCH_ITERATIONS (%d) reached — proceeding to END",
+            state["req_id"], MAX_RESEARCH_ITERATIONS,
+        )
     return "__end__"
 
 

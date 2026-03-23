@@ -73,7 +73,7 @@ _SELF_THROTTLED_TOOLS: set[str] = {
     "twitter_search",
     # Social media scrapers throttle via bright_data internally
     "social_media_search", "reddit_search", "instagram_search",
-    "tiktok_search", "linkedin_search",
+    "tiktok_search", "linkedin_search", "youtube_search",
 }
 
 # Maps tool names to provider keys for throttler lookup.

@@ -829,7 +829,8 @@ def _chunk_text(text: str) -> list[str]:
         chunk = text[start:end]
         if chunk.strip():
             chunks.append(chunk)
-        start += CHUNK_SIZE - CHUNK_OVERLAP
+        step = max(CHUNK_SIZE - CHUNK_OVERLAP, 1)
+        start += step
     return chunks if chunks else [text]
 
 

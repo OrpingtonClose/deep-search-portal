@@ -1140,8 +1140,17 @@ async def tool_darknet_market_search(query: str) -> str:
                 )
             return f"No darknet market OSINT results for: {query}"
 
+        # Deduplicate by URL (osint_sites phase doesn't dedup between sites)
+        dedup_seen: set[str] = set()
+        unique: list[dict] = []
+        for r in results_all:
+            url = r.get("url", "")
+            if url and url not in dedup_seen:
+                dedup_seen.add(url)
+                unique.append(r)
+
         return (
-            _format_search_results(results_all[:15], source_label="darknet_osint")
+            _format_search_results(unique[:15], source_label="darknet_osint")
             or f"No darknet market OSINT results for: {query}"
         )
 

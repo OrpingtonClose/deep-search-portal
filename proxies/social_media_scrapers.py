@@ -860,8 +860,11 @@ async def social_media_search(
         result_count = len(results)
         formatted = formatter(results, provider_used)
 
-    # Build response with metadata
-    header = f"**{platform.title()} search results for: {query}** (via {provider_used}, {result_count} results)\n\n"
+    # Build response with metadata — skip header for [TOOL_ERROR] so prefix stays at position 0
+    if formatted.startswith("[TOOL_ERROR]"):
+        header = ""
+    else:
+        header = f"**{platform.title()} search results for: {query}** (via {provider_used}, {result_count} results)\n\n"
 
     # Add censorship warning if applicable
     warning = _censorship_warning(platform, query, result_count, provider_used)

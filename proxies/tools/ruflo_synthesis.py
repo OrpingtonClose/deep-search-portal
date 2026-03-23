@@ -136,7 +136,12 @@ async def _ruflo_hive_store(key: str, value: str) -> bool:
             stderr=asyncio.subprocess.PIPE,
             cwd=os.getenv("RUFLO_PROJECT_DIR", "/home/ubuntu/repos/deep-search-portal"),
         )
-        await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return False
         return proc.returncode == 0
     except Exception:
         return False
@@ -154,7 +159,12 @@ async def _ruflo_broadcast(message: str) -> bool:
             stderr=asyncio.subprocess.PIPE,
             cwd=os.getenv("RUFLO_PROJECT_DIR", "/home/ubuntu/repos/deep-search-portal"),
         )
-        await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return False
         return proc.returncode == 0
     except Exception:
         return False
@@ -393,7 +403,14 @@ async def _queen_merge(
             for w in state.workers
         )
 
-    return result.get("content", "")
+    content = result.get("content", "")
+    if not content:
+        log.warning(f"[{req_id}] Queen merge returned empty content — using concatenated summaries")
+        return "\n\n".join(
+            f"## {', '.join(w.chunk_angles[:3])}\n{w.summary}"
+            for w in state.workers
+        )
+    return content
 
 
 async def ruflo_gossip_synthesize(

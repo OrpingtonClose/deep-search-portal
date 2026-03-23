@@ -1182,9 +1182,9 @@ async def tool_youtube_search(query: str) -> str:
         return _format_search_results(results[:15], source_label="youtube") or f"No YouTube results for: {query}"
 
     except httpx.TimeoutException:
-        return "YouTube search error: request timed out"
+        return "[TOOL_ERROR] YouTube search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"YouTube search error: {str(e)}"
+        return f"[TOOL_ERROR] YouTube search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================

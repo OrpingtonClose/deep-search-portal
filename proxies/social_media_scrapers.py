@@ -842,9 +842,10 @@ async def social_media_search(
                 "This is a technical/configuration failure, NOT 'no results found'."
             )
         else:
+            provider_label = provider_used if provider_used != "none" else "bright_data, apify, searxng_fallback (all failed)"
             formatted = (
                 f"[TOOL_ERROR] {platform} search returned 0 results for: {query}. "
-                f"Tried providers: {provider_used}. All tiers returned empty. "
+                f"Tried providers: {provider_label}. All tiers returned empty. "
                 "Results may be filtered or the search may have failed silently."
             )
         provider_used = provider_used if provider_used != "none" else ("none (no credentials)" if not BRIGHT_DATA_API_KEY and not APIFY_API_TOKEN else "none (search failed)")

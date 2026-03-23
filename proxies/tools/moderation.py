@@ -191,6 +191,7 @@ async def _search_bright_data_serp(query: str) -> list[dict]:
                 json={
                     "zone": BRIGHT_DATA_SERP_ZONE,
                     "url": search_url,
+                    "format": "raw",
                 },
                 timeout=30.0,
             )

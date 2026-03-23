@@ -1897,11 +1897,17 @@ async def _pipeline_producer(
                     created_at=time.time(),
                 )
                 store = get_conversation_store()
-                store.save_turn(snapshot)
-                log.info(
-                    "[%s] Saved conversation snapshot: conv=%s turn=%d facts=%d",
-                    req_id, conv_id, conv_turn, len(condition_facts),
-                )
+                saved = store.save_turn(snapshot)
+                if saved:
+                    log.info(
+                        "[%s] Saved conversation snapshot: conv=%s turn=%d facts=%d",
+                        req_id, conv_id, conv_turn, len(condition_facts),
+                    )
+                else:
+                    log.warning(
+                        "[%s] Conversation snapshot NOT persisted: conv=%s turn=%d",
+                        req_id, conv_id, conv_turn,
+                    )
         except Exception as e:
             log.warning(f"[{req_id}] Failed to save conversation snapshot: {e}")
 

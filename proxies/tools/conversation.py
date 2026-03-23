@@ -209,13 +209,23 @@ class ConversationStateStore:
     Each conversation is identified by a ``conversation_id`` derived
     from the message history.  Multiple turns (snapshots) can be stored
     per conversation, ordered by ``turn_index``.
+
+    Uses a fresh connection per operation to avoid stale-connection
+    errors in long-running server processes (research runs can last
+    hours).
     """
 
     def __init__(self, db_path: str = _CONV_DB_PATH) -> None:
         self._db_path = db_path
         self._lock = threading.Lock()
-        self._conn: Optional[sqlite3.Connection] = None
+        self._ready = False
         self._ensure_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        """Open a fresh SQLite connection with WAL mode."""
+        conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
 
     def _ensure_db(self) -> None:
         """Create the database and table if they don't exist."""
@@ -223,8 +233,8 @@ class ConversationStateStore:
             db_dir = os.path.dirname(self._db_path)
             if db_dir:
                 os.makedirs(db_dir, exist_ok=True)
-            self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-            self._conn.execute(
+            conn = self._connect()
+            conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS conversation_turns (
                     conversation_id TEXT NOT NULL,
@@ -235,56 +245,71 @@ class ConversationStateStore:
                 )
                 """
             )
-            self._conn.execute(
+            conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_conv_id
                 ON conversation_turns (conversation_id)
                 """
             )
-            self._conn.commit()
+            conn.commit()
+            conn.close()
+            self._ready = True
             log.info(f"Conversation state store ready at {self._db_path}")
         except Exception as e:
             log.warning(f"Conversation state store init failed: {e}")
-            self._conn = None
+            self._ready = False
 
-    def save_turn(self, snapshot: ConversationSnapshot) -> None:
-        """Save or update a conversation turn snapshot."""
-        if self._conn is None:
-            return
+    def save_turn(self, snapshot: ConversationSnapshot) -> bool:
+        """Save or update a conversation turn snapshot.
+
+        Returns ``True`` on success, ``False`` on failure.
+        """
+        if not self._ready:
+            return False
         try:
             with self._lock:
-                self._conn.execute(
-                    """
-                    INSERT OR REPLACE INTO conversation_turns
-                    (conversation_id, turn_index, data, created_at)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (
-                        snapshot.conversation_id,
-                        snapshot.turn_index,
-                        json.dumps(snapshot.to_dict(), default=str),
-                        snapshot.created_at or time.time(),
-                    ),
-                )
-                self._conn.commit()
+                conn = self._connect()
+                try:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO conversation_turns
+                        (conversation_id, turn_index, data, created_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            snapshot.conversation_id,
+                            snapshot.turn_index,
+                            json.dumps(snapshot.to_dict(), default=str),
+                            snapshot.created_at or time.time(),
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            return True
         except Exception as e:
             log.warning(f"Failed to save conversation turn: {e}")
+            return False
 
     def load_turns(self, conversation_id: str) -> list[ConversationSnapshot]:
         """Load all turns for a conversation, ordered by turn_index."""
-        if self._conn is None:
+        if not self._ready:
             return []
         try:
             with self._lock:
-                cursor = self._conn.execute(
-                    """
-                    SELECT data FROM conversation_turns
-                    WHERE conversation_id = ?
-                    ORDER BY turn_index ASC
-                    """,
-                    (conversation_id,),
-                )
-                rows = cursor.fetchall()
+                conn = self._connect()
+                try:
+                    cursor = conn.execute(
+                        """
+                        SELECT data FROM conversation_turns
+                        WHERE conversation_id = ?
+                        ORDER BY turn_index ASC
+                        """,
+                        (conversation_id,),
+                    )
+                    rows = cursor.fetchall()
+                finally:
+                    conn.close()
             return [
                 ConversationSnapshot.from_dict(json.loads(row[0]))
                 for row in rows
@@ -295,20 +320,24 @@ class ConversationStateStore:
 
     def get_latest_turn(self, conversation_id: str) -> Optional[ConversationSnapshot]:
         """Load the most recent turn for a conversation."""
-        if self._conn is None:
+        if not self._ready:
             return None
         try:
             with self._lock:
-                cursor = self._conn.execute(
-                    """
-                    SELECT data FROM conversation_turns
-                    WHERE conversation_id = ?
-                    ORDER BY turn_index DESC
-                    LIMIT 1
-                    """,
-                    (conversation_id,),
-                )
-                row = cursor.fetchone()
+                conn = self._connect()
+                try:
+                    cursor = conn.execute(
+                        """
+                        SELECT data FROM conversation_turns
+                        WHERE conversation_id = ?
+                        ORDER BY turn_index DESC
+                        LIMIT 1
+                        """,
+                        (conversation_id,),
+                    )
+                    row = cursor.fetchone()
+                finally:
+                    conn.close()
             if row:
                 return ConversationSnapshot.from_dict(json.loads(row[0]))
             return None
@@ -317,13 +346,8 @@ class ConversationStateStore:
             return None
 
     def close(self) -> None:
-        """Close the database connection."""
-        if self._conn is not None:
-            try:
-                self._conn.close()
-            except Exception:
-                pass
-            self._conn = None
+        """Mark store as closed (connections are per-operation now)."""
+        self._ready = False
 
 
 # Module-level singleton store

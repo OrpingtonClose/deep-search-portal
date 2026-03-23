@@ -66,7 +66,7 @@ UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://api.mistral.ai/v1")
 UPSTREAM_KEY = require_env("UPSTREAM_KEY")
 UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "mistral-large-latest")
 SYNTHESIS_MODEL = os.getenv("SWARM_SYNTHESIS_MODEL", "mistral-large-latest")
-WORKER_MODEL = os.getenv("SWARM_WORKER_MODEL", "mistral-small-latest")
+# WORKER_MODEL reserved for future per-chunk analysis workers
 LISTEN_PORT = env_int("SWARM_PROXY_PORT", 9500, minimum=1)
 MAX_CONCURRENT_QUERIES = env_int("SWARM_MAX_CONCURRENT_QUERIES", 4, minimum=1)
 MAX_SWARM_WORKERS = env_int("SWARM_MAX_WORKERS", 6, minimum=1)
@@ -80,7 +80,7 @@ CHUNK_OVERLAP = int(os.getenv("SWARM_CHUNK_OVERLAP", "200"))
 LARGE_DOC_THRESHOLD = int(os.getenv("SWARM_LARGE_DOC_THRESHOLD", "5000"))
 
 log.info(
-    f"Config: synthesis_model={SYNTHESIS_MODEL}, worker_model={WORKER_MODEL}, "
+    f"Config: synthesis_model={SYNTHESIS_MODEL}, "
     f"upstream={UPSTREAM_BASE}, port={LISTEN_PORT}, "
     f"max_queries={MAX_CONCURRENT_QUERIES}, max_workers={MAX_SWARM_WORKERS}, "
     f"namespace={SWARM_NAMESPACE}"
@@ -161,35 +161,83 @@ class SwarmState:
         self._lock = asyncio.Lock()
         self._corpora: dict[str, CorpusRecord] = {}
         self._workers: dict[str, SwarmWorkerInfo] = {}
-        self._corpus_queue: asyncio.Queue[str] = asyncio.Queue()
         self._total_queries_answered: int = 0
         self._started_at: float = time.monotonic()
 
     async def add_corpus(self, record: CorpusRecord) -> None:
-        """Register a new corpus and queue it for processing."""
+        """Register a new corpus for tracking."""
         async with self._lock:
             self._corpora[record.id] = record
-        await self._corpus_queue.put(record.id)
 
     async def get_corpus(self, corpus_id: str) -> Optional[CorpusRecord]:
         async with self._lock:
             return self._corpora.get(corpus_id)
 
-    async def update_corpus(self, corpus_id: str, **kwargs) -> None:
+    async def update_corpus(
+        self,
+        corpus_id: str,
+        *,
+        status: Optional[CorpusStatus] = None,
+        total_chunks: Optional[int] = None,
+        chunks_processed: Optional[int] = None,
+        entities_extracted: Optional[int] = None,
+        relationships_extracted: Optional[int] = None,
+        claims_extracted: Optional[int] = None,
+        error: Optional[str] = None,
+        started_at: Optional[str] = None,
+        completed_at: Optional[str] = None,
+        knowledge_engine_job_id: Optional[str] = None,
+    ) -> None:
         async with self._lock:
-            if corpus_id in self._corpora:
-                for k, v in kwargs.items():
-                    setattr(self._corpora[corpus_id], k, v)
+            rec = self._corpora.get(corpus_id)
+            if rec is None:
+                return
+            if status is not None:
+                rec.status = status
+            if total_chunks is not None:
+                rec.total_chunks = total_chunks
+            if chunks_processed is not None:
+                rec.chunks_processed = chunks_processed
+            if entities_extracted is not None:
+                rec.entities_extracted = entities_extracted
+            if relationships_extracted is not None:
+                rec.relationships_extracted = relationships_extracted
+            if claims_extracted is not None:
+                rec.claims_extracted = claims_extracted
+            if error is not None:
+                rec.error = error
+            if started_at is not None:
+                rec.started_at = started_at
+            if completed_at is not None:
+                rec.completed_at = completed_at
+            if knowledge_engine_job_id is not None:
+                rec.knowledge_engine_job_id = knowledge_engine_job_id
 
     async def register_worker(self, worker_id: str) -> None:
         async with self._lock:
             self._workers[worker_id] = SwarmWorkerInfo(id=worker_id)
 
-    async def update_worker(self, worker_id: str, **kwargs) -> None:
+    async def update_worker(
+        self,
+        worker_id: str,
+        *,
+        status: Optional[WorkerStatus] = None,
+        corpus_id: Optional[str] = None,
+        current_task: Optional[str] = None,
+        started_at: Optional[float] = None,
+    ) -> None:
         async with self._lock:
-            if worker_id in self._workers:
-                for k, v in kwargs.items():
-                    setattr(self._workers[worker_id], k, v)
+            w = self._workers.get(worker_id)
+            if w is None:
+                return
+            if status is not None:
+                w.status = status
+            if corpus_id is not None:
+                w.corpus_id = corpus_id
+            if current_task is not None:
+                w.current_task = current_task
+            if started_at is not None:
+                w.started_at = started_at
 
     async def remove_worker(self, worker_id: str) -> None:
         async with self._lock:
@@ -353,75 +401,6 @@ swarm = SwarmState()
 
 # Background worker tasks (kept alive for the process lifetime)
 _worker_tasks: list[asyncio.Task] = []
-
-
-# ---------------------------------------------------------------------------
-# LLM helpers
-# ---------------------------------------------------------------------------
-
-async def _call_llm_raw(
-    messages: list[dict],
-    req_id: str,
-    *,
-    model: str = "",
-    max_tokens: int = 4096,
-    temperature: float = 0.3,
-) -> dict:
-    """Call the upstream LLM directly via httpx.
-
-    Returns {"content": str} or {"error": str}.
-    """
-    resolved_model = model or SYNTHESIS_MODEL
-    body = {
-        "model": resolved_model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-    }
-
-    headers = {
-        "Authorization": f"Bearer {UPSTREAM_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    for attempt in range(3):
-        try:
-            async with get_throttler("mistral").throttle():
-                client = http_client()
-                resp = await client.post(
-                    f"{UPSTREAM_BASE}/chat/completions",
-                    json=body,
-                    headers=headers,
-                    timeout=120.0,
-                )
-
-            if resp.status_code == 200:
-                data = resp.json()
-                choices = data.get("choices", [])
-                if choices:
-                    content = choices[0].get("message", {}).get("content", "")
-                    return {"content": content}
-                return {"error": "No choices in response"}
-
-            if resp.status_code in (429, 500, 502, 503, 504):
-                wait = [5, 15, 30][min(attempt, 2)]
-                log.warning(
-                    f"[{req_id}] LLM {resp.status_code}, retrying in {wait}s "
-                    f"(attempt {attempt + 1}/3)"
-                )
-                await asyncio.sleep(wait)
-                continue
-
-            error_text = resp.text[:500]
-            return {"error": f"HTTP {resp.status_code}: {error_text}"}
-
-        except Exception as e:
-            if attempt < 2:
-                await asyncio.sleep(5)
-                continue
-            return {"error": str(e)}
-
-    return {"error": "Max retries exceeded"}
 
 
 # ---------------------------------------------------------------------------
@@ -985,7 +964,6 @@ register_standard_routes(
     health_extras={
         "upstream": UPSTREAM_BASE,
         "synthesis_model": SYNTHESIS_MODEL,
-        "worker_model": WORKER_MODEL,
         "namespace": SWARM_NAMESPACE,
         "max_workers": MAX_SWARM_WORKERS,
         "max_concurrent_queries": MAX_CONCURRENT_QUERIES,
@@ -1196,10 +1174,6 @@ async def chat_completions(request: Request):
 # Module-level startup
 # ---------------------------------------------------------------------------
 
-log.info(
-    f"Swarm Deep Search Proxy ready on port {LISTEN_PORT} | "
-    f"namespace={SWARM_NAMESPACE} | "
-    f"max_workers={MAX_SWARM_WORKERS} | "
-    f"synthesis={SYNTHESIS_MODEL} | "
-    f"worker={WORKER_MODEL}"
-)
+if __name__ == "__main__":
+    import uvicorn as _uvicorn
+    _uvicorn.run(app, host="0.0.0.0", port=LISTEN_PORT, log_level="info")

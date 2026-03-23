@@ -1153,9 +1153,12 @@ async def chat_completions(request: Request):
             log.info(f"[{req_id}] Routing to SWARM QUERY")
 
             async def _guarded_query():
-                async with query_limiter.hold():
-                    async for event in _handle_query(messages, body, req_id):
-                        yield event
+                try:
+                    async with query_limiter.hold():
+                        async for event in _handle_query(messages, body, req_id):
+                            yield event
+                finally:
+                    tracker.finish(req_id)
 
             generator = _guarded_query()
 

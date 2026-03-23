@@ -97,6 +97,7 @@ TREE_MAX_DEPTH = env_int("TREE_MAX_DEPTH", 5, minimum=1)
 TREE_MAX_NODES = env_int("TREE_MAX_NODES", 50, minimum=5)
 TREE_PRESSURE_THRESHOLD = float(os.getenv("TREE_PRESSURE_THRESHOLD", "0.15"))
 TREE_WORKER_IDLE_TIMEOUT = float(os.getenv("TREE_WORKER_IDLE_TIMEOUT", "60.0"))
+RESEARCH_TIME_LIMIT = float(os.getenv("RESEARCH_TIME_LIMIT", "300"))  # seconds; 0 = no limit
 
 # --- Enhanced Web Scraping Config ---
 APIFY_API_KEY = os.getenv("APIFY_API_TOKEN", "")

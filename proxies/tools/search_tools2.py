@@ -1086,15 +1086,29 @@ async def tool_facebook_search(
 
     Public Facebook content indexed by search engines.  Private groups
     and personal profiles are not accessible.
+
+    Args:
+        query: Search terms.
+        result_type: One of 'posts' (default), 'groups', or 'pages'.
+            Adds an inurl filter to narrow results to the requested type.
+        platform: Ignored (kept for dispatcher compatibility).
     """
     try:
+        # Build type-specific URL filter
+        type_filter = ""
+        if result_type == "groups":
+            type_filter = "inurl:groups"
+        elif result_type == "pages":
+            type_filter = "inurl:pages"
+
         site_query = (
-            f"({query}) (site:facebook.com OR site:fb.com "
-            f"OR site:facebook.com/groups)"
-        )
+            f"({query}) (site:facebook.com OR site:fb.com) {type_filter}"
+        ).strip()
         results = await _searxng_query(site_query, categories="general")
         if not results:
-            results = await _searxng_query(f"facebook {query}", categories="general")
+            results = await _searxng_query(
+                f"facebook {result_type} {query}", categories="general"
+            )
         return (
             _format_search_results(results[:15], source_label="facebook")
             or f"No Facebook results for: {query}"

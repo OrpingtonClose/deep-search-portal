@@ -1079,7 +1079,16 @@ async def tool_telegram_search(query: str) -> str:
                 )
             return f"No Telegram results for: {query}"
 
-        return _format_search_results(results_all[:15], source_label="telegram") or f"No Telegram results for: {query}"
+        # Deduplicate by URL
+        dedup_seen: set[str] = set()
+        unique: list[dict] = []
+        for item in results_all:
+            url = item.get("url", "")
+            if url and url not in dedup_seen:
+                dedup_seen.add(url)
+                unique.append(item)
+
+        return _format_search_results(unique[:15], source_label="telegram") or f"No Telegram results for: {query}"
 
     except Exception as e:
         return f"[TOOL_ERROR] Telegram search failed: {str(e)}. This is a technical failure, NOT 'no results found'."

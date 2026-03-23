@@ -385,10 +385,17 @@ _CACHEABLE_TOOLS = {
     "chan_4plebs_search", "chan_b4k_search", "chan_warosu_search",
 }
 
-# Tools that access the internet (governed by rate limiter)
-_GOVERNED_TOOLS = _CACHEABLE_TOOLS | {
-    "fetch_webpage", "youtube_video_analyze",
+# Tools that involve long-running local computation (e.g. WhisperX GPU
+# transcription) and should NOT hold a global concurrency slot.  They are
+# still cacheable but bypass the rate governor entirely.
+_UNGOVERNED_HEAVY_TOOLS: set[str] = {
+    "youtube_transcript",    # WhisperX can take up to 300s of local GPU work
+    "youtube_video_analyze", # downloads + analyses video locally
 }
+
+# Tools that access the internet (governed by rate limiter).
+# Excludes heavy local-compute tools that would starve the global semaphore.
+_GOVERNED_TOOLS = (_CACHEABLE_TOOLS | {"fetch_webpage"}) - _UNGOVERNED_HEAVY_TOOLS
 
 
 def _extract_query_for_cache(tool_name: str, arguments: dict) -> str:

@@ -164,7 +164,7 @@ async def call_llm(
             if _is_cloudflare_challenge(err_str):
                 log.warning(
                     f"[{req_id}] Cloudflare challenge detected — "
-                    f"Mistral CDN rate-limit (attempt {attempt + 1}/{MAX_LLM_RETRIES})"
+                    f"Mistral CDN rate-limit (attempt {attempt + 1}/{MAX_LLM_RETRIES + 1})"
                 )
 
             last_error = f"[LLM Error: {err_str[:500]}]"

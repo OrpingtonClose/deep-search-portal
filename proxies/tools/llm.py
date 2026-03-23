@@ -31,6 +31,20 @@ MAX_LLM_RETRIES = 3
 RETRY_BACKOFF = [5, 15, 30]
 
 
+def _is_cloudflare_challenge(error_text: str) -> bool:
+    """Detect Cloudflare 'Just a moment...' challenge pages.
+
+    Mistral's API sits behind Cloudflare.  When rate-limited at the CDN
+    layer, Cloudflare serves an HTML challenge page instead of the JSON
+    API response.  LangChain receives the HTML, fails to parse it, and
+    raises an exception whose str() contains the raw HTML.
+
+    These are transient rate-limits and MUST be retried.
+    """
+    lower = error_text[:500].lower()
+    return "just a moment" in lower or ("<!doctype html" in lower and "cloudflare" in lower)
+
+
 def _dicts_to_langchain_messages(
     messages: list[dict],
 ) -> list[SystemMessage | HumanMessage | AIMessage | ToolMessage]:
@@ -141,9 +155,17 @@ async def call_llm(
             err_str = str(e)
             # Detect retryable HTTP status codes from the error message
             _codes_pattern = "|".join(str(c) for c in RETRYABLE_STATUS_CODES)
-            retryable = bool(
-                re.search(rf"\b({_codes_pattern})\b", err_str)
-            ) or isinstance(e, (httpx.ReadTimeout, httpx.ConnectTimeout))
+            retryable = (
+                bool(re.search(rf"\b({_codes_pattern})\b", err_str))
+                or isinstance(e, (httpx.ReadTimeout, httpx.ConnectTimeout))
+                or _is_cloudflare_challenge(err_str)
+            )
+
+            if _is_cloudflare_challenge(err_str):
+                log.warning(
+                    f"[{req_id}] Cloudflare challenge detected — "
+                    f"Mistral CDN rate-limit (attempt {attempt + 1}/{MAX_LLM_RETRIES})"
+                )
 
             last_error = f"[LLM Error: {err_str[:500]}]"
 
@@ -159,5 +181,4 @@ async def call_llm(
             return {"error": last_error}
 
     return {"error": last_error or "[LLM Error: Max retries exceeded]"}
-
 

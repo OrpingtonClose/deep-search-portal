@@ -1,0 +1,257 @@
+{
+  "telegram_search": [
+    {
+      "query": "insulin Poland vendor underground"
+    },
+    {
+      "query": "customs seizure vendor handling"
+    },
+    {
+      "query": "insulin import no prescription easier brands"
+    }
+  ],
+  "stackexchange_search": [
+    {
+      "query": "insulin online pharmacy Warsaw Poland no prescription vendor reliability",
+      "site": "health"
+    },
+    {
+      "query": "insulin import no prescription easier brands",
+      "site": "medicine"
+    },
+    {
+      "query": "insulin online pharmacy Europe shipping to Poland vendor reliability",
+      "site": "health"
+    }
+  ],
+  "facebook_search": [
+    {
+      "query": "insulin online pharmacy Poland Warsaw ship",
+      "result_type": "posts"
+    },
+    {
+      "platform": "facebook",
+      "query": "insulin online pharmacy ship to Poland Warsaw forum"
+    },
+    {
+      "platform": "facebook",
+      "query": "insulina online apteka wysyłka do Polski forum"
+    }
+  ],
+  "darknet_market_search": [
+    {
+      "query": "insulin vendor Warsaw Poland site:darknet market archive"
+    },
+    {
+      "query": "insulin vendor Warsaw Poland"
+    },
+    {
+      "query": "insulin vendor Poland"
+    }
+  ],
+  "searxng_search": [
+    {
+      "query": "insulin brands easier to import without prescription"
+    },
+    {
+      "query": "insulin types easier to import without prescription"
+    },
+    {
+      "query": "which insulin brands can be imported without prescription"
+    }
+  ],
+  "chan_warosu_search": [
+    {
+      "query": "insulin import no prescription easier brands",
+      "board": "g"
+    },
+    {
+      "query": "insulin online pharmacy Poland Warsaw ship",
+      "board": "g"
+    },
+    {
+      "query": "insulin Poland vendor",
+      "board": "g"
+    }
+  ],
+  "chan_4plebs_search": [
+    {
+      "query": "insulin online pharmacy Poland Warsaw ship",
+      "board": "pol"
+    },
+    {
+      "query": "insulin Poland buy",
+      "board": "pol"
+    },
+    {
+      "query": "insulin online pharmacy Poland smuggling",
+      "board": "pol"
+    }
+  ],
+  "chan_b4k_search": [
+    {
+      "query": "insulin Poland"
+    },
+    {
+      "query": "Arzneiprivat.de"
+    },
+    {
+      "query": "InsulinMeds.com"
+    }
+  ],
+  "forum_search": [
+    {
+      "query": "insulin Poland vendor"
+    },
+    {
+      "query": "Arzneiprivat.de"
+    },
+    {
+      "query": "przemyt insuliny forum",
+      "forum_url": "https://www.somethingawful.com"
+    }
+  ],
+  "fetch_webpage": [
+    {
+      "url": "https://www.facebook.com/AptelinePL/posts/1966789443542062/"
+    },
+    {
+      "url": "https://ubuy.pl"
+    },
+    {
+      "url": "https://ubuy.pl/checkout"
+    }
+  ],
+  "hackernews_search": [
+    {
+      "query": "Arzneiprivat.de",
+      "sort_by": "relevance"
+    },
+    {
+      "query": "InsulinMeds.com",
+      "sort_by": "relevance"
+    },
+    {
+      "query": "Arzneiprivat.de"
+    }
+  ],
+  "substack_search": [
+    {
+      "query": "InsulinMeds.com"
+    },
+    {
+      "query": "insulin Poland vendor"
+    },
+    {
+      "query": "Arzneiprivat.de"
+    }
+  ],
+  "scholar_search": [
+    {
+      "query": "insulin diversion BazTech"
+    },
+    {
+      "query": "InsulinMeds.com"
+    }
+  ],
+  "news_search": [
+    {
+      "query": "Prokuratura Krajowa przemyt leków Warszawa raport 2023 OR 2024 OR 2025",
+      "time_range": "year"
+    },
+    {
+      "query": "Poland NFZ insulin reimbursement 2024 Humalog Liprolog price change",
+      "time_range": "month"
+    },
+    {
+      "query": "Poland NFZ insulin reimbursement 2024 lipiec zmiany refundacja",
+      "time_range": "month"
+    }
+  ],
+  "wikidata_query": [
+    {
+      "entity": "Arzneiprivat.de"
+    }
+  ],
+  "crunchbase_search": [
+    {
+      "query": "insulin international shipping Poland Warsaw vendor"
+    },
+    {
+      "query": "insulin Poland"
+    },
+    {
+      "query": "insulin Poland Warsaw vendor international shipping"
+    }
+  ],
+  "pubmed_search": [
+    {
+      "query": "InsulinMeds.com",
+      "max_results": 5
+    }
+  ],
+  "wayback_fetch": [
+    {
+      "url": "https://www.reddit.com/r/diabetes/search?q=insulin+online+pharmacy+Poland+Warsaw+experience+OR+recommendation"
+    },
+    {
+      "url": "https://www.reddit.com/r/poland/search?q=insulin+online+pharmacy+Poland+Warsaw+experience+OR+recommendation"
+    },
+    {
+      "url": "https://www.gov.pl/web/zdrowie"
+    }
+  ],
+  "wikipedia_search": [
+    {
+      "query": "Arzneiprivat.de"
+    }
+  ],
+  "trustpilot_search": [
+    {
+      "query": "insulin Warsaw Poland site:trustpilot.com"
+    }
+  ],
+  "searxngng_search": [
+    {
+      "query": "insulin Poland no prescription site:amazon.de"
+    }
+  ],
+  "discord_search": [
+    {
+      "query": "insulin vendors Poland shipping"
+    },
+    {
+      "query": "insulin vendors Poland no prescription"
+    },
+    {
+      "query": "insulin bez recepty Poland OR Warszawa"
+    }
+  ],
+  "whatsapp_search": [
+    {
+      "query": "insulin vendors Poland no prescription"
+    },
+    {
+      "query": "insulin vendors Poland OR insulin no prescription Poland"
+    }
+  ],
+  "signal_search": [
+    {
+      "query": "insulin vendors Poland no prescription"
+    },
+    {
+      "query": "insulin bez recepty Poland OR Warszawa"
+    },
+    {
+      "query": "insulin vendors Poland OR insulin no prescription Poland"
+    }
+  ],
+  "whois_lookup": [
+    {
+      "domain": "poland-export.com"
+    },
+    {
+      "query": "poland-export.com"
+    }
+  ]
+}

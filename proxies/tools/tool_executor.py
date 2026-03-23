@@ -45,6 +45,15 @@ from .search_tools2 import (
     tool_forum_search,
     tool_scholar_search,
     tool_substack_search,
+    tool_telegram_search,
+    tool_darknet_market_search,
+    tool_facebook_search,
+    tool_discord_search,
+    tool_signal_search,
+    tool_whatsapp_search,
+    tool_crunchbase_search,
+    tool_trustpilot_search,
+    tool_whois_lookup,
     tool_youtube_search,
     tool_youtube_transcript,
     tool_youtube_video_metadata,
@@ -350,6 +359,34 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
         return await tool_scholar_search(arguments.get("query", ""))
     elif tool_name == "substack_search":
         return await tool_substack_search(arguments.get("query", ""))
+    elif tool_name == "telegram_search":
+        return await tool_telegram_search(
+            arguments.get("query", ""),
+            arguments.get("platform", ""),
+        )
+    elif tool_name == "darknet_market_search":
+        return await tool_darknet_market_search(arguments.get("query", ""))
+    elif tool_name == "facebook_search":
+        return await tool_facebook_search(
+            arguments.get("query", ""),
+            arguments.get("result_type", "posts"),
+            arguments.get("platform", ""),
+        )
+    elif tool_name == "discord_search":
+        return await tool_discord_search(arguments.get("query", ""))
+    elif tool_name == "signal_search":
+        return await tool_signal_search(arguments.get("query", ""))
+    elif tool_name == "whatsapp_search":
+        return await tool_whatsapp_search(arguments.get("query", ""))
+    elif tool_name == "crunchbase_search":
+        return await tool_crunchbase_search(arguments.get("query", ""))
+    elif tool_name == "trustpilot_search":
+        return await tool_trustpilot_search(arguments.get("query", ""))
+    elif tool_name == "whois_lookup":
+        return await tool_whois_lookup(
+            domain=arguments.get("domain", ""),
+            query=arguments.get("query", ""),
+        )
     elif tool_name == "youtube_transcript":
         return await tool_youtube_transcript(
             arguments.get("url", ""),

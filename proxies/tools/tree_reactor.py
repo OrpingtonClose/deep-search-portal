@@ -768,6 +768,14 @@ async def tree_research_reactor(
                     all_results.append(sa_result)
 
                 # Spawn children (doesn't hold semaphore)
+                # Skip spawning if time limit exceeded — let tree wind down
+                if _time_exceeded():
+                    log.info(
+                        f"[{req_id}] Skipping child spawn for {node.id} "
+                        f"— time limit exceeded"
+                    )
+                    continue
+
                 async with lock:
                     current_queued = total_queued
 

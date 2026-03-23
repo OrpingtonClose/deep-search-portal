@@ -302,12 +302,14 @@ async def _worker_synthesize(
     if peer_summaries is None:
         # Round 0: initial synthesis from chunk
         conditions_text = "\n".join(worker.chunk_conditions)
-        prompt = _WORKER_SYNTH_PROMPT.format(
-            date=date,
-            n_conditions=len(worker.chunk_conditions),
-            angles=", ".join(worker.chunk_angles),
-            conditions_text=conditions_text,
-            max_chars=MAX_SUMMARY_CHARS,
+        # Use .replace() instead of .format() to avoid KeyError if
+        # conditions_text or other fields contain { or } (e.g. JSON snippets).
+        prompt = (_WORKER_SYNTH_PROMPT
+            .replace("{date}", date)
+            .replace("{n_conditions}", str(len(worker.chunk_conditions)))
+            .replace("{angles}", ", ".join(worker.chunk_angles))
+            .replace("{conditions_text}", conditions_text)
+            .replace("{max_chars}", str(MAX_SUMMARY_CHARS))
         )
         messages = [
             {"role": "system", "content": prompt},
@@ -322,12 +324,13 @@ async def _worker_synthesize(
         for i, ps in enumerate(peer_summaries):
             peers_text += f"\n--- Worker {i} ---\n{ps[:MAX_SUMMARY_CHARS]}\n"
 
-        prompt = _GOSSIP_REFINE_PROMPT.format(
-            date=date,
-            own_summary=worker.summary[:MAX_SUMMARY_CHARS],
-            n_peers=len(peer_summaries),
-            peer_summaries=peers_text,
-            max_chars=MAX_SUMMARY_CHARS,
+        # Use .replace() instead of .format() — peer summaries may contain braces.
+        prompt = (_GOSSIP_REFINE_PROMPT
+            .replace("{date}", date)
+            .replace("{own_summary}", worker.summary[:MAX_SUMMARY_CHARS])
+            .replace("{n_peers}", str(len(peer_summaries)))
+            .replace("{peer_summaries}", peers_text)
+            .replace("{max_chars}", str(MAX_SUMMARY_CHARS))
         )
         messages = [
             {"role": "system", "content": prompt},
@@ -371,13 +374,15 @@ async def _queen_merge(
             f"{w.summary[:MAX_SUMMARY_CHARS]}\n"
         )
 
-    prompt = _QUEEN_MERGE_PROMPT.format(
-        date=date,
-        n_workers=len(state.workers),
-        total_conditions=total_conditions,
-        user_query=user_query,
-        prior_text=prior_text,
-        worker_summaries=worker_summaries,
+    # Use .replace() instead of .format() — worker summaries and user_query
+    # may contain { or } characters (JSON, code, template syntax).
+    prompt = (_QUEEN_MERGE_PROMPT
+        .replace("{date}", date)
+        .replace("{n_workers}", str(len(state.workers)))
+        .replace("{total_conditions}", str(total_conditions))
+        .replace("{user_query}", user_query)
+        .replace("{prior_text}", prior_text)
+        .replace("{worker_summaries}", worker_summaries)
     )
 
     messages = [

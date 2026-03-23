@@ -16,6 +16,11 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
                                     Persistent Research (9300)
                                          │         │
                                     Knowledge Engine (9400) ←── Neo4j
+                                         │
+                                    Swarm Proxy (9500)
+                                         │
+                                  Background Swarm Workers
+                                    (corpus decomposition)
 ```
 
 ## Components
@@ -27,6 +32,7 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 | **Persistent Research** (`persistent_deep_research_proxy.py`) | Multi-session research with knowledge accumulation | 9300 |
 | **Thinking Proxy** (`thinking_proxy.py`) | Wraps Mistral for `<think>` tag streaming support | 9100 |
 | **Knowledge Engine** (`services/knowledge-engine/`) | Neo4j-centric knowledge corpus ETL microservice | 9400 |
+| **Swarm Proxy** (`swarm_proxy.py`) | Swarm-based corpus decomposition with non-disruptive querying | 9500 |
 | **SearXNG** | Self-hosted meta-search engine (Brave, Bing, Wikipedia) | 8888 |
 | **Cloudflare Tunnel** | HTTPS + domain routing to the VM | — |
 
@@ -54,6 +60,7 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 ├── proxies/
 │   ├── deep_research_proxy.py          # MiroFlow deep research agent
 │   ├── persistent_deep_research_proxy.py # Multi-session persistent research
+│   ├── swarm_proxy.py                  # Swarm-based corpus decomposition proxy
 │   ├── thinking_proxy.py               # Thinking tag proxy
 │   └── knowledge_client.py             # Lightweight async client for knowledge engine
 ├── services/
@@ -220,6 +227,51 @@ Relationship types: `ANALOGOUS_TO`, `CONTRADICTS`, `EXPLAINS`, `SUPPORTED_BY`, `
 ### Namespace Isolation
 
 All data is namespaced by conversation/context. Every node gets a `namespace` property. Queries filter by namespace. Use `DELETE /v1/namespaces/{name}` to remove all data for a context. Set `rebuild=true` on ingest to clear the namespace before loading new data.
+
+## Swarm Proxy
+
+A swarm-based proxy (inspired by [swarms.world](https://swarms.world)) that decomposes large corpora of text using background worker agents. Unlike the other proxies, the swarm operates continuously — submitting text starts background processing that runs independently of any queries.
+
+### Key Principles
+
+- **Non-disruptive querying** — Sending a prompt does NOT interrupt the swarm's current work. Queries are answered from whatever knowledge the swarm has built so far.
+- **Sincerity** — The proxy honestly reports what the swarm is doing: processing progress, active workers, knowledge coverage, and any gaps. No pretending work is done when it isn't.
+- **Additive ingestion** — Further large corpora are treated identically to the initial send. They queue additively without resetting existing work.
+- **Background processing** — Corpus decomposition (chunking, entity extraction, relationship extraction, knowledge graph construction) happens asynchronously via a worker pool.
+
+### How It Works
+
+1. User sends a large body of text via the chat interface
+2. The swarm proxy detects it as a corpus (>5K chars, low question density) and queues it
+3. A background worker picks it up and submits it to the Knowledge Engine for full ETL
+4. While processing continues, the user can ask questions at any time
+5. Queries search the knowledge graph for whatever has been extracted so far
+6. The proxy prefixes every response with an honest status of what the swarm is doing
+7. Sending more text adds to the queue — it never resets or interrupts existing work
+
+### Swarm API
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/v1/chat/completions` | POST | OpenAI-compatible chat (auto-routes corpus vs query) |
+| `/v1/swarm/status` | GET | Full swarm status (workers, corpora, knowledge stats) |
+| `/v1/swarm/corpora` | GET | List all submitted corpora with processing status |
+| `/v1/swarm/sincerity` | GET | Current sincerity preamble (what the swarm would tell a user) |
+| `/v1/swarm/submit` | POST | Direct corpus submission API |
+
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `SWARM_PROXY_PORT` | `9500` | Listen port |
+| `SWARM_SYNTHESIS_MODEL` | `mistral-large-latest` | Model for query synthesis |
+| `SWARM_WORKER_MODEL` | `mistral-small-latest` | Model for worker tasks |
+| `SWARM_NAMESPACE` | `swarm` | Neo4j namespace for swarm data |
+| `SWARM_MAX_WORKERS` | `6` | Max concurrent background workers |
+| `SWARM_MAX_CONCURRENT_QUERIES` | `4` | Max concurrent query handlers |
+| `SWARM_CHUNK_SIZE` | `2000` | Characters per chunk |
+| `SWARM_CHUNK_OVERLAP` | `200` | Overlap between chunks |
+| `SWARM_LARGE_DOC_THRESHOLD` | `5000` | Char threshold for corpus detection |
 
 ## Design Philosophy
 

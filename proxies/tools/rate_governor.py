@@ -64,16 +64,26 @@ def _get_global_sem() -> asyncio.Semaphore:
 # per-provider token bucket — otherwise requests pass through the bucket twice
 # and effective throughput is halved.
 _SELF_THROTTLED_TOOLS: set[str] = {
+    # SearXNG-based tools throttle via search_providers._search_searxng
     "searxng_search", "web_search", "news_search",
     "telegram_search", "darknet_market_search", "facebook_search",
     "discord_search", "signal_search", "whatsapp_search",
     "crunchbase_search", "trustpilot_search",
     "forum_search", "scholar_search", "substack_search",
-    # Twitter search also throttles via bright_data/oxylabs/nitter internally
+    # Twitter search throttles via bright_data/oxylabs/nitter internally
     "twitter_search",
     # Social media scrapers throttle via bright_data internally
     "social_media_search", "reddit_search", "instagram_search",
     "tiktok_search", "linkedin_search", "youtube_search",
+    # Direct API tools that call get_throttler(provider).throttle() internally
+    # — double-acquiring would deadlock at max_concurrent requests
+    "arxiv_search", "wikidata_query", "hackernews_search",
+    "stackexchange_search", "pubmed_search", "wikipedia_search",
+    "archiveorg_search",
+    # Imageboard archive tools throttle via get_throttler("imageboard")
+    "chan_4plebs_search", "chan_b4k_search", "chan_warosu_search",
+    # Wayback fetch throttles via get_throttler("wayback")
+    "wayback_fetch",
 }
 
 # Maps tool names to provider keys for throttler lookup.

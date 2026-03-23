@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import re
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, unquote
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -144,7 +144,7 @@ def _parse_google_html(html_text: str) -> list[dict]:
         r'<a[^>]+href="/url\?q=([^&"]+)[^"]*"[^>]*>.*?<h3[^>]*>(.*?)</h3>',
         html_text, re.DOTALL,
     ):
-        url = m.group(1)
+        url = unquote(m.group(1))
         title = re.sub(r"<[^>]+>", "", m.group(2)).strip()
         if url and title and not url.startswith("/"):
             results.append({"title": title, "url": url, "snippet": "", "source": "bright_data"})
@@ -154,7 +154,7 @@ def _parse_google_html(html_text: str) -> list[dict]:
             r'<a[^>]+href="(https?://(?!google\.com|accounts\.google)[^"]+)"[^>]*>.*?<h3[^>]*>(.*?)</h3>',
             html_text, re.DOTALL,
         ):
-            url = m.group(1)
+            url = unquote(m.group(1))
             title = re.sub(r"<[^>]+>", "", m.group(2)).strip()
             if url and title:
                 results.append({"title": title, "url": url, "snippet": "", "source": "bright_data"})

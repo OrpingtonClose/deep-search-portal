@@ -570,6 +570,7 @@ async def tool_stackexchange_search(query: str, site: str = "stackoverflow", sor
                     "sort": sort,
                     "order": "desc",
                     "pagesize": 10,
+                    "filter": "withbody",
                 },
                 timeout=15.0,
                 headers={"Accept-Encoding": "gzip"},

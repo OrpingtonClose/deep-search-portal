@@ -151,6 +151,8 @@ class ToolHealthMonitor:
                 stats.consecutive_failures >= FAILURE_STREAK_THRESHOLD
                 and (time.time() - stats.last_analysis_time) > 300  # 5 min cooldown
             )
+            if needs_analysis:
+                stats.last_analysis_time = time.time()  # Update immediately to prevent duplicates
 
         if needs_analysis:
             log.warning(

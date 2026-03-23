@@ -399,13 +399,24 @@ _GOVERNED_TOOLS = (_CACHEABLE_TOOLS | {"fetch_webpage"}) - _UNGOVERNED_HEAVY_TOO
 
 
 def _extract_query_for_cache(tool_name: str, arguments: dict) -> str:
-    """Extract the cache-relevant query string from tool arguments.
+    """Extract a normalized cache-relevant string from tool arguments.
 
-    Includes all arguments in the cache key to avoid collisions when
-    the same query is used with different parameters (e.g. different
-    subreddit, platform, board, sort order).
+    Normalizes the primary query field (case-folding, stop-word removal,
+    word-order sorting) so that near-duplicate queries hit the cache,
+    while preserving all other parameters (subreddit, platform, etc.)
+    to avoid collisions.
     """
-    return json.dumps(arguments, sort_keys=True)
+    from .search_cache import normalize_query
+
+    # Keys that contain the primary natural-language query
+    _QUERY_KEYS = ("query", "search_query", "question", "term", "keywords")
+
+    normalized = dict(arguments)
+    for key in _QUERY_KEYS:
+        val = normalized.get(key)
+        if isinstance(val, str) and val and not val.startswith("http"):
+            normalized[key] = normalize_query(val)
+    return json.dumps(normalized, sort_keys=True)
 
 
 async def execute_tool(

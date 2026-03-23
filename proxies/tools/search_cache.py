@@ -133,10 +133,28 @@ def normalize_query(query: str) -> str:
     return " ".join(meaningful)
 
 
+def _is_url_like(text: str) -> bool:
+    """Check if text looks like a URL or JSON (should not be normalized)."""
+    stripped = text.strip()
+    return (
+        stripped.startswith("http://")
+        or stripped.startswith("https://")
+        or stripped.startswith("{")
+    )
+
+
 def _cache_key(tool_name: str, query: str) -> str:
-    """Generate a cache key from tool name and normalized query."""
-    normalized = normalize_query(query)
-    raw = f"{tool_name}:{normalized}"
+    """Generate a cache key from tool name and query.
+
+    For URL-like or JSON inputs (e.g. from wayback_fetch, youtube_transcript,
+    or full argument dicts), uses the raw string to preserve structure.
+    For natural-language queries, normalizes to catch near-duplicates.
+    """
+    if _is_url_like(query):
+        key_input = query.strip()
+    else:
+        key_input = normalize_query(query)
+    raw = f"{tool_name}:{key_input}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 

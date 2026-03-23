@@ -392,15 +392,12 @@ _GOVERNED_TOOLS = _CACHEABLE_TOOLS | {
 
 
 def _extract_query_for_cache(tool_name: str, arguments: dict) -> str:
-    """Extract the cache-relevant query string from tool arguments."""
-    if "query" in arguments:
-        return arguments["query"]
-    if "url" in arguments:
-        return arguments["url"]
-    if "entity" in arguments:
-        return arguments["entity"]
-    if "domain" in arguments:
-        return arguments["domain"]
+    """Extract the cache-relevant query string from tool arguments.
+
+    Includes all arguments in the cache key to avoid collisions when
+    the same query is used with different parameters (e.g. different
+    subreddit, platform, board, sort order).
+    """
     return json.dumps(arguments, sort_keys=True)
 
 

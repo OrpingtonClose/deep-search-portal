@@ -271,7 +271,7 @@ async def _search_oxylabs_serp(query: str) -> list[dict]:
             search_url = f"https://www.google.com/search?q={quote_plus(query)}&hl=en&gl=us"
             async with get_throttler("oxylabs").throttle():
                 async with _httpx.AsyncClient(
-                    proxy=f"http://{OXYLABS_USERNAME}:{OXYLABS_PASSWORD}@realtime.oxylabs.io:60000",
+                    proxy=f"https://{OXYLABS_USERNAME}:{OXYLABS_PASSWORD}@realtime.oxylabs.io:60000",
                     verify=False,
                     timeout=_httpx.Timeout(30.0, connect=10.0),
                     follow_redirects=True,

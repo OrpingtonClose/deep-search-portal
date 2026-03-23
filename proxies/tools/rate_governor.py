@@ -193,17 +193,17 @@ async def governed_request(
             throttler = get_throttler(provider)
             waited = await throttler.acquire()
 
-        # Step 3: Jitter to stagger requests
-        jitter = 0.0
-        if not skip_jitter and _JITTER_MAX_MS > 0:
-            jitter = random.uniform(0, _JITTER_MAX_MS / 1000.0)
-            await asyncio.sleep(jitter)
-
-        _total_governed += 1
-        _total_waited += waited
-        _total_jitter += jitter
-
         try:
+            # Step 3: Jitter to stagger requests
+            jitter = 0.0
+            if not skip_jitter and _JITTER_MAX_MS > 0:
+                jitter = random.uniform(0, _JITTER_MAX_MS / 1000.0)
+                await asyncio.sleep(jitter)
+
+            _total_governed += 1
+            _total_waited += waited
+            _total_jitter += jitter
+
             yield
         finally:
             if throttler is not None:

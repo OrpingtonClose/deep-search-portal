@@ -216,8 +216,11 @@ class ToolHealthMonitor:
                 conn = _get_conn()
                 conn.execute(
                     """UPDATE tool_issues SET llm_diagnosis = ?
-                       WHERE tool_name = ? AND status = 'open'
-                       ORDER BY created_at DESC LIMIT 1""",
+                       WHERE id = (
+                           SELECT id FROM tool_issues
+                           WHERE tool_name = ? AND status = 'open'
+                           ORDER BY created_at DESC LIMIT 1
+                       )""",
                     (diagnosis, tool_name),
                 )
                 conn.commit()

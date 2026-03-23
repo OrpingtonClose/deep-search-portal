@@ -158,9 +158,16 @@ class ToolHealthMonitor:
                 f"Triggering root cause analysis."
             )
             self._store_issue(tool_name, stats)
-            # Schedule async LLM analysis
+            # Schedule async LLM analysis with a snapshot of current stats
+            # (stats is mutable and may change before the worker processes it)
+            snapshot = {
+                "consecutive_failures": stats.consecutive_failures,
+                "failure_rate": stats.failure_rate,
+                "last_error": stats.last_error,
+                "outcomes_count": len(stats.outcomes),
+            }
             try:
-                self._analysis_queue.put_nowait((tool_name, stats))
+                self._analysis_queue.put_nowait((tool_name, snapshot))
             except asyncio.QueueFull:
                 log.warning("Analysis queue full, skipping")
 
@@ -185,16 +192,16 @@ class ToolHealthMonitor:
         except Exception as e:
             log.warning(f"Failed to store tool issue: {e}")
 
-    async def _run_llm_analysis(self, tool_name: str, stats: ToolStats) -> str:
+    async def _run_llm_analysis(self, tool_name: str, snapshot: dict) -> str:
         """Use LLM to diagnose the root cause of tool failures."""
         try:
             from .llm import call_llm
 
             prompt = (
-                f"A research tool named '{tool_name}' has failed {stats.consecutive_failures} "
-                f"times in a row. Its overall failure rate is {stats.failure_rate:.0%} "
-                f"over the last {len(stats.outcomes)} calls.\n\n"
-                f"Latest error message:\n{stats.last_error[:1500]}\n\n"
+                f"A research tool named '{tool_name}' has failed {snapshot['consecutive_failures']} "
+                f"times in a row. Its overall failure rate is {snapshot['failure_rate']:.0%} "
+                f"over the last {snapshot['outcomes_count']} calls.\n\n"
+                f"Latest error message:\n{snapshot['last_error'][:1500]}\n\n"
                 f"Diagnose the most likely root cause. Consider:\n"
                 f"1. Is this a rate-limiting issue (HTTP 429, Cloudflare challenge)?\n"
                 f"2. Is this an API key or authentication problem?\n"
@@ -227,7 +234,10 @@ class ToolHealthMonitor:
             except Exception as e:
                 log.warning(f"Failed to update issue diagnosis: {e}")
 
-            stats.last_analysis_time = time.time()
+            with self._lock:
+                live_stats = self._stats.get(tool_name)
+                if live_stats is not None:
+                    live_stats.last_analysis_time = time.time()
             log.info(f"LLM diagnosis for {tool_name}: {diagnosis[:200]}")
             return diagnosis
 
@@ -239,10 +249,10 @@ class ToolHealthMonitor:
         """Background task that processes the analysis queue."""
         while True:
             try:
-                tool_name, stats = await asyncio.wait_for(
+                tool_name, snapshot = await asyncio.wait_for(
                     self._analysis_queue.get(), timeout=60.0
                 )
-                await self._run_llm_analysis(tool_name, stats)
+                await self._run_llm_analysis(tool_name, snapshot)
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
@@ -323,12 +333,12 @@ class ToolHealthMonitor:
         """Mark an issue as resolved."""
         try:
             conn = _get_conn()
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE tool_issues SET status = 'resolved', resolved_at = ? WHERE id = ?",
                 (time.time(), issue_id),
             )
             conn.commit()
-            return True
+            return cursor.rowcount > 0
         except Exception as e:
             log.warning(f"Failed to resolve issue: {e}")
             return False

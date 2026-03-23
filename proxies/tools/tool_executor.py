@@ -458,12 +458,15 @@ async def execute_tool(
         return f"Tool error ({tool_name}): {error_str}"
 
     # --- Step 3: Record health outcome ---
-    result_prefix = result.lower()[:80]
+    result_prefix = result[:80]
     is_error = (
-        "error" in result_prefix
-        or "failed" in result_prefix
-        or "timed out" in result_prefix
+        result_prefix.lower().startswith("error")
+        or result_prefix.lower().startswith("failed")
+        or "search error:" in result_prefix.lower()
+        or "timed out" in result_prefix.lower()
         or result.startswith("[TOOL_ERROR]")
+        or result.startswith("Tool error")
+        or result.startswith("Unknown tool:")
     )
     if is_error:
         record_outcome(tool_name, success=False, error=result[:500])

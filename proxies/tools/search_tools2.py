@@ -1277,7 +1277,7 @@ async def tool_whois_lookup(domain: str = "", query: str = "") -> str:
             vcard = ent.get("vcardArray", [None, []])
             if len(vcard) > 1:
                 for item in vcard[1]:
-                    if item[0] == "fn":
+                    if len(item) >= 4 and item[0] == "fn":
                         parts.append(f"{', '.join(roles)}: {item[3]}")
                         break
 

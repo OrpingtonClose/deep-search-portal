@@ -31,7 +31,9 @@ from shared import make_sse_chunk
 
 from .config import (
     MAX_PRIOR_CONDITIONS,
+    PIPELINE_HARD_TIMEOUT,
     PORTAL_PUBLIC_URL,
+    RESEARCH_TIME_LIMIT,
     SUBAGENT_MODEL,
     UPSTREAM_MODEL,
     VERITAS_MIN_CONDITIONS,
@@ -1712,12 +1714,54 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
     }
 
 
+def _pipeline_time_exceeded(state: PersistentResearchState) -> bool:
+    """Check whether the hard pipeline wall-clock timeout has been exceeded.
+
+    Uses ``PIPELINE_HARD_TIMEOUT`` if explicitly set (> 0), otherwise
+    derives a ceiling from ``RESEARCH_TIME_LIMIT + 120`` (tree exploration
+    limit plus a 2-minute buffer for synthesis).  Returns *False* when
+    both limits are disabled (0).
+    """
+    hard_limit = PIPELINE_HARD_TIMEOUT if PIPELINE_HARD_TIMEOUT > 0 else (
+        RESEARCH_TIME_LIMIT + 120 if RESEARCH_TIME_LIMIT > 0 else 0
+    )
+    if hard_limit <= 0:
+        return False
+    elapsed = time.monotonic() - state["start_time"]
+    return elapsed > hard_limit
+
+
+def _after_tree_research(state: PersistentResearchState) -> str:
+    """Conditional edge after tree_research: if the hard pipeline timeout
+    has been exceeded, skip entities/verify/reflect/persist and jump
+    straight to synthesis with whatever findings exist.
+    """
+    if _pipeline_time_exceeded(state):
+        elapsed = time.monotonic() - state["start_time"]
+        log.warning(
+            "[%s] Pipeline hard timeout exceeded (%.0fs) — "
+            "skipping entities/verify/reflect/persist, jumping to synthesis",
+            state["req_id"], elapsed,
+        )
+        return "synthesize"
+    return "entities"
+
+
 def _should_reresearch(state: PersistentResearchState) -> str:
     """Conditional edge after reflect: loop back to tree_research if quality
     is critically low and we have targeted questions, else proceed to persist.
 
     This implements the reflect → tree_research feedback loop.
+    Refuses to loop when the hard pipeline timeout has been exceeded.
     """
+    if _pipeline_time_exceeded(state):
+        elapsed = time.monotonic() - state["start_time"]
+        log.warning(
+            "[%s] Pipeline hard timeout (%.0fs) — skipping re-research, "
+            "proceeding to persist",
+            state["req_id"], elapsed,
+        )
+        return "persist"
     targeted = state.get("targeted_questions", [])
     if targeted:
         log.info(
@@ -1736,8 +1780,17 @@ def _should_reresearch_after_synthesis(state: PersistentResearchState) -> str:
     for another research pass.  Otherwise proceed to END.
 
     This implements the synthesis → tree_research feedback loop.
-    Safety: always respects MAX_RESEARCH_ITERATIONS to prevent infinite loops.
+    Safety: always respects MAX_RESEARCH_ITERATIONS and the hard pipeline
+    timeout to prevent runaway execution.
     """
+    if _pipeline_time_exceeded(state):
+        elapsed = time.monotonic() - state["start_time"]
+        log.warning(
+            "[%s] Pipeline hard timeout (%.0fs) — skipping post-synthesis "
+            "re-research, proceeding to END",
+            state["req_id"], elapsed,
+        )
+        return "__end__"
     targeted = state.get("targeted_questions", [])
     iterations = state.get("research_iterations", 0)
     if targeted and iterations < MAX_RESEARCH_ITERATIONS:
@@ -1762,16 +1815,21 @@ def build_persistent_research_graph(
 ) -> Any:
     """Build the persistent research LangGraph with conditional edges.
 
-    Graph topology (with feedback loops)::
+    Graph topology (with feedback loops + hard timeout)::
 
-        START -> comprehend -> retrieve -> tree_research -> entities
-              -> verify -> reflect
-                  -> [_should_reresearch]
-                      -> tree_research  (if quality < 0.4 + targeted Qs)
-                      -> persist -> synthesize
-                          -> [_should_reresearch_after_synthesis]
-                              -> tree_research  (if incompleteness detected)
-                              -> END
+        START -> comprehend -> retrieve -> tree_research
+              -> [_after_tree_research]
+                  -> synthesize  (if hard pipeline timeout exceeded)
+                  -> entities -> verify -> reflect
+                      -> [_should_reresearch]
+                          -> tree_research  (if quality < 0.4 + targeted Qs)
+                          -> persist -> synthesize
+                              -> [_should_reresearch_after_synthesis]
+                                  -> tree_research  (if incompleteness detected)
+                                  -> END
+
+    The hard pipeline timeout (PIPELINE_HARD_TIMEOUT or RESEARCH_TIME_LIMIT+120)
+    is checked at every conditional edge to prevent runaway execution.
 
     Args:
         checkpointer: Optional LangGraph checkpointer (e.g. AsyncSqliteSaver)
@@ -1793,7 +1851,12 @@ def build_persistent_research_graph(
     graph.add_edge(START, "comprehend")
     graph.add_edge("comprehend", "retrieve")
     graph.add_edge("retrieve", "tree_research")
-    graph.add_edge("tree_research", "entities")
+    # Conditional: tree_research → entities (normal) OR synthesize (hard timeout)
+    graph.add_conditional_edges(
+        "tree_research",
+        _after_tree_research,
+        {"entities": "entities", "synthesize": "synthesize"},
+    )
     graph.add_edge("entities", "verify")
     graph.add_edge("verify", "reflect")
 

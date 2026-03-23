@@ -1626,8 +1626,11 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
             prior_conversation_summary=prior_conv_summary,
         )
 
-    progress.append("Critic review complete.\n")
-    progress.append("Final revision complete.\n")
+    if _use_gossip:
+        progress.append("Gossip synthesis + queen merge complete.\n")
+    else:
+        progress.append("Critic review complete.\n")
+        progress.append("Final revision complete.\n")
 
     # --- Incompleteness detection (synthesis → reresearch feedback) ---
     iterations = state.get("research_iterations", 0)

@@ -32,6 +32,7 @@ from shared import make_sse_chunk
 from .config import (
     MAX_PRIOR_CONDITIONS,
     PORTAL_PUBLIC_URL,
+    RESEARCH_TIME_LIMIT,
     SUBAGENT_MODEL,
     UPSTREAM_MODEL,
     VERITAS_MIN_CONDITIONS,
@@ -1181,6 +1182,7 @@ async def _tree_sub_explore(state: PersistentResearchState) -> dict:
         req_id=req_id,
         collector=collector,
         curated_queue=curated_queue,
+        start_time=state["start_time"],
     )
 
     # Merge conditions from this iteration with any existing ones
@@ -1763,7 +1765,19 @@ def _should_reresearch(state: PersistentResearchState) -> str:
     is critically low and we have targeted questions, else proceed to persist.
 
     This implements the reflect → tree_research feedback loop.
+    Respects RESEARCH_TIME_LIMIT — skips re-research if time is up.
     """
+    # Time limit check: force synthesis with what we have
+    if RESEARCH_TIME_LIMIT > 0:
+        elapsed = time.monotonic() - state["start_time"]
+        if elapsed >= RESEARCH_TIME_LIMIT:
+            log.info(
+                "[%s] Research time limit (%.0fs) reached after %.0fs "
+                "— skipping re-research, proceeding to synthesis",
+                state["req_id"], RESEARCH_TIME_LIMIT, elapsed,
+            )
+            return "persist"
+
     targeted = state.get("targeted_questions", [])
     if targeted:
         log.info(
@@ -1782,7 +1796,19 @@ def _should_reresearch_after_synthesis(state: PersistentResearchState) -> str:
     for another research pass.  Otherwise proceed to END.
 
     This implements the synthesis → tree_research feedback loop.
+    Respects RESEARCH_TIME_LIMIT — skips re-research if time is up.
     """
+    # Time limit check: end pipeline with what we have
+    if RESEARCH_TIME_LIMIT > 0:
+        elapsed = time.monotonic() - state["start_time"]
+        if elapsed >= RESEARCH_TIME_LIMIT:
+            log.info(
+                "[%s] Research time limit (%.0fs) reached after %.0fs "
+                "— skipping post-synthesis re-research, ending pipeline",
+                state["req_id"], RESEARCH_TIME_LIMIT, elapsed,
+            )
+            return "__end__"
+
     targeted = state.get("targeted_questions", [])
     if targeted:
         log.info(

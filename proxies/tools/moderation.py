@@ -136,7 +136,7 @@ async def moderate_query(query: str) -> tuple[bool, dict]:
 # ============================================================================
 
 
-def _parse_google_html(html_text: str) -> list[dict]:
+def _parse_google_html(html_text: str, source: str = "bright_data") -> list[dict]:
     """Extract search results from raw Google HTML."""
     results: list[dict] = []
     # Pattern 1: Standard organic results with <h3> inside <a href="/url?q=...">
@@ -147,7 +147,7 @@ def _parse_google_html(html_text: str) -> list[dict]:
         url = unquote(m.group(1))
         title = re.sub(r"<[^>]+>", "", m.group(2)).strip()
         if url and title and not url.startswith("/"):
-            results.append({"title": title, "url": url, "snippet": "", "source": "bright_data"})
+            results.append({"title": title, "url": url, "snippet": "", "source": source})
     # Pattern 2: Fallback — <a href="https://..." with <h3>
     if not results:
         for m in re.finditer(
@@ -157,7 +157,7 @@ def _parse_google_html(html_text: str) -> list[dict]:
             url = unquote(m.group(1))
             title = re.sub(r"<[^>]+>", "", m.group(2)).strip()
             if url and title:
-                results.append({"title": title, "url": url, "snippet": "", "source": "bright_data"})
+                results.append({"title": title, "url": url, "snippet": "", "source": source})
     # Extract snippets from nearby <span> tags (best-effort)
     for r in results[:10]:
         title_esc = re.escape(r["title"][:30])
@@ -285,7 +285,7 @@ async def _search_oxylabs_serp(query: str) -> list[dict]:
                         },
                     )
                 if proxy_resp.status_code == 200:
-                    return _parse_google_html(proxy_resp.text)
+                    return _parse_google_html(proxy_resp.text, source="oxylabs")
                 log.warning(f"Oxylabs proxy fallback: HTTP {proxy_resp.status_code}")
                 return []
 

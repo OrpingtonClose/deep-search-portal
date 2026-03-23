@@ -356,6 +356,7 @@ async def tool_wikidata_query(entity: str) -> str:
                     "limit": 3,
                 },
                 timeout=15.0,
+                headers={"User-Agent": "DeepSearchPortal/1.0 (https://deep-search.uk; research tool)"},
             )
         if search_resp.status_code != 200:
             return f"Wikidata search error: HTTP {search_resp.status_code}"
@@ -388,6 +389,7 @@ async def tool_wikidata_query(entity: str) -> str:
                         "props": "labels|descriptions|claims",
                     },
                     timeout=15.0,
+                    headers={"User-Agent": "DeepSearchPortal/1.0 (https://deep-search.uk; research tool)"},
                 )
             if entity_resp.status_code == 200:
                 entity_data = entity_resp.json()
@@ -568,7 +570,7 @@ async def tool_stackexchange_search(query: str, site: str = "stackoverflow", sor
                     "sort": sort,
                     "order": "desc",
                     "pagesize": 10,
-                    "filter": "withbody",
+                    "filter": "default",
                 },
                 timeout=15.0,
                 headers={"Accept-Encoding": "gzip"},
@@ -736,7 +738,7 @@ async def tool_wikipedia_search(query: str, limit: int = 8) -> str:
                     "format": "json",
                 },
                 timeout=15.0,
-                headers={"User-Agent": "DeepSearchPortal/1.0 (research tool)"},
+                headers={"User-Agent": "DeepSearchPortal/1.0 (https://deep-search.uk; research tool)"},
             )
         if resp.status_code != 200:
             return f"Wikipedia search error: HTTP {resp.status_code}"

@@ -60,6 +60,10 @@ from .config import UPSTREAM_MODEL, SUBAGENT_MODEL, log
 from .llm import call_llm
 from .models import AtomicCondition, SubagentResult
 
+# Module-level set to prevent GC of fire-and-forget background tasks.
+# See: https://docs.python.org/3/library/asyncio-task.html#creating-tasks
+_background_tasks: set[asyncio.Task[bool]] = set()
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -417,7 +421,7 @@ async def ruflo_gossip_synthesize(
     for sr in subagent_results:
         if sr.conditions:
             angle_conditions = [c.to_text() for c in sr.conditions]
-            conditions_by_angle[sr.angle] = angle_conditions
+            conditions_by_angle.setdefault(sr.angle, []).extend(angle_conditions)
             total_conditions += len(angle_conditions)
 
     if not conditions_by_angle:
@@ -443,10 +447,12 @@ async def ruflo_gossip_synthesize(
     )
 
     # Notify ruflo hive-mind (non-blocking, best-effort)
-    asyncio.create_task(_ruflo_broadcast(
+    _t = asyncio.create_task(_ruflo_broadcast(
         f"Gossip synthesis started: {n_workers} workers, "
         f"{total_conditions} conditions for query: {user_query[:100]}"
     ))
+    _background_tasks.add(_t)
+    _t.add_done_callback(_background_tasks.discard)
 
     # --- Round 0: Initial worker synthesis (parallel) ---
     sem = asyncio.Semaphore(MAX_GOSSIP_WORKERS)
@@ -466,10 +472,12 @@ async def ruflo_gossip_synthesize(
     # Store Round 0 summaries in ruflo hive memory (best-effort)
     for w in state.workers:
         w.round_completed = 0
-        asyncio.create_task(_ruflo_hive_store(
+        _t = asyncio.create_task(_ruflo_hive_store(
             f"gossip-{req_id}-w{w.worker_id}-r0",
             w.summary[:5000],
         ))
+        _background_tasks.add(_t)
+        _t.add_done_callback(_background_tasks.discard)
 
     # --- Gossip Rounds: workers read peers + refine ---
     for gossip_round in range(1, GOSSIP_ROUNDS + 1):
@@ -491,17 +499,21 @@ async def ruflo_gossip_synthesize(
 
         for w in state.workers:
             w.round_completed = gossip_round
-            asyncio.create_task(_ruflo_hive_store(
+            _t = asyncio.create_task(_ruflo_hive_store(
                 f"gossip-{req_id}-w{w.worker_id}-r{gossip_round}",
                 w.summary[:5000],
             ))
+            _background_tasks.add(_t)
+            _t.add_done_callback(_background_tasks.discard)
 
         state.gossip_round = gossip_round
 
     # Broadcast gossip completion
-    asyncio.create_task(_ruflo_broadcast(
+    _t = asyncio.create_task(_ruflo_broadcast(
         f"Gossip complete: {n_workers} workers, {state.total_llm_calls} LLM calls"
     ))
+    _background_tasks.add(_t)
+    _t.add_done_callback(_background_tasks.discard)
 
     # --- Queen Merge: combine all refined summaries ---
     log.info(

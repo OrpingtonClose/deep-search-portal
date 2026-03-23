@@ -58,6 +58,24 @@ def _get_global_sem() -> asyncio.Semaphore:
 # Provider-to-tool mapping
 # ---------------------------------------------------------------------------
 
+# Tools that already do their own per-provider throttling internally
+# (e.g. search_providers._search_searxng calls get_throttler("searxng") itself).
+# For these, the governor applies ONLY global concurrency + jitter, NOT the
+# per-provider token bucket — otherwise requests pass through the bucket twice
+# and effective throughput is halved.
+_SELF_THROTTLED_TOOLS: set[str] = {
+    "searxng_search", "web_search", "news_search",
+    "telegram_search", "darknet_market_search", "facebook_search",
+    "discord_search", "signal_search", "whatsapp_search",
+    "crunchbase_search", "trustpilot_search",
+    "forum_search", "scholar_search", "substack_search",
+    # Twitter search also throttles via bright_data/oxylabs/nitter internally
+    "twitter_search",
+    # Social media scrapers throttle via bright_data internally
+    "social_media_search", "reddit_search", "instagram_search",
+    "tiktok_search", "linkedin_search",
+}
+
 # Maps tool names to provider keys for throttler lookup.
 # Tools sharing the same provider share the same rate-limit bucket.
 TOOL_PROVIDER_MAP: dict[str, str] = {
@@ -167,10 +185,13 @@ async def governed_request(
     _active_count += 1
 
     try:
-        # Step 2: Per-provider rate limit
-        provider = TOOL_PROVIDER_MAP.get(tool_name, "default")
-        throttler = get_throttler(provider)
-        waited = await throttler.acquire()
+        # Step 2: Per-provider rate limit (skip for self-throttled tools)
+        throttler = None
+        waited = 0.0
+        if tool_name not in _SELF_THROTTLED_TOOLS:
+            provider = TOOL_PROVIDER_MAP.get(tool_name, "default")
+            throttler = get_throttler(provider)
+            waited = await throttler.acquire()
 
         # Step 3: Jitter to stagger requests
         jitter = 0.0
@@ -185,7 +206,8 @@ async def governed_request(
         try:
             yield
         finally:
-            throttler.release()
+            if throttler is not None:
+                throttler.release()
     finally:
         _active_count -= 1
         sem.release()

@@ -399,8 +399,10 @@ async def tool_issues():
 
 
 @app.post("/v1/tool-issues/{issue_id}/resolve")
-async def resolve_tool_issue(issue_id: int):
+async def resolve_tool_issue(issue_id: int, request: Request):
     """Mark a tool issue as resolved."""
+    if not await _validate_owui_token(request):
+        return _auth_denied()
     from tools.tool_health import get_monitor
     monitor = get_monitor()
     ok = monitor.resolve_issue(issue_id)
@@ -420,8 +422,10 @@ async def cache_statistics():
 
 
 @app.post("/v1/cache/clear")
-async def clear_cache():
+async def clear_cache(request: Request):
     """Clear all cached search results."""
+    if not await _validate_owui_token(request):
+        return _auth_denied()
     from tools.search_cache import cache_clear
     deleted = cache_clear()
     return JSONResponse({"cleared": deleted})

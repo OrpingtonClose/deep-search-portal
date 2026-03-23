@@ -355,10 +355,23 @@ _monitor: Optional[ToolHealthMonitor] = None
 
 
 def get_monitor() -> ToolHealthMonitor:
-    """Return the singleton ToolHealthMonitor instance."""
+    """Return the singleton ToolHealthMonitor instance.
+
+    Lazily starts the background LLM analysis worker the first time
+    the monitor is accessed inside a running event loop.
+    """
     global _monitor
     if _monitor is None:
         _monitor = ToolHealthMonitor()
+    # Start the analysis worker if we're inside an event loop and it's not running yet
+    if _monitor._analysis_task is None:
+        try:
+            loop = asyncio.get_running_loop()
+            _monitor._analysis_task = loop.create_task(_monitor.start_analysis_worker())
+            log.info("Started tool health analysis background worker")
+        except RuntimeError:
+            # No running event loop — worker will be started on next call
+            pass
     return _monitor
 
 

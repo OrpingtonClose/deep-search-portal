@@ -21,7 +21,7 @@ from .config import (
     log,
 )
 from .llm import _request_configs
-from .rate_governor import governed_request, TOOL_PROVIDER_MAP
+from .rate_governor import governed_request
 from .search_cache import cache_get, cache_put
 from .tool_health import record_outcome
 from .search_tools import (

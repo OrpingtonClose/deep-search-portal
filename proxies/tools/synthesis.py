@@ -747,6 +747,42 @@ async def synthesize_with_revision(
 
     draft = draft_result.get("content", "(No draft generated)")
 
+    # --- Early relevance gate on draft ---
+    # Check the draft BEFORE spending time on critic/revision.  If the
+    # draft is off-topic, re-draft with a stronger prompt rather than
+    # polishing a bad draft through the expensive revision loop.
+    is_relevant = await relevance_gate(draft, user_query, req_id)
+    if not is_relevant:
+        log.warning(
+            "[%s] Draft failed relevance gate — re-drafting with stronger prompt",
+            req_id,
+        )
+        stronger_messages = [
+            {"role": "system", "content": draft_prompt},
+            {"role": "user", "content": (
+                f"Your previous draft was rejected because it did NOT directly "
+                f"answer the user's question. The user asked:\n\n"
+                f"{user_query}\n\n"
+                f"You MUST answer this specific question using the research "
+                f"findings provided. Do NOT write about risks, warnings, or "
+                f"disclaimers unless the user explicitly asked for them. "
+                f"Focus on actionable, specific information that directly "
+                f"addresses what the user wants to know or do.\n\n"
+                f"Research findings ({total_conditions} conditions from "
+                f"{len(subagent_results)} angles) are in the system prompt above."
+            )},
+        ]
+        retry_result = await call_llm(
+            stronger_messages, req_id,
+            model=UPSTREAM_MODEL,
+            max_tokens=8192,
+            temperature=0.3,
+        )
+        if "error" not in retry_result:
+            retry_draft = retry_result.get("content", "").strip()
+            if retry_draft:
+                draft = retry_draft
+
     # --- Phase 2: Critic Review ---
     critic_messages = [
         {"role": "system", "content": CRITIC_PROMPT},
@@ -1576,14 +1612,8 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         prior_conversation_summary=prior_conv_summary,
     )
 
-    # Relevance gate: check if the final answer actually addresses the query
-    is_relevant = await relevance_gate(final_answer, state["user_query"], req_id)
-    if not is_relevant:
-        log.warning(f"[{req_id}] Final answer failed relevance gate — re-running synthesis")
-        final_answer = await synthesize_with_revision(
-            state["user_query"], state["subagent_results"], state["prior_conditions"], req_id,
-            prior_conversation_summary=prior_conv_summary,
-        )
+    # Relevance gate now runs inside synthesize_with_revision() on the
+    # draft (before critic/revision), so we no longer need it here.
 
     progress.append("Critic review complete.\n")
     progress.append("Final revision complete.\n")

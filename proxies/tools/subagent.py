@@ -651,6 +651,11 @@ async def run_subagent(
                                 "subagent": subagent_index,
                                 "text": f"  [{angle_title}] Saturation detected, stopping early\n",
                             })
+                            langfuse_config.end_span(contraction_span, output={
+                                "conditions_extracted": len(mid_conditions),
+                                "novelty": novelty,
+                                "saturated": True,
+                            })
                             result.turns_used = turn
                             break
 

@@ -1031,7 +1031,7 @@ async def tool_substack_search(query: str) -> str:
 # Telegram Search (SearXNG site-targeted)
 # ============================================================================
 
-async def tool_telegram_search(query: str) -> str:
+async def tool_telegram_search(query: str, platform: str = "") -> str:
     """Search for Telegram channel/group content indexed on the public web.
 
     Uses SearXNG to find Telegram content via t.me links, Telegram channel
@@ -1176,60 +1176,6 @@ async def tool_darknet_market_search(query: str) -> str:
 # separate tools so the LLM can explicitly target specific platforms
 # rather than hoping a generic search will surface relevant results.
 # ============================================================================
-
-
-async def tool_telegram_search(query: str, platform: str = "") -> str:
-    """Search Telegram channels and groups via SearXNG site filters.
-
-    Targets telegram.me, t.me, and telegram-groups.com for public channel
-    content indexed by search engines.  Private channels and encrypted
-    chats are not accessible.
-    """
-    try:
-        site_query = (
-            f"({query}) (site:t.me OR site:telegram.me OR site:telegram-groups.com "
-            f"OR site:tgstat.com OR site:telemetr.io)"
-        )
-        results = await _searxng_query(site_query, categories="general")
-        if not results:
-            # Broader fallback
-            results = await _searxng_query(f"telegram {query}", categories="general")
-        return (
-            _format_search_results(results[:15], source_label="telegram")
-            or f"No Telegram results for: {query}"
-        )
-    except httpx.TimeoutException:
-        return "Telegram search error: request timed out"
-    except Exception as e:
-        return f"Telegram search error: {str(e)}"
-
-
-async def tool_darknet_market_search(query: str) -> str:
-    """Search darknet market archives and discussion forums via SearXNG.
-
-    Targets publicly-indexed darknet discussion archives, market reviews,
-    and research databases.  Does NOT access .onion sites directly.
-    """
-    try:
-        site_query = (
-            f"({query}) (site:darknetlive.com OR site:dread.support "
-            f"OR site:dark.fail OR site:darknetmarkets.org "
-            f"OR site:reddit.com/r/darknet OR site:reddit.com/r/darknetmarkets "
-            f"OR site:gwern.net/darknet-market)"
-        )
-        results = await _searxng_query(site_query, categories="general")
-        if not results:
-            results = await _searxng_query(
-                f"darknet market {query}", categories="general"
-            )
-        return (
-            _format_search_results(results[:15], source_label="darknet-archive")
-            or f"No darknet archive results for: {query}"
-        )
-    except httpx.TimeoutException:
-        return "Darknet search error: request timed out"
-    except Exception as e:
-        return f"Darknet search error: {str(e)}"
 
 
 async def tool_facebook_search(

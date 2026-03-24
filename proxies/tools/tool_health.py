@@ -220,6 +220,11 @@ class ToolHealthMonitor:
                 req_id="tool-health-analysis",
             )
 
+            if "error" in diagnosis:
+                diagnosis_text = f"Analysis error: {diagnosis['error']}"
+            else:
+                diagnosis_text = diagnosis.get("content", "(no diagnosis generated)")
+
             # Update the latest issue with the diagnosis
             try:
                 conn = _get_conn()
@@ -230,7 +235,7 @@ class ToolHealthMonitor:
                            WHERE tool_name = ? AND status = 'open'
                            ORDER BY created_at DESC LIMIT 1
                        )""",
-                    (diagnosis, tool_name),
+                    (diagnosis_text, tool_name),
                 )
                 conn.commit()
             except Exception as e:
@@ -240,8 +245,8 @@ class ToolHealthMonitor:
                 live_stats = self._stats.get(tool_name)
                 if live_stats is not None:
                     live_stats.last_analysis_time = time.time()
-            log.info(f"LLM diagnosis for {tool_name}: {diagnosis[:200]}")
-            return diagnosis
+            log.info(f"LLM diagnosis for {tool_name}: {diagnosis_text[:200]}")
+            return diagnosis_text
 
         except Exception as e:
             log.warning(f"LLM analysis failed for {tool_name}: {e}")

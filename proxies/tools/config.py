@@ -104,9 +104,6 @@ RESEARCH_TIME_LIMIT = float(os.getenv("RESEARCH_TIME_LIMIT", "300"))  # seconds;
 # RESEARCH_TIME_LIMIT which only gates tree exploration.
 PIPELINE_HARD_TIMEOUT = float(os.getenv("PIPELINE_HARD_TIMEOUT", "0"))  # 0 = derive from RESEARCH_TIME_LIMIT
 
-# Research time limit: force synthesis after this many seconds (0 = no limit)
-RESEARCH_TIME_LIMIT = float(os.getenv("RESEARCH_TIME_LIMIT", "300.0"))
-
 # --- Enhanced Web Scraping Config ---
 APIFY_API_KEY = os.getenv("APIFY_API_TOKEN", "")
 BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")

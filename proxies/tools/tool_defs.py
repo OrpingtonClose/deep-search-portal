@@ -751,16 +751,20 @@ NATIVE_TOOLS = [
             },
         },
     },
+    # -----------------------------------------------------------------
+    # Site-filtered search tools (SearXNG proxy for platforms without
+    # direct APIs).  These exist so the LLM can explicitly target
+    # specific platforms rather than relying on generic search.
+    # -----------------------------------------------------------------
     {
         "type": "function",
         "function": {
             "name": "telegram_search",
             "description": (
                 "Search for publicly indexed Telegram channel and group content. "
-                "Queries t.me links, Telegram aggregator sites (tgstat.com, telemetr.io, "
-                "telegramchannels.me), and general web results mentioning Telegram channels. "
-                "Does NOT access Telegram's private API — only publicly indexed content. "
-                "Useful for tracking communities, alternative discourse, and encrypted group discussions."
+                "Queries t.me links, Telegram aggregator sites (tgstat.com, telemetr.io), "
+                "and general web results mentioning Telegram channels. "
+                "Does NOT access Telegram's private API — only publicly indexed content."
             ),
             "parameters": {
                 "type": "object",
@@ -778,9 +782,8 @@ NATIVE_TOOLS = [
             "description": (
                 "Search for darknet market intelligence via publicly indexed OSINT sources. "
                 "Queries clearnet darknet-market discussion sites (darknetlive.com, dark.fail, "
-                "darknetmarkets.org, dread.support) and general web OSINT about darknet markets, "
-                "vendors, and products. Does NOT access .onion sites directly — only publicly "
-                "available intelligence about darknet markets indexed on the clearnet."
+                "darknetmarkets.org, dread.support) and research databases (gwern.net). "
+                "Does NOT access .onion sites directly."
             ),
             "parameters": {
                 "type": "object",
@@ -788,6 +791,133 @@ NATIVE_TOOLS = [
                     "query": {"type": "string", "description": "Search terms for darknet market OSINT"},
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "facebook_search",
+            "description": (
+                "Search public Facebook pages, groups, and posts via web search. "
+                "Only finds content indexed by search engines — private groups and "
+                "personal profiles are not accessible."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "result_type": {
+                        "type": "string",
+                        "description": "Type of results: 'posts', 'groups', 'pages' (default: posts)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "discord_search",
+            "description": (
+                "Search public Discord server content, server listings, and "
+                "archived messages via web search. Private server content is "
+                "not accessible."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "signal_search",
+            "description": (
+                "Search for Signal group links and public references. "
+                "Signal is end-to-end encrypted; this only finds publicly-shared "
+                "group invite links and references on indexable websites."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "whatsapp_search",
+            "description": (
+                "Search for WhatsApp group invite links and public references. "
+                "WhatsApp is end-to-end encrypted; this only finds publicly-shared "
+                "group links and community references on indexable websites."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "crunchbase_search",
+            "description": (
+                "Search Crunchbase for company profiles, funding rounds, "
+                "and organizational data. Uses web search targeting crunchbase.com."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Company or search query"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "trustpilot_search",
+            "description": (
+                "Search Trustpilot for business reviews, customer feedback, "
+                "and trust scores. Uses web search targeting trustpilot.com."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Business name or search query"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "whois_lookup",
+            "description": (
+                "Look up WHOIS/RDAP registration data for a domain. "
+                "Returns registrar, creation date, nameservers, and registrant info."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "domain": {"type": "string", "description": "Domain name to look up (e.g. example.com)"},
+                },
+                "required": ["domain"],
             },
         },
     },

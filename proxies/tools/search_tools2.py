@@ -1169,6 +1169,293 @@ async def tool_darknet_market_search(query: str) -> str:
         return f"[TOOL_ERROR] Darknet market search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
+# ============================================================================
+# Site-Filtered Search Tools (SearXNG proxy for platforms without direct APIs)
+#
+# These tools route through SearXNG with site: filters.  They exist as
+# separate tools so the LLM can explicitly target specific platforms
+# rather than hoping a generic search will surface relevant results.
+# ============================================================================
+
+
+async def tool_telegram_search(query: str, platform: str = "") -> str:
+    """Search Telegram channels and groups via SearXNG site filters.
+
+    Targets telegram.me, t.me, and telegram-groups.com for public channel
+    content indexed by search engines.  Private channels and encrypted
+    chats are not accessible.
+    """
+    try:
+        site_query = (
+            f"({query}) (site:t.me OR site:telegram.me OR site:telegram-groups.com "
+            f"OR site:tgstat.com OR site:telemetr.io)"
+        )
+        results = await _searxng_query(site_query, categories="general")
+        if not results:
+            # Broader fallback
+            results = await _searxng_query(f"telegram {query}", categories="general")
+        return (
+            _format_search_results(results[:15], source_label="telegram")
+            or f"No Telegram results for: {query}"
+        )
+    except httpx.TimeoutException:
+        return "Telegram search error: request timed out"
+    except Exception as e:
+        return f"Telegram search error: {str(e)}"
+
+
+async def tool_darknet_market_search(query: str) -> str:
+    """Search darknet market archives and discussion forums via SearXNG.
+
+    Targets publicly-indexed darknet discussion archives, market reviews,
+    and research databases.  Does NOT access .onion sites directly.
+    """
+    try:
+        site_query = (
+            f"({query}) (site:darknetlive.com OR site:dread.support "
+            f"OR site:dark.fail OR site:darknetmarkets.org "
+            f"OR site:reddit.com/r/darknet OR site:reddit.com/r/darknetmarkets "
+            f"OR site:gwern.net/darknet-market)"
+        )
+        results = await _searxng_query(site_query, categories="general")
+        if not results:
+            results = await _searxng_query(
+                f"darknet market {query}", categories="general"
+            )
+        return (
+            _format_search_results(results[:15], source_label="darknet-archive")
+            or f"No darknet archive results for: {query}"
+        )
+    except httpx.TimeoutException:
+        return "Darknet search error: request timed out"
+    except Exception as e:
+        return f"Darknet search error: {str(e)}"
+
+
+async def tool_facebook_search(
+    query: str, result_type: str = "posts", platform: str = ""
+) -> str:
+    """Search Facebook pages, groups, and posts via SearXNG site filters.
+
+    Public Facebook content indexed by search engines.  Private groups
+    and personal profiles are not accessible.
+
+    Args:
+        query: Search terms.
+        result_type: One of 'posts' (default), 'groups', or 'pages'.
+            Adds an inurl filter to narrow results to the requested type.
+        platform: Ignored (kept for dispatcher compatibility).
+    """
+    try:
+        # Build type-specific URL filter
+        type_filter = ""
+        if result_type == "groups":
+            type_filter = "inurl:groups"
+        elif result_type == "pages":
+            type_filter = "inurl:pages"
+
+        site_query = (
+            f"({query}) (site:facebook.com OR site:fb.com) {type_filter}"
+        ).strip()
+        results = await _searxng_query(site_query, categories="general")
+        if not results:
+            results = await _searxng_query(
+                f"facebook {result_type} {query}", categories="general"
+            )
+        return (
+            _format_search_results(results[:15], source_label="facebook")
+            or f"No Facebook results for: {query}"
+        )
+    except httpx.TimeoutException:
+        return "Facebook search error: request timed out"
+    except Exception as e:
+        return f"Facebook search error: {str(e)}"
+
+
+async def tool_discord_search(query: str) -> str:
+    """Search public Discord server content via SearXNG site filters.
+
+    Targets Discord message archives and server listing sites.
+    Private server content is not accessible.
+    """
+    try:
+        site_query = (
+            f"({query}) (site:discord.com OR site:discordapp.com "
+            f"OR site:top.gg OR site:disboard.org)"
+        )
+        results = await _searxng_query(site_query, categories="general")
+        if not results:
+            results = await _searxng_query(f"discord {query}", categories="general")
+        return (
+            _format_search_results(results[:15], source_label="discord")
+            or f"No Discord results for: {query}"
+        )
+    except httpx.TimeoutException:
+        return "Discord search error: request timed out"
+    except Exception as e:
+        return f"Discord search error: {str(e)}"
+
+
+async def tool_signal_search(query: str) -> str:
+    """Search Signal-related public content via SearXNG.
+
+    Signal is end-to-end encrypted; this only finds public references
+    to Signal groups, channels, and discussions on indexable websites.
+    """
+    try:
+        site_query = (
+            f"({query}) (site:signal.group OR site:signal.org "
+            f"OR \"signal group\" OR \"signal channel\")"
+        )
+        results = await _searxng_query(site_query, categories="general")
+        if not results:
+            results = await _searxng_query(f"signal app {query}", categories="general")
+        return (
+            _format_search_results(results[:15], source_label="signal")
+            or f"No Signal results for: {query}"
+        )
+    except httpx.TimeoutException:
+        return "Signal search error: request timed out"
+    except Exception as e:
+        return f"Signal search error: {str(e)}"
+
+
+async def tool_whatsapp_search(query: str) -> str:
+    """Search WhatsApp group invites and public references via SearXNG.
+
+    WhatsApp is end-to-end encrypted; this only finds publicly-shared
+    group invite links and references to WhatsApp communities.
+    """
+    try:
+        site_query = (
+            f"({query}) (site:chat.whatsapp.com OR \"whatsapp group\" "
+            f"OR \"join whatsapp\")"
+        )
+        results = await _searxng_query(site_query, categories="general")
+        if not results:
+            results = await _searxng_query(
+                f"whatsapp group {query}", categories="general"
+            )
+        return (
+            _format_search_results(results[:15], source_label="whatsapp")
+            or f"No WhatsApp results for: {query}"
+        )
+    except httpx.TimeoutException:
+        return "WhatsApp search error: request timed out"
+    except Exception as e:
+        return f"WhatsApp search error: {str(e)}"
+
+
+async def tool_crunchbase_search(query: str) -> str:
+    """Search Crunchbase for company/startup information via SearXNG.
+
+    Finds company profiles, funding rounds, and organizational data
+    indexed from Crunchbase.
+    """
+    try:
+        site_query = f"site:crunchbase.com {query}"
+        results = await _searxng_query(site_query, categories="general")
+        if not results:
+            results = await _searxng_query(
+                f"crunchbase {query}", categories="general"
+            )
+        return (
+            _format_search_results(results[:15], source_label="crunchbase")
+            or f"No Crunchbase results for: {query}"
+        )
+    except httpx.TimeoutException:
+        return "Crunchbase search error: request timed out"
+    except Exception as e:
+        return f"Crunchbase search error: {str(e)}"
+
+
+async def tool_trustpilot_search(query: str) -> str:
+    """Search Trustpilot for company reviews and ratings via SearXNG.
+
+    Finds business reviews, customer feedback, and trust scores
+    indexed from Trustpilot.
+    """
+    try:
+        site_query = f"site:trustpilot.com {query}"
+        results = await _searxng_query(site_query, categories="general")
+        if not results:
+            results = await _searxng_query(
+                f"trustpilot review {query}", categories="general"
+            )
+        return (
+            _format_search_results(results[:15], source_label="trustpilot")
+            or f"No Trustpilot results for: {query}"
+        )
+    except httpx.TimeoutException:
+        return "Trustpilot search error: request timed out"
+    except Exception as e:
+        return f"Trustpilot search error: {str(e)}"
+
+
+async def tool_whois_lookup(domain: str = "", query: str = "") -> str:
+    """Look up WHOIS information for a domain via public WHOIS APIs."""
+    target = domain or query
+    if not target:
+        return "WHOIS lookup error: no domain provided"
+    # Strip protocol and path
+    target = re.sub(r'^https?://', '', target).split('/')[0].strip()
+    try:
+        client = http_client()
+        resp = await client.get(
+            f"https://rdap.org/domain/{target}",
+            timeout=15.0,
+            headers={"Accept": "application/rdap+json"},
+        )
+        if resp.status_code != 200:
+            # Fallback to SearXNG
+            results = await _searxng_query(
+                f"whois {target}", categories="general"
+            )
+            return (
+                _format_search_results(results[:5], source_label="whois")
+                or f"WHOIS lookup failed for {target}: HTTP {resp.status_code}"
+            )
+
+        data = resp.json()
+        parts = [f"**WHOIS for {target}:**"]
+
+        name = data.get("ldhName", target)
+        parts.append(f"Domain: {name}")
+
+        status = data.get("status", [])
+        if status:
+            parts.append(f"Status: {', '.join(status[:5])}")
+
+        events = data.get("events", [])
+        for ev in events:
+            action = ev.get("eventAction", "")
+            date = ev.get("eventDate", "")
+            if action and date:
+                parts.append(f"{action}: {date[:10]}")
+
+        nameservers = data.get("nameservers", [])
+        if nameservers:
+            ns_list = [ns.get("ldhName", "") for ns in nameservers[:4]]
+            parts.append(f"Nameservers: {', '.join(ns_list)}")
+
+        entities = data.get("entities", [])
+        for ent in entities[:3]:
+            roles = ent.get("roles", [])
+            vcard = ent.get("vcardArray", [None, []])
+            if len(vcard) > 1:
+                for item in vcard[1]:
+                    if len(item) >= 4 and item[0] == "fn":
+                        parts.append(f"{', '.join(roles)}: {item[3]}")
+                        break
+
+        return "\n".join(parts)
+
+    except httpx.TimeoutException:
+        return f"WHOIS lookup error: request timed out for {target}"
+    except Exception as e:
+        return f"WHOIS lookup error: {str(e)}"
+
+
 async def tool_youtube_search(query: str) -> str:
     """Search YouTube for video content — tutorials, discussions, practitioner knowledge.
 

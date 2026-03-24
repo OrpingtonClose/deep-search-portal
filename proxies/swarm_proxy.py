@@ -61,6 +61,8 @@ from shared import (
     get_throttler,
 )
 
+import langfuse_config as lf
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -845,12 +847,18 @@ async def _extract_from_chunk(
     chunk_index: int,
     total_chunks: int,
     worker_id: str,
+    req_id: str = "",
 ) -> tuple[int, int, int]:
     """Use LLM to extract entities, relationships, and claims.
 
     Returns (entities_count, relationships_count, claims_count).
     """
     chunk_id = f"{corpus_id}-chunk-{chunk_index}"
+    span = lf.start_span(
+        req_id, f"swarm:extract_chunk:{chunk_index}",
+        input={"corpus_id": corpus_id, "chunk_index": chunk_index,
+               "total_chunks": total_chunks, "worker_id": worker_id},
+    )
 
     # Store the raw chunk in the knowledge store
     kchunk = KnowledgeChunk(
@@ -918,6 +926,12 @@ async def _extract_from_chunk(
     rels_count = 0
     claims_count = 0
 
+    lf.end_span(span, output={
+        "entities": len(extracted.get("entities", [])),
+        "relationships": len(extracted.get("relationships", [])),
+        "claims": len(extracted.get("claims", [])),
+    })
+
     # Store entities
     for e in extracted.get("entities", []):
         name = e.get("name", "").strip()
@@ -965,7 +979,9 @@ async def _extract_from_chunk(
     return (entities_count, rels_count, claims_count)
 
 
-async def _process_corpus(corpus_id: str, text: str) -> None:
+async def _process_corpus(
+    corpus_id: str, text: str, req_id: str = "",
+) -> None:
     """Process a single corpus through the swarm pipeline.
 
     Steps:
@@ -977,6 +993,10 @@ async def _process_corpus(corpus_id: str, text: str) -> None:
     This runs as a background task and does NOT block any queries.
     """
     worker_id = f"worker-{uuid.uuid4().hex[:8]}"
+    corpus_span = lf.start_span(
+        req_id, "swarm:process_corpus",
+        input={"corpus_id": corpus_id, "chars": len(text)},
+    )
 
     async with worker_semaphore:
         await swarm.register_worker(worker_id)
@@ -1048,6 +1068,7 @@ async def _process_corpus(corpus_id: str, text: str) -> None:
                             i,
                             total_chunks,
                             worker_id,
+                            req_id=req_id,
                         )
                     )
                     total_entities += ent_count
@@ -1085,11 +1106,21 @@ async def _process_corpus(corpus_id: str, text: str) -> None:
                 f"{total_rels} relationships, "
                 f"{total_claims} claims from {total_chunks} chunks"
             )
+            lf.end_span(corpus_span, output={
+                "entities": total_entities,
+                "relationships": total_rels,
+                "claims": total_claims,
+                "chunks": total_chunks,
+            })
 
         except Exception as e:
             log.error(
                 f"[{worker_id}] Unexpected error processing "
                 f"{corpus_id}: {e}"
+            )
+            lf.end_span(
+                corpus_span, output={"error": str(e)},
+                level="ERROR", status_message=str(e),
             )
             await swarm.update_corpus(
                 corpus_id,
@@ -1120,6 +1151,7 @@ def _is_large_document(text: str) -> bool:
 
 async def _submit_corpus(
     text: str, title: str = "", source: str = "",
+    req_id: str = "",
 ) -> CorpusRecord:
     """Submit a new corpus to the swarm for background processing.
 
@@ -1140,7 +1172,7 @@ async def _submit_corpus(
     await swarm.add_corpus(record)
 
     # Fire-and-forget background task -- does NOT block the response
-    task = asyncio.create_task(_process_corpus(corpus_id, text))
+    task = asyncio.create_task(_process_corpus(corpus_id, text, req_id))
     _worker_tasks.append(task)
 
     # Clean up finished tasks
@@ -1160,6 +1192,10 @@ async def _submit_corpus(
 
 async def _query_knowledge(query: str, req_id: str) -> str:
     """Query the in-memory knowledge store for relevant information."""
+    span = lf.start_span(
+        req_id, "swarm:query_knowledge",
+        input={"query": query[:200]},
+    )
     results = await knowledge.search(query, limit=20)
     parts: list[str] = []
 
@@ -1210,12 +1246,20 @@ async def _query_knowledge(query: str, req_id: str) -> str:
         parts.append(f"**Claims:**\n{claim_text}")
 
     if not parts:
-        return (
+        answer = (
             "(No knowledge available yet. "
             "The swarm has not processed any corpora.)"
         )
+        lf.end_span(span, output={"result": "no_knowledge"})
+        return answer
 
-    return "\n\n".join(parts)
+    answer = "\n\n".join(parts)
+    lf.end_span(span, output={
+        "chunks": len(results.get("chunks", [])),
+        "entities": len(results.get("entities", [])),
+        "claims": len(results.get("claims", [])),
+    })
+    return answer
 
 
 async def _handle_query(
@@ -1264,6 +1308,11 @@ async def _handle_query(
         )
         yield "data: [DONE]\n\n"
         return
+
+    query_span = lf.start_span(
+        req_id, "swarm:handle_query",
+        input={"query": user_query[:300]},
+    )
 
     # Get swarm status preamble (sincerity mechanism)
     status_preamble = await swarm.build_sincerity_preamble()
@@ -1373,6 +1422,7 @@ async def _handle_query(
         return
 
     await swarm.increment_queries()
+    lf.end_span(query_span, output={"status": "complete"})
 
     yield sse("", finish_reason="stop")
     yield "data: [DONE]\n\n"
@@ -1404,6 +1454,10 @@ async def _handle_corpus_submission(
         )
 
     title = text[:80].replace("\n", " ").strip()
+    submit_span = lf.start_span(
+        req_id, "swarm:corpus_submission",
+        input={"title": title, "chars": len(text)},
+    )
 
     yield sse("<think>\n")
     yield sse(f"**[Corpus Received]** {len(text):,} characters\n")
@@ -1415,6 +1469,7 @@ async def _handle_corpus_submission(
     # Submit to the swarm -- this returns immediately
     record = await _submit_corpus(
         text, title=title, source="chat-submission",
+        req_id=req_id,
     )
 
     yield sse(f"Corpus ID: {record.id}\n")
@@ -1450,6 +1505,10 @@ async def _handle_corpus_submission(
         f"{snapshot['active_workers']} active workers, "
         f"{snapshot['total_entities']} entities in knowledge store.\n"
     )
+
+    lf.end_span(submit_span, output={
+        "corpus_id": record.id, "status": record.status.value,
+    })
 
     yield sse("", finish_reason="stop")
     yield "data: [DONE]\n\n"
@@ -1569,6 +1628,10 @@ async def submit_corpus_api(request: Request):
 async def chat_completions(request: Request):
     req_id = f"req-{uuid.uuid4().hex[:8]}"
 
+    # --- Langfuse trace ---
+    trace_id = lf.create_trace_id(req_id)
+    lf.register_trace(req_id, trace_id)
+
     try:
         body = await request.json()
     except Exception as e:
@@ -1652,6 +1715,8 @@ async def chat_completions(request: Request):
                     ):
                         yield event
                 finally:
+                    lf.unregister_trace(req_id)
+                    lf.flush()
                     tracker.finish(req_id)
 
             generator = _guarded_submit()
@@ -1683,6 +1748,8 @@ async def chat_completions(request: Request):
                         ):
                             yield event
                 finally:
+                    lf.unregister_trace(req_id)
+                    lf.flush()
                     tracker.finish(req_id)
 
             generator = _guarded_query()

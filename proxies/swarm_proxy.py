@@ -892,6 +892,7 @@ async def _extract_from_chunk(
             f"[{worker_id}] Extraction error for chunk "
             f"{chunk_index}: {result['error']}"
         )
+        lf.end_span(span, output={"error": result["error"]}, level="ERROR")
         return (0, 0, 0)
 
     # Parse the JSON response
@@ -914,23 +915,19 @@ async def _extract_from_chunk(
                     f"[{worker_id}] Failed to parse extraction "
                     f"for chunk {chunk_index}"
                 )
+                lf.end_span(span, output={"error": "json_parse_failed"}, level="ERROR")
                 return (0, 0, 0)
         else:
             log.warning(
                 f"[{worker_id}] No JSON found in extraction "
                 f"for chunk {chunk_index}"
             )
+            lf.end_span(span, output={"error": "no_json_found"}, level="ERROR")
             return (0, 0, 0)
 
     entities_count = 0
     rels_count = 0
     claims_count = 0
-
-    lf.end_span(span, output={
-        "entities": len(extracted.get("entities", [])),
-        "relationships": len(extracted.get("relationships", [])),
-        "claims": len(extracted.get("claims", [])),
-    })
 
     # Store entities
     for e in extracted.get("entities", []):
@@ -976,6 +973,11 @@ async def _extract_from_chunk(
         ))
         claims_count += 1
 
+    lf.end_span(span, output={
+        "entities": entities_count,
+        "relationships": rels_count,
+        "claims": claims_count,
+    })
     return (entities_count, rels_count, claims_count)
 
 
@@ -1006,6 +1008,10 @@ async def _process_corpus(
             if not record:
                 log.error(
                     f"[{worker_id}] Corpus {corpus_id} not found",
+                )
+                lf.end_span(
+                    corpus_span, output={"error": "corpus_not_found"},
+                    level="ERROR",
                 )
                 return
 
@@ -1388,6 +1394,7 @@ async def _handle_query(
                         f"[{req_id}] Synthesis LLM error "
                         f"{resp.status_code}: {error_text}"
                     )
+                    lf.end_span(query_span, output={"error": f"HTTP {resp.status_code}"}, level="ERROR")
                     yield sse(
                         "Error synthesising answer: "
                         f"{error_text[:200]}",
@@ -1414,6 +1421,7 @@ async def _handle_query(
 
     except Exception as e:
         log.error(f"[{req_id}] Synthesis streaming error: {e}")
+        lf.end_span(query_span, output={"error": str(e)}, level="ERROR")
         yield sse(
             f"\n\nError during synthesis: {e}",
             finish_reason="stop",
@@ -1628,10 +1636,6 @@ async def submit_corpus_api(request: Request):
 async def chat_completions(request: Request):
     req_id = f"req-{uuid.uuid4().hex[:8]}"
 
-    # --- Langfuse trace ---
-    trace_id = lf.create_trace_id(req_id)
-    lf.register_trace(req_id, trace_id)
-
     try:
         body = await request.json()
     except Exception as e:
@@ -1671,9 +1675,14 @@ async def chat_completions(request: Request):
         messages=len(messages), phase="init",
     )
 
+    # --- Langfuse trace (only for non-utility requests) ---
+    trace_id = lf.create_trace_id(req_id)
+    lf.register_trace(req_id, trace_id)
+
     # Utility requests (title/tag generation) pass through
     if utility:
         log.info(f"[{req_id}] Routing to PASSTHROUGH")
+        lf.unregister_trace(req_id)  # no spans needed for utility
         generator = stream_passthrough(
             messages, body,
             req_id=req_id,
@@ -1723,6 +1732,7 @@ async def chat_completions(request: Request):
         else:
             # Regular query -> answer from swarm knowledge
             if not query_limiter.available():
+                lf.unregister_trace(req_id)
                 tracker.finish(req_id)
                 return JSONResponse(
                     status_code=503,

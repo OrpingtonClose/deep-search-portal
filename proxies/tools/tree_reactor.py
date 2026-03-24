@@ -12,7 +12,10 @@ import re
 import uuid
 from typing import TYPE_CHECKING, Optional
 
+import time
+
 from .config import (
+    RESEARCH_TIME_LIMIT,
     SUBAGENT_MODEL,
     TREE_MAX_CONCURRENT,
     TREE_MAX_DEPTH,
@@ -547,6 +550,7 @@ async def tree_research_reactor(
     req_id: str,
     collector: "LiveFindingsCollector",
     curated_queue: asyncio.Queue,
+    start_time: float = 0.0,
 ) -> dict:
     """Research net reactor with global condition admission pipeline.
 
@@ -763,10 +767,27 @@ async def tree_research_reactor(
         "question": user_query,
     })
 
+    _reactor_start = start_time or time.monotonic()
+
+    def _time_exceeded() -> bool:
+        """Return True if RESEARCH_TIME_LIMIT has been exceeded."""
+        if RESEARCH_TIME_LIMIT <= 0:
+            return False
+        return (time.monotonic() - _reactor_start) >= RESEARCH_TIME_LIMIT
+
     async def worker(worker_id: int) -> None:
         nonlocal total_processed, total_queued, active_workers
 
         while True:
+            # Check time limit before picking up new work
+            if _time_exceeded():
+                log.info(
+                    f"[{req_id}] Worker {worker_id}: research time limit "
+                    f"({RESEARCH_TIME_LIMIT:.0f}s) reached — stopping"
+                )
+                done_event.set()
+                return
+
             # Wait for work or termination.  Instead of a simple timeout
             # (which causes idle workers to exit before children are
             # spawned), we poll the queue in short intervals and only
@@ -786,6 +807,10 @@ async def tree_research_reactor(
                         if active_workers == 0 and pending.empty():
                             done_event.set()
                             return
+                    # Also check time limit while waiting
+                    if _time_exceeded():
+                        done_event.set()
+                        return
                     continue
 
             # Skip pruned nodes
@@ -925,8 +950,15 @@ async def tree_research_reactor(
         len(n.connected_to) for n in nodes_by_id.values()
     )
 
+    _elapsed = time.monotonic() - _reactor_start
+    _time_note = ""
+    if _time_exceeded():
+        _time_note = (
+            f" **[TIME LIMIT: research capped at {RESEARCH_TIME_LIMIT:.0f}s "
+            f"— forcing synthesis with findings so far]**"
+        )
     progress.append(
-        f"\n**Research Net Exploration Complete:** "
+        f"\n**Research Net Exploration Complete** ({_elapsed:.0f}s):{_time_note} "
         f"{total_processed} nodes explored "
         f"(depth reached: {max((n.depth for n in nodes_by_id.values()), default=0)}), "
         f"{len(all_conditions)} atomic conditions, "

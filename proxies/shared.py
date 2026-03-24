@@ -123,9 +123,24 @@ _http_client: Optional[httpx.AsyncClient] = None
 
 
 def http_client() -> httpx.AsyncClient:
-    """Return the shared httpx client. Raises if called before lifespan start."""
+    """Return the shared httpx client.
+
+    When called inside a running FastAPI app the lifespan-managed client is
+    returned.  When called outside the app (e.g. standalone test scripts),
+    a default ``AsyncClient`` is lazily created so that search tools remain
+    usable without spinning up the full server.
+    """
+    global _http_client
     if _http_client is None:
-        raise RuntimeError("HTTP client not initialised — is the app lifespan running?")
+        _http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(300.0, connect=30.0),
+            limits=httpx.Limits(
+                max_connections=100,
+                max_keepalive_connections=20,
+                keepalive_expiry=120,
+            ),
+            follow_redirects=True,
+        )
     return _http_client
 
 

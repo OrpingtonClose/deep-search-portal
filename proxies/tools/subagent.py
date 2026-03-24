@@ -471,6 +471,7 @@ async def run_subagent(
             if "error" in llm_result:
                 consecutive_errors += 1
                 log.warning(f"[{sa_id}] Turn {turn}: Error: {llm_result['error']}")
+                langfuse_config.end_span(turn_span, output={"error": llm_result["error"]}, level="ERROR")
                 if consecutive_errors >= 3:
                     result.error = llm_result["error"]
                     break
@@ -587,11 +588,15 @@ async def run_subagent(
                     max_tokens=2048,
                     temperature=0.1,
                 )
-                if "error" not in extract_result:
+                if "error" in extract_result:
+                    langfuse_config.end_span(contraction_span, output={"error": extract_result.get("error", "")}, level="ERROR")
+                else:
                     mid_conditions = _parse_conditions(
                         extract_result.get("content", ""), angle_title, is_bridge
                     )
-                    if mid_conditions:
+                    if not mid_conditions:
+                        langfuse_config.end_span(contraction_span, output={"conditions_extracted": 0})
+                    else:
                         # Admit through global store
                         if condition_store is not None:
                             admission_results = await condition_store.admit_batch(mid_conditions)

@@ -405,6 +405,7 @@ async def verify_conditions_with_veritas(
 
     if not claims:
         log.warning(f"[{req_id}] Veritas produced no claim verdicts")
+        langfuse_config.end_span(veritas_span, output={"claims": 0})
         return conditions, report
 
     # Map Veritas verdicts back to conditions.

@@ -980,11 +980,10 @@ async def tree_research_reactor(
                             "top_child": children[0].question if children else "",
                             "depth": node.depth + 1,
                         })
-                langfuse_config.end_span(worker_span, output={
-                    "conditions": len(all_conditions) - (total_processed - 1) if total_processed else 0,
-                    "children_spawned": actually_queued if 'actually_queued' in dir() else 0,
-                })
             finally:
+                langfuse_config.end_span(worker_span, output={
+                    "status": node.status,
+                })
                 async with lock:
                     active_workers -= 1
 

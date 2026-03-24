@@ -31,7 +31,9 @@ from shared import make_sse_chunk
 
 from .config import (
     MAX_PRIOR_CONDITIONS,
+    PIPELINE_HARD_TIMEOUT,
     PORTAL_PUBLIC_URL,
+    RESEARCH_TIME_LIMIT,
     SUBAGENT_MODEL,
     UPSTREAM_MODEL,
     VERITAS_MIN_CONDITIONS,
@@ -70,6 +72,7 @@ from .conversation import (
     detect_followup,
     get_conversation_store,
 )
+from .ruflo_synthesis import needs_gossip_synthesis, ruflo_gossip_synthesize
 
 # SQLite checkpoint DB path (configurable via env)
 _CHECKPOINT_DB_PATH = os.getenv(
@@ -691,6 +694,36 @@ async def synthesize_with_revision(
     if not conditions_by_angle:
         return "No research findings were gathered. The subagents could not find relevant information."
 
+    # --- Ruflo gossip synthesis for large finding sets ---
+    # When findings exceed the LLM context window, route through ruflo's
+    # gossip protocol: chunk → parallel workers → gossip refinement → queen merge.
+    if needs_gossip_synthesis(subagent_results):
+        log.info(
+            f"[{req_id}] Routing to ruflo gossip synthesis: "
+            f"{total_conditions} conditions exceed single-shot threshold"
+        )
+        prior_text = ""
+        if prior_conditions:
+            prior_text = "\n**PRIOR KNOWLEDGE (from previous sessions):**\n"
+            prior_text += "\n".join(
+                f"- {c['fact']} [prior research: {c.get('original_query', c.get('source', ''))}]"
+                for c in prior_conditions[:10]
+            )
+        if prior_conversation_summary:
+            prior_text += (
+                "\n**PREVIOUS RESEARCH IN THIS CONVERSATION:**\n"
+                f"{prior_conversation_summary[:2000]}\n"
+            )
+        gossip_answer = await ruflo_gossip_synthesize(
+            user_query, subagent_results, req_id,
+            prior_text=prior_text,
+        )
+        if gossip_answer:
+            return await strip_moralizing(gossip_answer, user_query, req_id)
+        # If gossip returned empty (e.g., below threshold), fall through
+        # to single-shot synthesis.
+        log.info(f"[{req_id}] Ruflo gossip returned empty — falling back to single-shot")
+
     conditions_text = ""
     for angle, conds in conditions_by_angle.items():
         conditions_text += f"\n### {angle}\n"
@@ -716,7 +749,7 @@ async def synthesize_with_revision(
             "already covered. Focus on what is NEW in this follow-up query.\n"
         )
 
-    # --- Phase 1: Draft Synthesis ---
+    # --- Phase 1: Draft Synthesis (single-shot path) ---
     draft_prompt = DRAFT_SYNTHESIS_PROMPT.format(
         date=today,
         n_subagents=len(subagent_results),
@@ -744,6 +777,42 @@ async def synthesize_with_revision(
         return f"Draft synthesis error: {draft_result['error']}"
 
     draft = draft_result.get("content", "(No draft generated)")
+
+    # --- Early relevance gate on draft ---
+    # Check the draft BEFORE spending time on critic/revision.  If the
+    # draft is off-topic, re-draft with a stronger prompt rather than
+    # polishing a bad draft through the expensive revision loop.
+    is_relevant = await relevance_gate(draft, user_query, req_id)
+    if not is_relevant:
+        log.warning(
+            "[%s] Draft failed relevance gate — re-drafting with stronger prompt",
+            req_id,
+        )
+        stronger_messages = [
+            {"role": "system", "content": draft_prompt},
+            {"role": "user", "content": (
+                f"Your previous draft was rejected because it did NOT directly "
+                f"answer the user's question. The user asked:\n\n"
+                f"{user_query}\n\n"
+                f"You MUST answer this specific question using the research "
+                f"findings provided. Do NOT write about risks, warnings, or "
+                f"disclaimers unless the user explicitly asked for them. "
+                f"Focus on actionable, specific information that directly "
+                f"addresses what the user wants to know or do.\n\n"
+                f"Research findings ({total_conditions} conditions from "
+                f"{len(subagent_results)} angles) are in the system prompt above."
+            )},
+        ]
+        retry_result = await call_llm(
+            stronger_messages, req_id,
+            model=UPSTREAM_MODEL,
+            max_tokens=8192,
+            temperature=0.3,
+        )
+        if "error" not in retry_result:
+            retry_draft = retry_result.get("content", "").strip()
+            if retry_draft:
+                draft = retry_draft
 
     # --- Phase 2: Critic Review ---
     critic_messages = [
@@ -1150,6 +1219,7 @@ async def _tree_sub_explore(state: PersistentResearchState) -> dict:
         req_id=req_id,
         collector=collector,
         curated_queue=curated_queue,
+        start_time=state["start_time"],
     )
 
     # Merge conditions from this iteration with any existing ones
@@ -1563,10 +1633,22 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
     mc = _metrics_collectors.get(req_id)
     if mc:
         mc.start_node("synthesize")
+    # Check if we need ruflo gossip synthesis for large finding sets
+    _use_gossip = needs_gossip_synthesis(state["subagent_results"])
     progress: list[str] = [
         f"\n**[Synthesis Phase]** (model: {UPSTREAM_MODEL})\n",
-        "Generating draft synthesis...\n",
     ]
+    if _use_gossip:
+        _n_conds = sum(
+            len(sr.conditions) for sr in state["subagent_results"]
+            if sr.conditions
+        )
+        progress.append(
+            f"Large finding set ({_n_conds} conditions) — "
+            f"routing through ruflo gossip synthesis (chunked map-reduce)...\n"
+        )
+    else:
+        progress.append("Generating draft synthesis...\n")
 
     prior_conv_summary = state.get("prior_conversation_summary", "")
     final_answer = await synthesize_with_revision(
@@ -1574,17 +1656,14 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         prior_conversation_summary=prior_conv_summary,
     )
 
-    # Relevance gate: check if the final answer actually addresses the query
-    is_relevant = await relevance_gate(final_answer, state["user_query"], req_id)
-    if not is_relevant:
-        log.warning(f"[{req_id}] Final answer failed relevance gate — re-running synthesis")
-        final_answer = await synthesize_with_revision(
-            state["user_query"], state["subagent_results"], state["prior_conditions"], req_id,
-            prior_conversation_summary=prior_conv_summary,
-        )
+    # Relevance gate now runs inside synthesize_with_revision() on the
+    # draft (before critic/revision), so we no longer need it here.
 
-    progress.append("Critic review complete.\n")
-    progress.append("Final revision complete.\n")
+    if _use_gossip:
+        progress.append("Gossip synthesis + queen merge complete.\n")
+    else:
+        progress.append("Critic review complete.\n")
+        progress.append("Final revision complete.\n")
 
     # --- Incompleteness detection (synthesis → reresearch feedback) ---
     iterations = state.get("research_iterations", 0)
@@ -1712,12 +1791,54 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
     }
 
 
+def _pipeline_time_exceeded(state: PersistentResearchState) -> bool:
+    """Check whether the hard pipeline wall-clock timeout has been exceeded.
+
+    Uses ``PIPELINE_HARD_TIMEOUT`` if explicitly set (> 0), otherwise
+    derives a ceiling from ``RESEARCH_TIME_LIMIT + 120`` (tree exploration
+    limit plus a 2-minute buffer for synthesis).  Returns *False* when
+    both limits are disabled (0).
+    """
+    hard_limit = PIPELINE_HARD_TIMEOUT if PIPELINE_HARD_TIMEOUT > 0 else (
+        RESEARCH_TIME_LIMIT + 120 if RESEARCH_TIME_LIMIT > 0 else 0
+    )
+    if hard_limit <= 0:
+        return False
+    elapsed = time.monotonic() - state["start_time"]
+    return elapsed > hard_limit
+
+
+def _after_tree_research(state: PersistentResearchState) -> str:
+    """Conditional edge after tree_research: if the hard pipeline timeout
+    has been exceeded, skip entities/verify/reflect/persist and jump
+    straight to synthesis with whatever findings exist.
+    """
+    if _pipeline_time_exceeded(state):
+        elapsed = time.monotonic() - state["start_time"]
+        log.warning(
+            "[%s] Pipeline hard timeout exceeded (%.0fs) — "
+            "skipping entities/verify/reflect/persist, jumping to synthesis",
+            state["req_id"], elapsed,
+        )
+        return "synthesize"
+    return "entities"
+
+
 def _should_reresearch(state: PersistentResearchState) -> str:
     """Conditional edge after reflect: loop back to tree_research if quality
     is critically low and we have targeted questions, else proceed to persist.
 
     This implements the reflect → tree_research feedback loop.
+    Respects RESEARCH_TIME_LIMIT and hard pipeline timeout.
     """
+    if _pipeline_time_exceeded(state):
+        elapsed = time.monotonic() - state["start_time"]
+        log.warning(
+            "[%s] Pipeline hard timeout (%.0fs) — skipping re-research, "
+            "proceeding to persist",
+            state["req_id"], elapsed,
+        )
+        return "persist"
     targeted = state.get("targeted_questions", [])
     if targeted:
         log.info(
@@ -1736,16 +1857,33 @@ def _should_reresearch_after_synthesis(state: PersistentResearchState) -> str:
     for another research pass.  Otherwise proceed to END.
 
     This implements the synthesis → tree_research feedback loop.
+    Safety: always respects MAX_RESEARCH_ITERATIONS and the hard pipeline
+    timeout to prevent runaway execution.
     """
+    if _pipeline_time_exceeded(state):
+        elapsed = time.monotonic() - state["start_time"]
+        log.warning(
+            "[%s] Pipeline hard timeout (%.0fs) — skipping post-synthesis "
+            "re-research, proceeding to END",
+            state["req_id"], elapsed,
+        )
+        return "__end__"
     targeted = state.get("targeted_questions", [])
-    if targeted:
+    iterations = state.get("research_iterations", 0)
+    if targeted and iterations < MAX_RESEARCH_ITERATIONS:
         log.info(
             "[%s] Synthesis feedback loop: routing back to tree_research "
-            "with %d gap questions (iteration %d)",
+            "with %d gap questions (iteration %d/%d)",
             state["req_id"], len(targeted),
-            state.get("research_iterations", 0),
+            iterations, MAX_RESEARCH_ITERATIONS,
         )
         return "tree_research"
+    if targeted:
+        log.info(
+            "[%s] Synthesis feedback loop: would re-research but "
+            "MAX_RESEARCH_ITERATIONS (%d) reached — proceeding to END",
+            state["req_id"], MAX_RESEARCH_ITERATIONS,
+        )
     return "__end__"
 
 
@@ -1754,16 +1892,21 @@ def build_persistent_research_graph(
 ) -> Any:
     """Build the persistent research LangGraph with conditional edges.
 
-    Graph topology (with feedback loops)::
+    Graph topology (with feedback loops + hard timeout)::
 
-        START -> comprehend -> retrieve -> tree_research -> entities
-              -> verify -> reflect
-                  -> [_should_reresearch]
-                      -> tree_research  (if quality < 0.4 + targeted Qs)
-                      -> persist -> synthesize
-                          -> [_should_reresearch_after_synthesis]
-                              -> tree_research  (if incompleteness detected)
-                              -> END
+        START -> comprehend -> retrieve -> tree_research
+              -> [_after_tree_research]
+                  -> synthesize  (if hard pipeline timeout exceeded)
+                  -> entities -> verify -> reflect
+                      -> [_should_reresearch]
+                          -> tree_research  (if quality < 0.4 + targeted Qs)
+                          -> persist -> synthesize
+                              -> [_should_reresearch_after_synthesis]
+                                  -> tree_research  (if incompleteness detected)
+                                  -> END
+
+    The hard pipeline timeout (PIPELINE_HARD_TIMEOUT or RESEARCH_TIME_LIMIT+120)
+    is checked at every conditional edge to prevent runaway execution.
 
     Args:
         checkpointer: Optional LangGraph checkpointer (e.g. AsyncSqliteSaver)
@@ -1785,7 +1928,12 @@ def build_persistent_research_graph(
     graph.add_edge(START, "comprehend")
     graph.add_edge("comprehend", "retrieve")
     graph.add_edge("retrieve", "tree_research")
-    graph.add_edge("tree_research", "entities")
+    # Conditional: tree_research → entities (normal) OR synthesize (hard timeout)
+    graph.add_conditional_edges(
+        "tree_research",
+        _after_tree_research,
+        {"entities": "entities", "synthesize": "synthesize"},
+    )
     graph.add_edge("entities", "verify")
     graph.add_edge("verify", "reflect")
 
@@ -1897,11 +2045,17 @@ async def _pipeline_producer(
                     created_at=time.time(),
                 )
                 store = get_conversation_store()
-                store.save_turn(snapshot)
-                log.info(
-                    "[%s] Saved conversation snapshot: conv=%s turn=%d facts=%d",
-                    req_id, conv_id, conv_turn, len(condition_facts),
-                )
+                saved = store.save_turn(snapshot)
+                if saved:
+                    log.info(
+                        "[%s] Saved conversation snapshot: conv=%s turn=%d facts=%d",
+                        req_id, conv_id, conv_turn, len(condition_facts),
+                    )
+                else:
+                    log.warning(
+                        "[%s] Conversation snapshot NOT persisted: conv=%s turn=%d",
+                        req_id, conv_id, conv_turn,
+                    )
         except Exception as e:
             log.warning(f"[{req_id}] Failed to save conversation snapshot: {e}")
 

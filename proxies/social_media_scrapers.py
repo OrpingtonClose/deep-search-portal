@@ -833,20 +833,38 @@ async def social_media_search(
     # Format results
     if results is None or len(results) == 0:
         result_count = 0
-        formatted = f"No results found on {platform} for: {query}"
         if not BRIGHT_DATA_API_KEY and not APIFY_API_TOKEN:
-            formatted += (
-                "\n\n[No social media scraper credentials configured. "
-                "Set BRIGHT_DATA_API_KEY and/or APIFY_API_TOKEN environment variables. "
-                "SearXNG site-scoped search was also attempted as fallback.]"
+            formatted = (
+                f"[TOOL_ERROR] {platform} search failed for: {query}. "
+                "No social media scraper credentials configured "
+                "(BRIGHT_DATA_API_KEY and APIFY_API_TOKEN both missing). "
+                "SearXNG site-scoped fallback was also attempted but returned nothing. "
+                "This is a technical/configuration failure, NOT 'no results found'."
             )
+        else:
+            provider_label = provider_used if provider_used != "none" else "bright_data, apify, searxng_fallback (all failed)"
+            if provider_used == "none":
+                formatted = (
+                    f"[TOOL_ERROR] {platform} search failed for: {query}. "
+                    f"Tried providers: {provider_label}. All tiers failed. "
+                    "This is a technical failure, NOT 'no results found'."
+                )
+            else:
+                formatted = (
+                    f"No results found on {platform} for: {query}. "
+                    f"Tried providers: {provider_label}. All tiers returned empty. "
+                    "Results may be filtered or the search may have failed silently."
+                )
         provider_used = provider_used if provider_used != "none" else ("none (no credentials)" if not BRIGHT_DATA_API_KEY and not APIFY_API_TOKEN else "none (search failed)")
     else:
         result_count = len(results)
         formatted = formatter(results, provider_used)
 
-    # Build response with metadata
-    header = f"**{platform.title()} search results for: {query}** (via {provider_used}, {result_count} results)\n\n"
+    # Build response with metadata — skip header for [TOOL_ERROR] so prefix stays at position 0
+    if formatted.startswith("[TOOL_ERROR]"):
+        header = ""
+    else:
+        header = f"**{platform.title()} search results for: {query}** (via {provider_used}, {result_count} results)\n\n"
 
     # Add censorship warning if applicable
     warning = _censorship_warning(platform, query, result_count, provider_used)

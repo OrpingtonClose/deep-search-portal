@@ -71,10 +71,10 @@ async def tool_twitter_search(query: str) -> str:
         return result
 
     return (
-        f"Twitter search failed for: {query}\n\n"
-        "All access tiers exhausted. Twitter requires commercial proxy access "
-        "(Bright Data or Oxylabs) for reliable results. Nitter instances are "
-        "frequently blocked by X Corp."
+        f"[TOOL_ERROR] Twitter search failed for: {query}. "
+        "All access tiers exhausted (Bright Data, Oxylabs, Nitter). "
+        "This is a technical failure, NOT 'no results found'. "
+        "Twitter requires commercial proxy access for reliable results."
     )
 
 
@@ -268,7 +268,7 @@ async def tool_arxiv_search(query: str, max_results: int = 5) -> str:
                 timeout=20.0,
             )
         if resp.status_code != 200:
-            return f"arXiv search error: HTTP {resp.status_code}"
+            return f"[TOOL_ERROR] arXiv search failed: HTTP {resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         text = resp.text
         entries = re.findall(r'<entry>(.*?)</entry>', text, re.DOTALL)
@@ -301,9 +301,9 @@ async def tool_arxiv_search(query: str, max_results: int = 5) -> str:
         return "\n\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "arXiv search error: request timed out"
+        return "[TOOL_ERROR] arXiv search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"arXiv search error: {str(e)}"
+        return f"[TOOL_ERROR] arXiv search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 async def tool_wayback_fetch(url: str) -> str:
@@ -316,7 +316,7 @@ async def tool_wayback_fetch(url: str) -> str:
             timeout=15.0,
         )
         if avail_resp.status_code != 200:
-            return f"Wayback Machine error: HTTP {avail_resp.status_code}"
+            return f"[TOOL_ERROR] Wayback Machine failed: HTTP {avail_resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         avail_data = avail_resp.json()
         snapshots = avail_data.get("archived_snapshots", {})
@@ -335,9 +335,9 @@ async def tool_wayback_fetch(url: str) -> str:
         )
 
     except httpx.TimeoutException:
-        return "Wayback Machine error: request timed out"
+        return "[TOOL_ERROR] Wayback Machine timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Wayback Machine error: {str(e)}"
+        return f"[TOOL_ERROR] Wayback Machine failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 async def tool_wikidata_query(entity: str) -> str:
@@ -356,9 +356,10 @@ async def tool_wikidata_query(entity: str) -> str:
                     "limit": 3,
                 },
                 timeout=15.0,
+                headers={"User-Agent": "DeepSearchPortal/1.0 (https://deep-search.uk; research tool)"},
             )
         if search_resp.status_code != 200:
-            return f"Wikidata search error: HTTP {search_resp.status_code}"
+            return f"[TOOL_ERROR] Wikidata search failed: HTTP {search_resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         search_data = search_resp.json()
         results = search_data.get("search", [])
@@ -388,6 +389,7 @@ async def tool_wikidata_query(entity: str) -> str:
                         "props": "labels|descriptions|claims",
                     },
                     timeout=15.0,
+                    headers={"User-Agent": "DeepSearchPortal/1.0 (https://deep-search.uk; research tool)"},
                 )
             if entity_resp.status_code == 200:
                 entity_data = entity_resp.json()
@@ -408,9 +410,9 @@ async def tool_wikidata_query(entity: str) -> str:
         return "\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "Wikidata query error: request timed out"
+        return "[TOOL_ERROR] Wikidata query timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Wikidata query error: {str(e)}"
+        return f"[TOOL_ERROR] Wikidata query failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 async def tool_web_search(query: str) -> str:
@@ -500,7 +502,7 @@ async def tool_hackernews_search(query: str, sort_by: str = "relevance", time_ra
                 timeout=15.0,
             )
         if resp.status_code != 200:
-            return f"Hacker News search error: HTTP {resp.status_code}"
+            return f"[TOOL_ERROR] Hacker News search failed: HTTP {resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         data = resp.json()
         hits = data.get("hits", [])
@@ -539,9 +541,9 @@ async def tool_hackernews_search(query: str, sort_by: str = "relevance", time_ra
         return "\n\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "Hacker News search error: request timed out"
+        return "[TOOL_ERROR] Hacker News search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Hacker News search error: {str(e)}"
+        return f"[TOOL_ERROR] Hacker News search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================
@@ -574,7 +576,7 @@ async def tool_stackexchange_search(query: str, site: str = "stackoverflow", sor
                 headers={"Accept-Encoding": "gzip"},
             )
         if resp.status_code != 200:
-            return f"Stack Exchange search error: HTTP {resp.status_code}"
+            return f"[TOOL_ERROR] Stack Exchange search failed: HTTP {resp.status_code}. This is a technical failure (likely rate-limiting), NOT 'no results found'."
 
         data = resp.json()
         items = data.get("items", [])
@@ -613,9 +615,9 @@ async def tool_stackexchange_search(query: str, site: str = "stackoverflow", sor
         return "\n\n".join(formatted) + f"\n\n[API quota remaining: {quota_remaining}]"
 
     except httpx.TimeoutException:
-        return "Stack Exchange search error: request timed out"
+        return "[TOOL_ERROR] Stack Exchange search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Stack Exchange search error: {str(e)}"
+        return f"[TOOL_ERROR] Stack Exchange search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================
@@ -647,7 +649,7 @@ async def tool_pubmed_search(query: str, max_results: int = 10) -> str:
                 timeout=15.0,
             )
         if search_resp.status_code != 200:
-            return f"PubMed search error: HTTP {search_resp.status_code}"
+            return f"[TOOL_ERROR] PubMed search failed: HTTP {search_resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         search_data = search_resp.json()
         id_list = search_data.get("esearchresult", {}).get("idlist", [])
@@ -666,7 +668,7 @@ async def tool_pubmed_search(query: str, max_results: int = 10) -> str:
                 timeout=15.0,
             )
         if fetch_resp.status_code != 200:
-            return f"PubMed fetch error: HTTP {fetch_resp.status_code}"
+            return f"[TOOL_ERROR] PubMed fetch failed: HTTP {fetch_resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         fetch_data = fetch_resp.json()
         results = fetch_data.get("result", {})
@@ -706,9 +708,9 @@ async def tool_pubmed_search(query: str, max_results: int = 10) -> str:
         return "\n\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "PubMed search error: request timed out"
+        return "[TOOL_ERROR] PubMed search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"PubMed search error: {str(e)}"
+        return f"[TOOL_ERROR] PubMed search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================
@@ -736,10 +738,10 @@ async def tool_wikipedia_search(query: str, limit: int = 8) -> str:
                     "format": "json",
                 },
                 timeout=15.0,
-                headers={"User-Agent": "DeepSearchPortal/1.0 (research tool)"},
+                headers={"User-Agent": "DeepSearchPortal/1.0 (https://deep-search.uk; research tool)"},
             )
         if resp.status_code != 200:
-            return f"Wikipedia search error: HTTP {resp.status_code}"
+            return f"[TOOL_ERROR] Wikipedia search failed: HTTP {resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         data = resp.json()
         results = data.get("query", {}).get("search", [])
@@ -766,9 +768,9 @@ async def tool_wikipedia_search(query: str, limit: int = 8) -> str:
         return "\n\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "Wikipedia search error: request timed out"
+        return "[TOOL_ERROR] Wikipedia search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Wikipedia search error: {str(e)}"
+        return f"[TOOL_ERROR] Wikipedia search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================
@@ -804,7 +806,7 @@ async def tool_archiveorg_search(query: str, media_type: str = "", max_results: 
                 headers={"User-Agent": "DeepSearchPortal/1.0 (research tool)"},
             )
         if resp.status_code != 200:
-            return f"Archive.org search error: HTTP {resp.status_code}"
+            return f"[TOOL_ERROR] Archive.org search failed: HTTP {resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         data = resp.json()
         docs = data.get("response", {}).get("docs", [])
@@ -842,9 +844,9 @@ async def tool_archiveorg_search(query: str, media_type: str = "", max_results: 
         return "\n\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "Archive.org search error: request timed out"
+        return "[TOOL_ERROR] Archive.org search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Archive.org search error: {str(e)}"
+        return f"[TOOL_ERROR] Archive.org search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================
@@ -886,14 +888,16 @@ async def tool_forum_search(query: str, forum_url: str = "") -> str:
     try:
         results_all: list[dict] = []
 
+        errors: list[str] = []
+
         if forum_url:
             # Search specific forum
             site_query = f"site:{forum_url.replace('https://', '').replace('http://', '').rstrip('/')} {query}"
             try:
                 results = await _searxng_query(site_query, categories="general")
                 results_all.extend(results)
-            except Exception:
-                pass
+            except Exception as e:
+                errors.append(f"site-specific search failed: {e}")
         else:
             # Search across curated forum list in batches
             # Use 3 batches of forum site targets for breadth
@@ -905,7 +909,8 @@ async def tool_forum_search(query: str, forum_url: str = "") -> str:
                 try:
                     batch_results = await _searxng_query(forum_query, categories="general")
                     results_all.extend(batch_results)
-                except Exception:
+                except Exception as e:
+                    errors.append(f"batch {batch_start // batch_size + 1} failed: {e}")
                     continue
 
             # Also try a generic forum query
@@ -919,10 +924,16 @@ async def tool_forum_search(query: str, forum_url: str = "") -> str:
                     if r.get("url", "") not in seen_urls:
                         results_all.append(r)
                         seen_urls.add(r.get("url", ""))
-            except Exception:
-                pass
+            except Exception as e:
+                errors.append(f"generic forum query failed: {e}")
 
         if not results_all:
+            if errors:
+                return (
+                    f"[TOOL_ERROR] Forum search failed for: {query}. "
+                    f"All {len(errors)} SearXNG queries failed: {'; '.join(errors[:3])}. "
+                    f"This is a technical failure, NOT 'no results found'."
+                )
             return f"No forum results for: {query}"
 
         # Deduplicate by URL
@@ -937,7 +948,7 @@ async def tool_forum_search(query: str, forum_url: str = "") -> str:
         return _format_search_results(unique[:15], source_label="forum") or f"No forum results for: {query}"
 
     except Exception as e:
-        return f"Forum search error: {str(e)}"
+        return f"[TOOL_ERROR] Forum search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================
@@ -955,9 +966,9 @@ async def tool_scholar_search(query: str) -> str:
     try:
         results = await _searxng_query(query, categories="science")
     except httpx.TimeoutException:
-        return "Scholar search error: request timed out"
+        return "[TOOL_ERROR] Scholar search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Scholar search error: {str(e)}"
+        return f"[TOOL_ERROR] Scholar search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
     if not results:
         # Fallback: try general search with academic site targeting
@@ -1011,9 +1022,384 @@ async def tool_substack_search(query: str) -> str:
         return _format_search_results(results[:15], source_label="substack") or f"No Substack results for: {query}"
 
     except httpx.TimeoutException:
-        return "Substack search error: request timed out"
+        return "[TOOL_ERROR] Substack search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Substack search error: {str(e)}"
+        return f"[TOOL_ERROR] Substack search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
+
+
+# ============================================================================
+# Telegram Search (SearXNG site-targeted)
+# ============================================================================
+
+async def tool_telegram_search(query: str, platform: str = "") -> str:
+    """Search for Telegram channel/group content indexed on the public web.
+
+    Uses SearXNG to find Telegram content via t.me links, Telegram channel
+    aggregators (tgstat.com, telemetr.io), and cached Telegram messages.
+    This does NOT access Telegram's private API — only publicly indexed content.
+    """
+    try:
+        results_all: list[dict] = []
+        errors: list[str] = []
+
+        # Search t.me links directly
+        try:
+            r1 = await _searxng_query(f"site:t.me {query}", categories="general")
+            results_all.extend(r1)
+        except Exception as e:
+            errors.append(f"t.me search failed: {e}")
+
+        # Search Telegram aggregator sites
+        for site in ["tgstat.com", "telemetr.io", "telegramchannels.me"]:
+            try:
+                r = await _searxng_query(f"site:{site} {query}", categories="general")
+                seen = {x.get("url", "") for x in results_all}
+                for item in r:
+                    if item.get("url", "") not in seen:
+                        results_all.append(item)
+                        seen.add(item.get("url", ""))
+            except Exception as e:
+                errors.append(f"{site} search failed: {e}")
+
+        # Generic telegram query
+        try:
+            r3 = await _searxng_query(f"{query} telegram channel group", categories="general")
+            seen = {x.get("url", "") for x in results_all}
+            for item in r3:
+                if item.get("url", "") not in seen:
+                    results_all.append(item)
+                    seen.add(item.get("url", ""))
+        except Exception as e:
+            errors.append(f"generic telegram query failed: {e}")
+
+        if not results_all:
+            if errors:
+                return (
+                    f"[TOOL_ERROR] Telegram search failed for: {query}. "
+                    f"All {len(errors)} queries failed: {'; '.join(errors[:3])}. "
+                    f"This is a technical failure, NOT 'no results found'."
+                )
+            return f"No Telegram results for: {query}"
+
+        # Deduplicate by URL
+        dedup_seen: set[str] = set()
+        unique: list[dict] = []
+        for item in results_all:
+            url = item.get("url", "")
+            if url and url not in dedup_seen:
+                dedup_seen.add(url)
+                unique.append(item)
+
+        return _format_search_results(unique[:15], source_label="telegram") or f"No Telegram results for: {query}"
+
+    except Exception as e:
+        return f"[TOOL_ERROR] Telegram search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
+
+
+# ============================================================================
+# Darknet Market Search (SearXNG-powered OSINT)
+# ============================================================================
+
+async def tool_darknet_market_search(query: str) -> str:
+    """Search for darknet market intelligence via publicly indexed OSINT sources.
+
+    Searches darknet market discussion forums, review sites, and OSINT
+    aggregators that are indexed on the clearnet. Does NOT access .onion
+    sites directly — only publicly available intelligence about darknet markets.
+    """
+    try:
+        results_all: list[dict] = []
+        errors: list[str] = []
+
+        # Search known clearnet darknet-market discussion/review sites
+        osint_sites = [
+            "dread.support",
+            "darknetlive.com",
+            "darknetmarkets.org",
+            "dark.fail",
+        ]
+        for site in osint_sites:
+            try:
+                r = await _searxng_query(f"site:{site} {query}", categories="general")
+                results_all.extend(r)
+            except Exception as e:
+                errors.append(f"{site} failed: {e}")
+
+        # Generic darknet market OSINT queries
+        osint_queries = [
+            f"{query} darknet market review",
+            f"{query} dark web vendor",
+            f"{query} onion market",
+        ]
+        seen = {x.get("url", "") for x in results_all}
+        for oq in osint_queries:
+            try:
+                r = await _searxng_query(oq, categories="general")
+                for item in r:
+                    if item.get("url", "") not in seen:
+                        results_all.append(item)
+                        seen.add(item.get("url", ""))
+            except Exception as e:
+                errors.append(f"query '{oq[:40]}' failed: {e}")
+
+        if not results_all:
+            if errors:
+                return (
+                    f"[TOOL_ERROR] Darknet market search failed for: {query}. "
+                    f"All {len(errors)} queries failed: {'; '.join(errors[:3])}. "
+                    f"This is a technical failure, NOT 'no results found'."
+                )
+            return f"No darknet market OSINT results for: {query}"
+
+        # Deduplicate by URL (osint_sites phase doesn't dedup between sites)
+        dedup_seen: set[str] = set()
+        unique: list[dict] = []
+        for r in results_all:
+            url = r.get("url", "")
+            if url and url not in dedup_seen:
+                dedup_seen.add(url)
+                unique.append(r)
+
+        return (
+            _format_search_results(unique[:15], source_label="darknet_osint")
+            or f"No darknet market OSINT results for: {query}"
+        )
+
+    except Exception as e:
+        return f"[TOOL_ERROR] Darknet market search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
+
+
+# ============================================================================
+# Site-Filtered Search Tools (SearXNG proxy for platforms without direct APIs)
+#
+# These tools route through SearXNG with site: filters.  They exist as
+# separate tools so the LLM can explicitly target specific platforms
+# rather than hoping a generic search will surface relevant results.
+# ============================================================================
+
+
+async def tool_facebook_search(
+    query: str, result_type: str = "posts", platform: str = ""
+) -> str:
+    """Search Facebook pages, groups, and posts via SearXNG site filters.
+
+    Public Facebook content indexed by search engines.  Private groups
+    and personal profiles are not accessible.
+
+    Args:
+        query: Search terms.
+        result_type: One of 'posts' (default), 'groups', or 'pages'.
+            Adds an inurl filter to narrow results to the requested type.
+        platform: Ignored (kept for dispatcher compatibility).
+    """
+    try:
+        # Build type-specific URL filter
+        type_filter = ""
+        if result_type == "groups":
+            type_filter = "inurl:groups"
+        elif result_type == "pages":
+            type_filter = "inurl:pages"
+
+        site_query = (
+            f"({query}) (site:facebook.com OR site:fb.com) {type_filter}"
+        ).strip()
+        results = await _searxng_query(site_query, categories="general")
+        if not results:
+            results = await _searxng_query(
+                f"facebook {result_type} {query}", categories="general"
+            )
+        return (
+            _format_search_results(results[:15], source_label="facebook")
+            or f"No Facebook results for: {query}"
+        )
+    except httpx.TimeoutException:
+        return "Facebook search error: request timed out"
+    except Exception as e:
+        return f"Facebook search error: {str(e)}"
+
+
+async def tool_discord_search(query: str) -> str:
+    """Search public Discord server content via SearXNG site filters.
+
+    Targets Discord message archives and server listing sites.
+    Private server content is not accessible.
+    """
+    try:
+        site_query = (
+            f"({query}) (site:discord.com OR site:discordapp.com "
+            f"OR site:top.gg OR site:disboard.org)"
+        )
+        results = await _searxng_query(site_query, categories="general")
+        if not results:
+            results = await _searxng_query(f"discord {query}", categories="general")
+        return (
+            _format_search_results(results[:15], source_label="discord")
+            or f"No Discord results for: {query}"
+        )
+    except httpx.TimeoutException:
+        return "Discord search error: request timed out"
+    except Exception as e:
+        return f"Discord search error: {str(e)}"
+
+
+async def tool_signal_search(query: str) -> str:
+    """Search Signal-related public content via SearXNG.
+
+    Signal is end-to-end encrypted; this only finds public references
+    to Signal groups, channels, and discussions on indexable websites.
+    """
+    try:
+        site_query = (
+            f"({query}) (site:signal.group OR site:signal.org "
+            f"OR \"signal group\" OR \"signal channel\")"
+        )
+        results = await _searxng_query(site_query, categories="general")
+        if not results:
+            results = await _searxng_query(f"signal app {query}", categories="general")
+        return (
+            _format_search_results(results[:15], source_label="signal")
+            or f"No Signal results for: {query}"
+        )
+    except httpx.TimeoutException:
+        return "Signal search error: request timed out"
+    except Exception as e:
+        return f"Signal search error: {str(e)}"
+
+
+async def tool_whatsapp_search(query: str) -> str:
+    """Search WhatsApp group invites and public references via SearXNG.
+
+    WhatsApp is end-to-end encrypted; this only finds publicly-shared
+    group invite links and references to WhatsApp communities.
+    """
+    try:
+        site_query = (
+            f"({query}) (site:chat.whatsapp.com OR \"whatsapp group\" "
+            f"OR \"join whatsapp\")"
+        )
+        results = await _searxng_query(site_query, categories="general")
+        if not results:
+            results = await _searxng_query(
+                f"whatsapp group {query}", categories="general"
+            )
+        return (
+            _format_search_results(results[:15], source_label="whatsapp")
+            or f"No WhatsApp results for: {query}"
+        )
+    except httpx.TimeoutException:
+        return "WhatsApp search error: request timed out"
+    except Exception as e:
+        return f"WhatsApp search error: {str(e)}"
+
+
+async def tool_crunchbase_search(query: str) -> str:
+    """Search Crunchbase for company/startup information via SearXNG.
+
+    Finds company profiles, funding rounds, and organizational data
+    indexed from Crunchbase.
+    """
+    try:
+        site_query = f"site:crunchbase.com {query}"
+        results = await _searxng_query(site_query, categories="general")
+        if not results:
+            results = await _searxng_query(
+                f"crunchbase {query}", categories="general"
+            )
+        return (
+            _format_search_results(results[:15], source_label="crunchbase")
+            or f"No Crunchbase results for: {query}"
+        )
+    except httpx.TimeoutException:
+        return "Crunchbase search error: request timed out"
+    except Exception as e:
+        return f"Crunchbase search error: {str(e)}"
+
+
+async def tool_trustpilot_search(query: str) -> str:
+    """Search Trustpilot for company reviews and ratings via SearXNG.
+
+    Finds business reviews, customer feedback, and trust scores
+    indexed from Trustpilot.
+    """
+    try:
+        site_query = f"site:trustpilot.com {query}"
+        results = await _searxng_query(site_query, categories="general")
+        if not results:
+            results = await _searxng_query(
+                f"trustpilot review {query}", categories="general"
+            )
+        return (
+            _format_search_results(results[:15], source_label="trustpilot")
+            or f"No Trustpilot results for: {query}"
+        )
+    except httpx.TimeoutException:
+        return "Trustpilot search error: request timed out"
+    except Exception as e:
+        return f"Trustpilot search error: {str(e)}"
+
+
+async def tool_whois_lookup(domain: str = "", query: str = "") -> str:
+    """Look up WHOIS information for a domain via public WHOIS APIs."""
+    target = domain or query
+    if not target:
+        return "WHOIS lookup error: no domain provided"
+    # Strip protocol and path
+    target = re.sub(r'^https?://', '', target).split('/')[0].strip()
+    try:
+        client = http_client()
+        resp = await client.get(
+            f"https://rdap.org/domain/{target}",
+            timeout=15.0,
+            headers={"Accept": "application/rdap+json"},
+        )
+        if resp.status_code != 200:
+            # Fallback to SearXNG
+            results = await _searxng_query(
+                f"whois {target}", categories="general"
+            )
+            return (
+                _format_search_results(results[:5], source_label="whois")
+                or f"WHOIS lookup failed for {target}: HTTP {resp.status_code}"
+            )
+
+        data = resp.json()
+        parts = [f"**WHOIS for {target}:**"]
+
+        name = data.get("ldhName", target)
+        parts.append(f"Domain: {name}")
+
+        status = data.get("status", [])
+        if status:
+            parts.append(f"Status: {', '.join(status[:5])}")
+
+        events = data.get("events", [])
+        for ev in events:
+            action = ev.get("eventAction", "")
+            date = ev.get("eventDate", "")
+            if action and date:
+                parts.append(f"{action}: {date[:10]}")
+
+        nameservers = data.get("nameservers", [])
+        if nameservers:
+            ns_list = [ns.get("ldhName", "") for ns in nameservers[:4]]
+            parts.append(f"Nameservers: {', '.join(ns_list)}")
+
+        entities = data.get("entities", [])
+        for ent in entities[:3]:
+            roles = ent.get("roles", [])
+            vcard = ent.get("vcardArray", [None, []])
+            if len(vcard) > 1:
+                for item in vcard[1]:
+                    if len(item) >= 4 and item[0] == "fn":
+                        parts.append(f"{', '.join(roles)}: {item[3]}")
+                        break
+
+        return "\n".join(parts)
+
+    except httpx.TimeoutException:
+        return f"WHOIS lookup error: request timed out for {target}"
+    except Exception as e:
+        return f"WHOIS lookup error: {str(e)}"
 
 
 async def tool_youtube_search(query: str) -> str:
@@ -1049,9 +1435,9 @@ async def tool_youtube_search(query: str) -> str:
         return _format_search_results(results[:15], source_label="youtube") or f"No YouTube results for: {query}"
 
     except httpx.TimeoutException:
-        return "YouTube search error: request timed out"
+        return "[TOOL_ERROR] YouTube search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"YouTube search error: {str(e)}"
+        return f"[TOOL_ERROR] YouTube search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================
@@ -1088,26 +1474,156 @@ def _extract_video_id(url_or_id: str) -> Optional[str]:
     return None
 
 
+async def _whisperx_transcribe(video_id: str, lang: str = "en") -> str:
+    """Transcribe YouTube audio using WhisperX for high-accuracy timestamps.
+
+    Downloads audio via yt-dlp, runs WhisperX for word-level aligned
+    transcription.  Returns formatted transcript or empty string on failure.
+    """
+    loop = asyncio.get_running_loop()
+    yt_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    def _run_whisperx() -> str:
+        try:
+            import whisperx
+        except ImportError:
+            log.debug("WhisperX not installed, skipping")
+            return ""
+
+        try:
+            import yt_dlp
+        except ImportError:
+            log.debug("yt-dlp not installed, cannot download audio for WhisperX")
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = os.path.join(tmpdir, "audio.wav")
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "format": "bestaudio/best",
+                "outtmpl": os.path.join(tmpdir, "audio.%(ext)s"),
+                "postprocessors": [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "wav",
+                    "preferredquality": "16",
+                }],
+                "max_filesize": 200 * 1024 * 1024,  # 200MB cap
+            }
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([yt_url])
+            except Exception as e:
+                log.warning(f"WhisperX: yt-dlp download failed for {video_id}: {e}")
+                return ""
+
+            if not os.path.exists(audio_path):
+                # yt-dlp may name it differently
+                import glob as _glob
+                wavs = _glob.glob(os.path.join(tmpdir, "*.wav"))
+                if wavs:
+                    audio_path = wavs[0]
+                else:
+                    log.debug("WhisperX: no WAV file produced by yt-dlp")
+                    return ""
+
+            # Detect device
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            compute_type = "float16" if device == "cuda" else "int8"
+
+            # Load and transcribe
+            try:
+                model = whisperx.load_model(
+                    "large-v3", device, compute_type=compute_type,
+                    language=lang,
+                )
+                audio = whisperx.load_audio(audio_path)
+                result = model.transcribe(audio, batch_size=16)
+            except Exception as e:
+                log.warning(f"WhisperX transcription failed for {video_id}: {e}")
+                return ""
+
+            # Alignment for word-level timestamps
+            try:
+                model_a, metadata = whisperx.load_align_model(
+                    language_code=lang, device=device,
+                )
+                result = whisperx.align(
+                    result["segments"], model_a, metadata, audio, device,
+                    return_char_alignments=False,
+                )
+            except Exception as e:
+                log.debug(f"WhisperX alignment failed (using unaligned): {e}")
+
+            # Format output
+            segments = result.get("segments", [])
+            if not segments:
+                return ""
+
+            lines = []
+            for seg in segments:
+                start = seg.get("start", 0)
+                text = seg.get("text", "").strip()
+                if not text:
+                    continue
+                mins, secs = divmod(int(start), 60)
+                hours, mins = divmod(mins, 60)
+                if hours > 0:
+                    ts = f"[{hours}:{mins:02d}:{secs:02d}]"
+                else:
+                    ts = f"[{mins}:{secs:02d}]"
+                lines.append(f"{ts} {text}")
+
+            full_text = "\n".join(lines)
+            max_chars = 30000
+            if len(full_text) > max_chars:
+                full_text = (
+                    full_text[:max_chars]
+                    + f"\n\n[WHISPERX TRANSCRIPT TRUNCATED — {len(segments)} segments total]"
+                )
+            return f"YOUTUBE TRANSCRIPT (WhisperX) for {video_id}:\n{full_text}"
+
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _run_whisperx),
+            timeout=300.0,  # WhisperX can take several minutes
+        )
+    except asyncio.TimeoutError:
+        log.warning(f"WhisperX timed out for {video_id}")
+        return ""
+    except Exception as e:
+        log.warning(f"WhisperX error for {video_id}: {e}")
+        return ""
+
+
 async def tool_youtube_transcript(url: str, lang: str = "en") -> str:
     """Extract the full transcript/subtitles from a YouTube video.
 
-    Primary path uses LangChain's YoutubeLoader (wraps youtube-transcript-api).
-    Falls back to raw youtube-transcript-api with timestamped output if the
-    LangChain loader fails.  No API key needed, no browser needed.
+    Transcription priority:
+      1. **WhisperX** — most accurate, word-level timestamps, handles any language.
+         Requires: whisperx, torch, yt-dlp, ffmpeg.
+      2. **LangChain YoutubeLoader** — uses YouTube's own captions (fast, no GPU).
+      3. **youtube-transcript-api** — raw caption fallback with timestamps.
 
-    This is the PRIMARY way to extract spoken content from YouTube videos.
-    Contains the actual knowledge — practitioner explanations, lecture content,
+    YouTube videos are a MANDATORY data source for research.  This tool extracts
+    the actual spoken content — practitioner explanations, lecture content,
     interview dialogue, tutorial steps.
     """
     video_id = _extract_video_id(url)
     if not video_id:
         return f"Could not extract video ID from: {url}"
 
+    # --- Priority 1: WhisperX (best accuracy) ---
+    whisperx_result = await _whisperx_transcribe(video_id, lang)
+    if whisperx_result:
+        return whisperx_result
+
     loop = asyncio.get_running_loop()
     yt_url = f"https://www.youtube.com/watch?v={video_id}"
 
     def _fetch_transcript() -> str:
-        # --- Primary: LangChain YoutubeLoader ---
+        # --- Priority 2: LangChain YoutubeLoader ---
         try:
             from langchain_community.document_loaders import YoutubeLoader
 
@@ -1145,7 +1661,7 @@ async def tool_youtube_transcript(url: str, lang: str = "en") -> str:
         except Exception as e:
             log.debug(f"YoutubeLoader failed for {video_id}, falling back: {e}")
 
-        # --- Fallback: raw youtube-transcript-api with timestamps ---
+        # --- Priority 3: raw youtube-transcript-api with timestamps ---
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
         except ImportError:

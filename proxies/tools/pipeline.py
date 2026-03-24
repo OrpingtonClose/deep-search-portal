@@ -671,3 +671,198 @@ class ConditionStore:
         return header + "\n" + "\n".join(lines)
 
 
+# ============================================================================
+# Question Registry — semantic dedup for the research net
+# ============================================================================
+
+@dataclass
+class QuestionMatch:
+    """Result of searching the question registry for a semantic match."""
+    node_id: str
+    question: str
+    similarity: float
+    status: str  # "pending" | "researching" | "done" | "pruned"
+    findings_summary: str = ""  # top finding if the node is done
+
+
+class QuestionRegistry:
+    """Registry of all questions in the research net with semantic dedup.
+
+    Before spawning a new research node, the tree reactor checks this
+    registry.  If a semantically similar question already exists, the
+    new question CONNECTS to the existing node instead of spawning a
+    duplicate.  This turns the tree into a net.
+
+    Similarity is computed via Jaccard over word sets — the same algorithm
+    used by ConditionStore for fact dedup, but with a lower threshold
+    tuned for questions (which share more structural words).
+
+    The registry also tracks:
+      - Which questions have been answered (status="done")
+      - Top findings per question (for net summary)
+      - Connection edges between questions (the "net" structure)
+    """
+
+    # Jaccard threshold above which a new question is considered a near-duplicate.
+    # Lower than condition DUPLICATE_THRESHOLD (0.55) because rephrased questions
+    # share more structural words but are semantically the same.
+    QUESTION_DUPLICATE_THRESHOLD = 0.45
+
+    # Minimum word overlap required for a match to be meaningful.
+    # Prevents false positives from very short questions.
+    MIN_OVERLAP_WORDS = 3
+
+    def __init__(self) -> None:
+        self._questions: list[str] = []
+        self._word_sets: list[set[str]] = []  # parallel to _questions
+        self._node_ids: list[str] = []  # parallel to _questions
+        self._statuses: list[str] = []  # parallel to _questions
+        self._findings: list[str] = []  # top finding per question
+        # Net edges: node_id -> set of connected node_ids
+        self._edges: dict[str, set[str]] = {}
+        self._lock = asyncio.Lock()
+        # Stats
+        self._total_registered = 0
+        self._total_connected = 0  # questions that connected instead of spawning
+        self._total_rejected = 0   # questions rejected as near-duplicates
+
+    async def register(
+        self, question: str, node_id: str, status: str = "pending",
+    ) -> None:
+        """Register a new question in the net."""
+        word_set = self._make_word_set(question)
+        async with self._lock:
+            self._questions.append(question)
+            self._word_sets.append(word_set)
+            self._node_ids.append(node_id)
+            self._statuses.append(status)
+            self._findings.append("")
+            self._edges.setdefault(node_id, set())
+            self._total_registered += 1
+
+    async def update_status(self, node_id: str, status: str) -> None:
+        """Update the status of a registered question."""
+        async with self._lock:
+            for i, nid in enumerate(self._node_ids):
+                if nid == node_id:
+                    self._statuses[i] = status
+                    break
+
+    async def update_finding(self, node_id: str, finding: str) -> None:
+        """Store the top finding for a completed question."""
+        async with self._lock:
+            for i, nid in enumerate(self._node_ids):
+                if nid == node_id:
+                    self._findings[i] = finding[:200]
+                    break
+
+    async def add_edge(self, from_id: str, to_id: str) -> None:
+        """Add a bidirectional connection edge between two nodes."""
+        async with self._lock:
+            self._edges.setdefault(from_id, set()).add(to_id)
+            self._edges.setdefault(to_id, set()).add(from_id)
+            self._total_connected += 1
+
+    async def find_similar(self, question: str) -> list[QuestionMatch]:
+        """Find semantically similar questions in the registry.
+
+        Returns matches sorted by similarity (highest first).
+        Only returns matches above QUESTION_DUPLICATE_THRESHOLD.
+        """
+        word_set = self._make_word_set(question)
+        if len(word_set) < 2:
+            return []
+
+        matches: list[QuestionMatch] = []
+        async with self._lock:
+            for i, existing_words in enumerate(self._word_sets):
+                if not existing_words:
+                    continue
+                intersection = word_set & existing_words
+                if len(intersection) < self.MIN_OVERLAP_WORDS:
+                    continue
+                union = word_set | existing_words
+                sim = len(intersection) / max(len(union), 1)
+                if sim >= self.QUESTION_DUPLICATE_THRESHOLD:
+                    matches.append(QuestionMatch(
+                        node_id=self._node_ids[i],
+                        question=self._questions[i],
+                        similarity=sim,
+                        status=self._statuses[i],
+                        findings_summary=self._findings[i],
+                    ))
+
+        matches.sort(key=lambda m: m.similarity, reverse=True)
+        return matches
+
+    def _make_word_set(self, text: str) -> set[str]:
+        """Create a word set from text, filtering out short/stop words."""
+        return {
+            w for w in re.split(r'\W+', text.lower())
+            if len(w) > 2 and w not in _QUESTION_STOP_WORDS
+        }
+
+    @property
+    def stats(self) -> dict:
+        return {
+            "total_registered": self._total_registered,
+            "total_connected": self._total_connected,
+            "total_rejected": self._total_rejected,
+            "unique_questions": len(self._questions),
+            "net_edges": sum(len(v) for v in self._edges.values()) // 2,
+        }
+
+    def get_net_question_summary(self, max_items: int = 15) -> str:
+        """Summarize the question net for the spawn prompt.
+
+        Shows which questions have been asked, their status, connections,
+        and top findings — so the LLM can see what's already covered and
+        avoid generating near-duplicates.
+        """
+        if not self._questions:
+            return "(no questions in the net yet)"
+
+        lines: list[str] = []
+        # Sort by number of connections (most-connected first)
+        indices = list(range(len(self._questions)))
+        indices.sort(
+            key=lambda i: len(self._edges.get(self._node_ids[i], set())),
+            reverse=True,
+        )
+
+        for i in indices[:max_items]:
+            status_icon = {
+                "done": "[DONE]",
+                "researching": "[ACTIVE]",
+                "pending": "[QUEUED]",
+                "pruned": "[PRUNED]",
+            }.get(self._statuses[i], "[?]")
+
+            edges = self._edges.get(self._node_ids[i], set())
+            line = f"  {status_icon} {self._questions[i][:120]}"
+            if edges:
+                line += f"  (connected to {len(edges)} other question(s))"
+            if self._findings[i]:
+                line += f"\n    → Finding: {self._findings[i][:100]}"
+            lines.append(line)
+
+        header = (
+            f"Research net: {len(self._questions)} questions, "
+            f"{sum(len(v) for v in self._edges.values()) // 2} connections"
+        )
+        return header + "\n" + "\n".join(lines)
+
+
+# Stop words to exclude from question word sets (common question structure words)
+_QUESTION_STOP_WORDS = {
+    "the", "and", "for", "are", "was", "were", "has", "have", "had",
+    "been", "being", "what", "which", "where", "when", "who", "how",
+    "does", "did", "can", "could", "would", "should", "will", "may",
+    "this", "that", "these", "those", "there", "their", "they", "them",
+    "with", "from", "about", "into", "through", "during", "before",
+    "after", "above", "below", "between", "any", "all", "each",
+    "more", "most", "other", "some", "such", "than", "too", "very",
+    "also", "just", "not", "only", "own", "same", "but", "nor",
+}
+
+

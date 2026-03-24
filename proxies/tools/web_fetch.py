@@ -434,7 +434,7 @@ async def tool_4plebs_search(query: str, board: str = "pol") -> str:
                 headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
             )
         if resp.status_code != 200:
-            return f"4plebs search error: HTTP {resp.status_code}"
+            return f"[TOOL_ERROR] 4plebs search failed: HTTP {resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         data = resp.json()
         posts = data.get("0", {}).get("posts", [])
@@ -469,9 +469,9 @@ async def tool_4plebs_search(query: str, board: str = "pol") -> str:
         return "\n\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "4plebs search error: request timed out"
+        return "[TOOL_ERROR] 4plebs search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"4plebs search error: {str(e)}"
+        return f"[TOOL_ERROR] 4plebs search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 async def tool_b4k_search(query: str) -> str:
@@ -489,7 +489,7 @@ async def tool_b4k_search(query: str) -> str:
                 headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0)"},
             )
         if resp.status_code != 200:
-            return f"b4k search error: HTTP {resp.status_code}"
+            return f"[TOOL_ERROR] b4k search failed: HTTP {resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         data = resp.json()
         posts = data.get("0", {}).get("posts", [])
@@ -523,9 +523,9 @@ async def tool_b4k_search(query: str) -> str:
         return "\n\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "b4k search error: request timed out"
+        return "[TOOL_ERROR] b4k search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"b4k search error: {str(e)}"
+        return f"[TOOL_ERROR] b4k search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 async def tool_warosu_search(query: str, board: str = "g") -> str:
@@ -550,7 +550,7 @@ async def tool_warosu_search(query: str, board: str = "g") -> str:
                 },
             )
         if resp.status_code != 200:
-            return f"Warosu search error: HTTP {resp.status_code}"
+            return f"[TOOL_ERROR] Warosu search failed: HTTP {resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         # Warosu returns HTML, not JSON — parse results from HTML
         raw = resp.text
@@ -587,7 +587,7 @@ async def tool_warosu_search(query: str, board: str = "g") -> str:
         return "\n\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "Warosu search error: request timed out"
+        return "[TOOL_ERROR] Warosu search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Warosu search error: {str(e)}"
+        return f"[TOOL_ERROR] Warosu search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 

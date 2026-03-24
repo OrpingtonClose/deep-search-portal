@@ -88,12 +88,17 @@ class SubagentResult:
 
 @dataclass
 class ResearchNode:
-    """A single node in the research exploration tree.
+    """A single node in the research exploration net.
 
     Each node represents a question/claim to investigate.  Workers pull
     nodes from a priority queue, research them, and push child nodes
     back.  Only the active LLM+tool research phase occupies a
     semaphore slot.
+
+    The ``connected_to`` list holds IDs of nodes that ask semantically
+    similar questions.  When a new question would duplicate an existing
+    one, it connects to the existing node instead of spawning —
+    turning the tree into a net.
     """
     id: str
     question: str
@@ -102,9 +107,8 @@ class ResearchNode:
     pressure: float  # 0-1, higher = explore first
     parent_id: Optional[str] = None
     status: str = "pending"  # pending | researching | done | pruned
+    connected_to: list[str] = field(default_factory=list)  # net edges
 
     def __lt__(self, other: "ResearchNode") -> bool:
         """PriorityQueue needs ordering; higher pressure = higher priority."""
         return self.pressure > other.pressure
-
-

@@ -45,6 +45,8 @@ from .search_tools2 import (
     tool_forum_search,
     tool_scholar_search,
     tool_substack_search,
+    tool_telegram_search,
+    tool_darknet_market_search,
     tool_youtube_search,
     tool_youtube_transcript,
     tool_youtube_video_metadata,
@@ -350,6 +352,10 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
         return await tool_scholar_search(arguments.get("query", ""))
     elif tool_name == "substack_search":
         return await tool_substack_search(arguments.get("query", ""))
+    elif tool_name == "telegram_search":
+        return await tool_telegram_search(arguments.get("query", ""))
+    elif tool_name == "darknet_market_search":
+        return await tool_darknet_market_search(arguments.get("query", ""))
     elif tool_name == "youtube_transcript":
         return await tool_youtube_transcript(
             arguments.get("url", ""),
@@ -363,7 +369,7 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
             arguments.get("question", ""),
         )
     else:
-        return f"Unknown tool: {tool_name}"
+        return f"[TOOL_ERROR] Unknown tool: {tool_name}. This tool does not exist in the system."
 
 
 async def execute_tool(

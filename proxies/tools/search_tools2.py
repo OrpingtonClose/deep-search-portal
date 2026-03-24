@@ -71,10 +71,10 @@ async def tool_twitter_search(query: str) -> str:
         return result
 
     return (
-        f"Twitter search failed for: {query}\n\n"
-        "All access tiers exhausted. Twitter requires commercial proxy access "
-        "(Bright Data or Oxylabs) for reliable results. Nitter instances are "
-        "frequently blocked by X Corp."
+        f"[TOOL_ERROR] Twitter search failed for: {query}. "
+        "All access tiers exhausted (Bright Data, Oxylabs, Nitter). "
+        "This is a technical failure, NOT 'no results found'. "
+        "Twitter requires commercial proxy access for reliable results."
     )
 
 
@@ -268,7 +268,7 @@ async def tool_arxiv_search(query: str, max_results: int = 5) -> str:
                 timeout=20.0,
             )
         if resp.status_code != 200:
-            return f"arXiv search error: HTTP {resp.status_code}"
+            return f"[TOOL_ERROR] arXiv search failed: HTTP {resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         text = resp.text
         entries = re.findall(r'<entry>(.*?)</entry>', text, re.DOTALL)
@@ -301,9 +301,9 @@ async def tool_arxiv_search(query: str, max_results: int = 5) -> str:
         return "\n\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "arXiv search error: request timed out"
+        return "[TOOL_ERROR] arXiv search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"arXiv search error: {str(e)}"
+        return f"[TOOL_ERROR] arXiv search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 async def tool_wayback_fetch(url: str) -> str:
@@ -316,7 +316,7 @@ async def tool_wayback_fetch(url: str) -> str:
             timeout=15.0,
         )
         if avail_resp.status_code != 200:
-            return f"Wayback Machine error: HTTP {avail_resp.status_code}"
+            return f"[TOOL_ERROR] Wayback Machine failed: HTTP {avail_resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         avail_data = avail_resp.json()
         snapshots = avail_data.get("archived_snapshots", {})
@@ -335,9 +335,9 @@ async def tool_wayback_fetch(url: str) -> str:
         )
 
     except httpx.TimeoutException:
-        return "Wayback Machine error: request timed out"
+        return "[TOOL_ERROR] Wayback Machine timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Wayback Machine error: {str(e)}"
+        return f"[TOOL_ERROR] Wayback Machine failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 async def tool_wikidata_query(entity: str) -> str:
@@ -358,7 +358,7 @@ async def tool_wikidata_query(entity: str) -> str:
                 timeout=15.0,
             )
         if search_resp.status_code != 200:
-            return f"Wikidata search error: HTTP {search_resp.status_code}"
+            return f"[TOOL_ERROR] Wikidata search failed: HTTP {search_resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         search_data = search_resp.json()
         results = search_data.get("search", [])
@@ -408,9 +408,9 @@ async def tool_wikidata_query(entity: str) -> str:
         return "\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "Wikidata query error: request timed out"
+        return "[TOOL_ERROR] Wikidata query timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Wikidata query error: {str(e)}"
+        return f"[TOOL_ERROR] Wikidata query failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 async def tool_web_search(query: str) -> str:
@@ -500,7 +500,7 @@ async def tool_hackernews_search(query: str, sort_by: str = "relevance", time_ra
                 timeout=15.0,
             )
         if resp.status_code != 200:
-            return f"Hacker News search error: HTTP {resp.status_code}"
+            return f"[TOOL_ERROR] Hacker News search failed: HTTP {resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         data = resp.json()
         hits = data.get("hits", [])
@@ -539,9 +539,9 @@ async def tool_hackernews_search(query: str, sort_by: str = "relevance", time_ra
         return "\n\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "Hacker News search error: request timed out"
+        return "[TOOL_ERROR] Hacker News search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Hacker News search error: {str(e)}"
+        return f"[TOOL_ERROR] Hacker News search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================
@@ -574,7 +574,7 @@ async def tool_stackexchange_search(query: str, site: str = "stackoverflow", sor
                 headers={"Accept-Encoding": "gzip"},
             )
         if resp.status_code != 200:
-            return f"Stack Exchange search error: HTTP {resp.status_code}"
+            return f"[TOOL_ERROR] Stack Exchange search failed: HTTP {resp.status_code}. This is a technical failure (likely rate-limiting), NOT 'no results found'."
 
         data = resp.json()
         items = data.get("items", [])
@@ -613,9 +613,9 @@ async def tool_stackexchange_search(query: str, site: str = "stackoverflow", sor
         return "\n\n".join(formatted) + f"\n\n[API quota remaining: {quota_remaining}]"
 
     except httpx.TimeoutException:
-        return "Stack Exchange search error: request timed out"
+        return "[TOOL_ERROR] Stack Exchange search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Stack Exchange search error: {str(e)}"
+        return f"[TOOL_ERROR] Stack Exchange search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================
@@ -647,7 +647,7 @@ async def tool_pubmed_search(query: str, max_results: int = 10) -> str:
                 timeout=15.0,
             )
         if search_resp.status_code != 200:
-            return f"PubMed search error: HTTP {search_resp.status_code}"
+            return f"[TOOL_ERROR] PubMed search failed: HTTP {search_resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         search_data = search_resp.json()
         id_list = search_data.get("esearchresult", {}).get("idlist", [])
@@ -666,7 +666,7 @@ async def tool_pubmed_search(query: str, max_results: int = 10) -> str:
                 timeout=15.0,
             )
         if fetch_resp.status_code != 200:
-            return f"PubMed fetch error: HTTP {fetch_resp.status_code}"
+            return f"[TOOL_ERROR] PubMed fetch failed: HTTP {fetch_resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         fetch_data = fetch_resp.json()
         results = fetch_data.get("result", {})
@@ -706,9 +706,9 @@ async def tool_pubmed_search(query: str, max_results: int = 10) -> str:
         return "\n\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "PubMed search error: request timed out"
+        return "[TOOL_ERROR] PubMed search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"PubMed search error: {str(e)}"
+        return f"[TOOL_ERROR] PubMed search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================
@@ -739,7 +739,7 @@ async def tool_wikipedia_search(query: str, limit: int = 8) -> str:
                 headers={"User-Agent": "DeepSearchPortal/1.0 (research tool)"},
             )
         if resp.status_code != 200:
-            return f"Wikipedia search error: HTTP {resp.status_code}"
+            return f"[TOOL_ERROR] Wikipedia search failed: HTTP {resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         data = resp.json()
         results = data.get("query", {}).get("search", [])
@@ -766,9 +766,9 @@ async def tool_wikipedia_search(query: str, limit: int = 8) -> str:
         return "\n\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "Wikipedia search error: request timed out"
+        return "[TOOL_ERROR] Wikipedia search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Wikipedia search error: {str(e)}"
+        return f"[TOOL_ERROR] Wikipedia search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================
@@ -804,7 +804,7 @@ async def tool_archiveorg_search(query: str, media_type: str = "", max_results: 
                 headers={"User-Agent": "DeepSearchPortal/1.0 (research tool)"},
             )
         if resp.status_code != 200:
-            return f"Archive.org search error: HTTP {resp.status_code}"
+            return f"[TOOL_ERROR] Archive.org search failed: HTTP {resp.status_code}. This is a technical failure, NOT 'no results found'."
 
         data = resp.json()
         docs = data.get("response", {}).get("docs", [])
@@ -842,9 +842,9 @@ async def tool_archiveorg_search(query: str, media_type: str = "", max_results: 
         return "\n\n".join(formatted)
 
     except httpx.TimeoutException:
-        return "Archive.org search error: request timed out"
+        return "[TOOL_ERROR] Archive.org search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Archive.org search error: {str(e)}"
+        return f"[TOOL_ERROR] Archive.org search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================
@@ -886,14 +886,16 @@ async def tool_forum_search(query: str, forum_url: str = "") -> str:
     try:
         results_all: list[dict] = []
 
+        errors: list[str] = []
+
         if forum_url:
             # Search specific forum
             site_query = f"site:{forum_url.replace('https://', '').replace('http://', '').rstrip('/')} {query}"
             try:
                 results = await _searxng_query(site_query, categories="general")
                 results_all.extend(results)
-            except Exception:
-                pass
+            except Exception as e:
+                errors.append(f"site-specific search failed: {e}")
         else:
             # Search across curated forum list in batches
             # Use 3 batches of forum site targets for breadth
@@ -905,7 +907,8 @@ async def tool_forum_search(query: str, forum_url: str = "") -> str:
                 try:
                     batch_results = await _searxng_query(forum_query, categories="general")
                     results_all.extend(batch_results)
-                except Exception:
+                except Exception as e:
+                    errors.append(f"batch {batch_start // batch_size + 1} failed: {e}")
                     continue
 
             # Also try a generic forum query
@@ -919,10 +922,16 @@ async def tool_forum_search(query: str, forum_url: str = "") -> str:
                     if r.get("url", "") not in seen_urls:
                         results_all.append(r)
                         seen_urls.add(r.get("url", ""))
-            except Exception:
-                pass
+            except Exception as e:
+                errors.append(f"generic forum query failed: {e}")
 
         if not results_all:
+            if errors:
+                return (
+                    f"[TOOL_ERROR] Forum search failed for: {query}. "
+                    f"All {len(errors)} SearXNG queries failed: {'; '.join(errors[:3])}. "
+                    f"This is a technical failure, NOT 'no results found'."
+                )
             return f"No forum results for: {query}"
 
         # Deduplicate by URL
@@ -937,7 +946,7 @@ async def tool_forum_search(query: str, forum_url: str = "") -> str:
         return _format_search_results(unique[:15], source_label="forum") or f"No forum results for: {query}"
 
     except Exception as e:
-        return f"Forum search error: {str(e)}"
+        return f"[TOOL_ERROR] Forum search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================
@@ -955,9 +964,9 @@ async def tool_scholar_search(query: str) -> str:
     try:
         results = await _searxng_query(query, categories="science")
     except httpx.TimeoutException:
-        return "Scholar search error: request timed out"
+        return "[TOOL_ERROR] Scholar search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Scholar search error: {str(e)}"
+        return f"[TOOL_ERROR] Scholar search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
     if not results:
         # Fallback: try general search with academic site targeting
@@ -1011,9 +1020,151 @@ async def tool_substack_search(query: str) -> str:
         return _format_search_results(results[:15], source_label="substack") or f"No Substack results for: {query}"
 
     except httpx.TimeoutException:
-        return "Substack search error: request timed out"
+        return "[TOOL_ERROR] Substack search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"Substack search error: {str(e)}"
+        return f"[TOOL_ERROR] Substack search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
+
+
+# ============================================================================
+# Telegram Search (SearXNG site-targeted)
+# ============================================================================
+
+async def tool_telegram_search(query: str) -> str:
+    """Search for Telegram channel/group content indexed on the public web.
+
+    Uses SearXNG to find Telegram content via t.me links, Telegram channel
+    aggregators (tgstat.com, telemetr.io), and cached Telegram messages.
+    This does NOT access Telegram's private API — only publicly indexed content.
+    """
+    try:
+        results_all: list[dict] = []
+        errors: list[str] = []
+
+        # Search t.me links directly
+        try:
+            r1 = await _searxng_query(f"site:t.me {query}", categories="general")
+            results_all.extend(r1)
+        except Exception as e:
+            errors.append(f"t.me search failed: {e}")
+
+        # Search Telegram aggregator sites
+        for site in ["tgstat.com", "telemetr.io", "telegramchannels.me"]:
+            try:
+                r = await _searxng_query(f"site:{site} {query}", categories="general")
+                seen = {x.get("url", "") for x in results_all}
+                for item in r:
+                    if item.get("url", "") not in seen:
+                        results_all.append(item)
+                        seen.add(item.get("url", ""))
+            except Exception as e:
+                errors.append(f"{site} search failed: {e}")
+
+        # Generic telegram query
+        try:
+            r3 = await _searxng_query(f"{query} telegram channel group", categories="general")
+            seen = {x.get("url", "") for x in results_all}
+            for item in r3:
+                if item.get("url", "") not in seen:
+                    results_all.append(item)
+                    seen.add(item.get("url", ""))
+        except Exception as e:
+            errors.append(f"generic telegram query failed: {e}")
+
+        if not results_all:
+            if errors:
+                return (
+                    f"[TOOL_ERROR] Telegram search failed for: {query}. "
+                    f"All {len(errors)} queries failed: {'; '.join(errors[:3])}. "
+                    f"This is a technical failure, NOT 'no results found'."
+                )
+            return f"No Telegram results for: {query}"
+
+        # Deduplicate by URL
+        dedup_seen: set[str] = set()
+        unique: list[dict] = []
+        for item in results_all:
+            url = item.get("url", "")
+            if url and url not in dedup_seen:
+                dedup_seen.add(url)
+                unique.append(item)
+
+        return _format_search_results(unique[:15], source_label="telegram") or f"No Telegram results for: {query}"
+
+    except Exception as e:
+        return f"[TOOL_ERROR] Telegram search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
+
+
+# ============================================================================
+# Darknet Market Search (SearXNG-powered OSINT)
+# ============================================================================
+
+async def tool_darknet_market_search(query: str) -> str:
+    """Search for darknet market intelligence via publicly indexed OSINT sources.
+
+    Searches darknet market discussion forums, review sites, and OSINT
+    aggregators that are indexed on the clearnet. Does NOT access .onion
+    sites directly — only publicly available intelligence about darknet markets.
+    """
+    try:
+        results_all: list[dict] = []
+        errors: list[str] = []
+
+        # Search known clearnet darknet-market discussion/review sites
+        osint_sites = [
+            "dread.support",
+            "darknetlive.com",
+            "darknetmarkets.org",
+            "dark.fail",
+        ]
+        for site in osint_sites:
+            try:
+                r = await _searxng_query(f"site:{site} {query}", categories="general")
+                results_all.extend(r)
+            except Exception as e:
+                errors.append(f"{site} failed: {e}")
+
+        # Generic darknet market OSINT queries
+        osint_queries = [
+            f"{query} darknet market review",
+            f"{query} dark web vendor",
+            f"{query} onion market",
+        ]
+        seen = {x.get("url", "") for x in results_all}
+        for oq in osint_queries:
+            try:
+                r = await _searxng_query(oq, categories="general")
+                for item in r:
+                    if item.get("url", "") not in seen:
+                        results_all.append(item)
+                        seen.add(item.get("url", ""))
+            except Exception as e:
+                errors.append(f"query '{oq[:40]}' failed: {e}")
+
+        if not results_all:
+            if errors:
+                return (
+                    f"[TOOL_ERROR] Darknet market search failed for: {query}. "
+                    f"All {len(errors)} queries failed: {'; '.join(errors[:3])}. "
+                    f"This is a technical failure, NOT 'no results found'."
+                )
+            return f"No darknet market OSINT results for: {query}"
+
+        # Deduplicate by URL (osint_sites phase doesn't dedup between sites)
+        dedup_seen: set[str] = set()
+        unique: list[dict] = []
+        for r in results_all:
+            url = r.get("url", "")
+            if url and url not in dedup_seen:
+                dedup_seen.add(url)
+                unique.append(r)
+
+        return (
+            _format_search_results(unique[:15], source_label="darknet_osint")
+            or f"No darknet market OSINT results for: {query}"
+        )
+
+    except Exception as e:
+        return f"[TOOL_ERROR] Darknet market search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 async def tool_youtube_search(query: str) -> str:
@@ -1049,9 +1200,9 @@ async def tool_youtube_search(query: str) -> str:
         return _format_search_results(results[:15], source_label="youtube") or f"No YouTube results for: {query}"
 
     except httpx.TimeoutException:
-        return "YouTube search error: request timed out"
+        return "[TOOL_ERROR] YouTube search timed out. This is a technical failure, NOT 'no results found'."
     except Exception as e:
-        return f"YouTube search error: {str(e)}"
+        return f"[TOOL_ERROR] YouTube search failed: {str(e)}. This is a technical failure, NOT 'no results found'."
 
 
 # ============================================================================

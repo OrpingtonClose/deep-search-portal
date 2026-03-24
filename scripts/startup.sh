@@ -34,7 +34,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in persistent-research deep-research thinking-proxy cftunnel owui searxng; do
+    for session in swarm-proxy persistent-research deep-research thinking-proxy cftunnel owui searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     echo "All services stopped."
@@ -89,5 +89,12 @@ if ! pgrep -f "persistent_deep_research_proxy.py" > /dev/null; then
     echo "Persistent Deep Research Proxy starting..."
 fi
 wait_for_health "http://localhost:9300/health" "Persistent Deep Research Proxy" 15
+
+# --- Swarm Deep Search Proxy ---
+if ! pgrep -f "swarm_proxy.py" > /dev/null; then
+    screen -dmS swarm-proxy bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export SWARM_SYNTHESIS_MODEL='mistral-large-latest' && export SWARM_WORKER_MODEL='mistral-small-latest' && export SWARM_PROXY_PORT='9500' && python3 /opt/swarm_proxy.py 2>&1 | tee /var/log/swarm_proxy.log"
+    echo "Swarm Deep Search Proxy starting..."
+fi
+wait_for_health "http://localhost:9500/health" "Swarm Deep Search Proxy" 15
 
 echo "All services started. Portal: ${WEBUI_URL:-https://deep-search.uk}"

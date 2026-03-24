@@ -216,7 +216,7 @@ def cache_put(tool_name: str, query: str, result: str) -> None:
     if len(result) < 50:
         return
     lower_prefix = result.lower()[:80]
-    if lower_prefix.startswith("error") or lower_prefix.startswith("failed") or lower_prefix.startswith("timed out"):
+    if lower_prefix.startswith("error") or lower_prefix.startswith("failed") or lower_prefix.startswith("timed out") or lower_prefix.startswith("[tool_error]"):
         return
 
     ttl = STATIC_TTL if tool_name in _STATIC_TOOLS else DEFAULT_TTL

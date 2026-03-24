@@ -13,8 +13,6 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Optional
 
-import time
-
 from .config import (
     RESEARCH_TIME_LIMIT,
     SUBAGENT_MODEL,
@@ -775,6 +773,7 @@ async def tree_research_reactor(
         if RESEARCH_TIME_LIMIT <= 0:
             return False
         return (time.monotonic() - _reactor_start) >= RESEARCH_TIME_LIMIT
+
     async def worker(worker_id: int) -> None:
         nonlocal total_processed, total_queued, active_workers
 

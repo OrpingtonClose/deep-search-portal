@@ -13,6 +13,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Optional
 
+import langfuse_config
+
 from .config import (
     RESEARCH_TIME_LIMIT,
     SUBAGENT_MODEL,
@@ -496,6 +498,10 @@ async def _research_single_node(
     and feeds findings into the collector and curated queue.
     Conditions pass through the global ConditionStore at birth.
     """
+    span = langfuse_config.start_span(
+        req_id, f"tree:research_node:{node.id}",
+        input={"question": node.question[:200], "depth": node.depth, "pressure": node.pressure},
+    )
     angle = {
         "title": node.question,
         "query": node.question,
@@ -539,6 +545,11 @@ async def _research_single_node(
             "depth": node.depth,
         })
 
+    langfuse_config.end_span(span, output={
+        "conditions": len(sa_result.conditions),
+        "turns": sa_result.turns_used,
+        "tools": sa_result.tool_calls_made,
+    })
     return sa_result.conditions, sa_result
 
 
@@ -577,7 +588,17 @@ async def tree_research_reactor(
     # This runs once and produces a semantic map that guides all downstream decisions
     progress.append("\n**[Phase 2a: Query Comprehension]**\n")
     progress.append("Building deep semantic understanding of the research query...\n")
+    comp_span = langfuse_config.start_span(
+        req_id, "tree:query_comprehension",
+        input={"query": user_query[:200]},
+    )
     comprehension = await comprehend_query(user_query, req_id)
+    langfuse_config.end_span(comp_span, output={
+        "intent": comprehension.intent_type,
+        "entities": len(comprehension.entities),
+        "domains": len(comprehension.domains),
+        "implicit_questions": len(comprehension.implicit_questions),
+    })
     if comprehension.semantic_summary:
         progress.append(
             f"Understanding: {comprehension.semantic_summary[:300]}\n"
@@ -714,6 +735,10 @@ async def tree_research_reactor(
         # gate to prevent the comprehension from seeding near-duplicate angles.
         for i, (q, ctx) in enumerate(seed_angles[:8]):
             # Check the registry first — even seed angles can be near-duplicates
+            gate_span = langfuse_config.start_span(
+                req_id, f"tree:connect_or_spawn:seed{i}",
+                input={"question": q[:120]},
+            )
             matches = await question_registry.find_similar(q)
             if matches:
                 # Connect to existing instead of seeding a duplicate
@@ -724,6 +749,11 @@ async def tree_research_reactor(
                     f"existing \"{matches[0].question[:60]}\" "
                     f"(sim={matches[0].similarity:.2f})"
                 )
+                langfuse_config.end_span(gate_span, output={
+                    "decision": "connect",
+                    "matched_node": matches[0].node_id,
+                    "similarity": matches[0].similarity,
+                })
                 continue
 
             pd_score = _score_prompt_distance(
@@ -745,6 +775,11 @@ async def tree_research_reactor(
             await pending.put(seed_node)
             await question_registry.register(q, seed_node.id, status="pending")
             total_queued += 1
+            langfuse_config.end_span(gate_span, output={
+                "decision": "spawn",
+                "node_id": seed_node.id,
+                "pressure": seed_pressure,
+            })
 
         log.info(
             f"[{req_id}] Seeded {total_queued - 1} comprehension-guided research "
@@ -820,6 +855,10 @@ async def tree_research_reactor(
             async with lock:
                 active_workers += 1
 
+            worker_span = langfuse_config.start_span(
+                req_id, f"tree:worker:{worker_id}:{node.id}",
+                input={"question": node.question[:200], "depth": node.depth},
+            )
             try:
                 # Acquire semaphore — only active research counts
                 async with sem:
@@ -873,9 +912,16 @@ async def tree_research_reactor(
                     #    to prevent duplicate verification.
                     if node.depth < TREE_MAX_DEPTH:
                         try:
+                            ent_span = langfuse_config.start_span(
+                                req_id, f"tree:entity_extraction:{node.id}",
+                                input={"conditions_count": len(conditions)},
+                            )
                             entities = await _extract_entities_for_verification(
                                 conditions, req_id,
                             )
+                            langfuse_config.end_span(ent_span, output={
+                                "entities_found": len(entities) if entities else 0,
+                            })
                             if entities:
                                 raw_verify = _spawn_verification_nodes(
                                     entities, node, all_questions, req_id,
@@ -934,6 +980,10 @@ async def tree_research_reactor(
                             "top_child": children[0].question if children else "",
                             "depth": node.depth + 1,
                         })
+                langfuse_config.end_span(worker_span, output={
+                    "conditions": len(all_conditions) - (total_processed - 1) if total_processed else 0,
+                    "children_spawned": actually_queued if 'actually_queued' in dir() else 0,
+                })
             finally:
                 async with lock:
                     active_workers -= 1

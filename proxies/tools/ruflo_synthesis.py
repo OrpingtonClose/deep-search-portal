@@ -56,6 +56,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+import langfuse_config
+
 from .config import UPSTREAM_MODEL, SUBAGENT_MODEL, log
 from .llm import call_llm
 from .models import AtomicCondition, SubagentResult
@@ -458,6 +460,10 @@ async def ruflo_gossip_synthesize(
         return ""  # Signal caller to use original single-shot synthesis
 
     # --- Chunk findings into worker batches ---
+    ruflo_span = langfuse_config.start_span(
+        req_id, "ruflo:gossip_synthesize",
+        input={"total_conditions": total_conditions, "query": user_query[:120]},
+    )
     state = GossipState()
     state.workers = _chunk_conditions(conditions_by_angle)
 
@@ -487,9 +493,14 @@ async def ruflo_gossip_synthesize(
             )
             state.total_llm_calls += 1
 
+    map_span = langfuse_config.start_span(
+        req_id, "ruflo:map_phase",
+        input={"workers": n_workers},
+    )
     log.info(f"[{req_id}] Ruflo Round 0: {n_workers} workers synthesizing chunks...")
     tasks = [_bounded_worker(w) for w in state.workers]
     await asyncio.gather(*tasks)
+    langfuse_config.end_span(map_span, output={"workers_completed": n_workers})
 
     # Store Round 0 summaries in ruflo hive memory (best-effort)
     for w in state.workers:
@@ -502,6 +513,10 @@ async def ruflo_gossip_synthesize(
         _t.add_done_callback(_background_tasks.discard)
 
     # --- Gossip Rounds: workers read peers + refine ---
+    gossip_span = langfuse_config.start_span(
+        req_id, "ruflo:gossip_rounds",
+        input={"rounds": GOSSIP_ROUNDS},
+    )
     for gossip_round in range(1, GOSSIP_ROUNDS + 1):
         log.info(
             f"[{req_id}] Ruflo Gossip Round {gossip_round}: "
@@ -529,6 +544,7 @@ async def ruflo_gossip_synthesize(
             _t.add_done_callback(_background_tasks.discard)
 
         state.gossip_round = gossip_round
+    langfuse_config.end_span(gossip_span, output={"rounds_completed": GOSSIP_ROUNDS})
 
     # Broadcast gossip completion
     _t = asyncio.create_task(_ruflo_broadcast(
@@ -538,6 +554,10 @@ async def ruflo_gossip_synthesize(
     _t.add_done_callback(_background_tasks.discard)
 
     # --- Queen Merge: combine all refined summaries ---
+    queen_span = langfuse_config.start_span(
+        req_id, "ruflo:queen_merge",
+        input={"workers": n_workers},
+    )
     log.info(
         f"[{req_id}] Ruflo Queen: merging {n_workers} worker summaries "
         f"after {GOSSIP_ROUNDS} gossip round(s)..."
@@ -550,6 +570,7 @@ async def ruflo_gossip_synthesize(
     )
     state.total_llm_calls += 1
     state.queen_summary = final_answer
+    langfuse_config.end_span(queen_span, output={"answer_len": len(final_answer)})
 
     elapsed = time.monotonic() - state.start_time
     log.info(
@@ -558,6 +579,11 @@ async def ruflo_gossip_synthesize(
         f"{state.total_llm_calls} LLM calls, {elapsed:.1f}s"
     )
 
+    langfuse_config.end_span(ruflo_span, output={
+        "workers": n_workers,
+        "llm_calls": state.total_llm_calls,
+        "elapsed_s": round(elapsed, 1),
+    })
     return final_answer
 
 

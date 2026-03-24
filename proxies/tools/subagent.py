@@ -11,6 +11,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
+import langfuse_config
+
 from .config import (
     MAX_RECURSIVE_DEPTH,
     MAX_SUBAGENT_TURNS,
@@ -383,10 +385,18 @@ async def run_subagent(
     sa_id = f"{req_id}-sa{subagent_index}" + (f"-d{depth}" if depth > 0 else "")
 
     log.info(f"[{sa_id}] Starting subagent: {angle_title} (depth={depth})")
+    sa_span = langfuse_config.start_span(
+        req_id, f"subagent:{sa_id}",
+        input={"angle": angle_title[:120], "query": angle_query[:200], "depth": depth},
+    )
 
     # Smart question routing: determine which tools to use for this angle
     tool_routing_inst = ""
     if condition_store is not None:
+        routing_span = langfuse_config.start_span(
+            req_id, f"subagent:routing:{sa_id}",
+            input={"angle_query": angle_query[:200]},
+        )
         routing = await route_research_question(
             angle_query, user_query, condition_store, req_id,
         )
@@ -411,6 +421,11 @@ async def run_subagent(
 
         if parts:
             tool_routing_inst = "**ROUTING INSTRUCTIONS FOR THIS ANGLE:**\n" + "\n".join(f"- {p}" for p in parts)
+        langfuse_config.end_span(routing_span, output={
+            "mandatory_tools": mandatory,
+            "preferred_tools": preferred,
+            "avoid_topics": avoid,
+        })
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     serendipity_inst = SERENDIPITY_INSTRUCTION if is_bridge else ""
@@ -435,6 +450,10 @@ async def run_subagent(
 
     try:
         for turn in range(1, MAX_SUBAGENT_TURNS + 1):
+            turn_span = langfuse_config.start_span(
+                req_id, f"subagent:turn:{sa_id}:t{turn}",
+                input={"turn": turn, "max_turns": MAX_SUBAGENT_TURNS},
+            )
             await progress_queue.put({
                 "type": "progress",
                 "subagent": subagent_index,
@@ -465,6 +484,7 @@ async def run_subagent(
 
             if not tool_calls:
                 result.turns_used = turn
+                langfuse_config.end_span(turn_span, output={"action": "final_answer", "has_content": bool(content)})
                 conditions = _parse_conditions(content, angle_title, is_bridge)
                 if conditions:
                     # Admit conditions through global store (admission pipeline)
@@ -547,8 +567,17 @@ async def run_subagent(
                         "content": truncated,
                     })
 
+            langfuse_config.end_span(turn_span, output={
+                "action": "tool_calls",
+                "tools": [tc.get("function", {}).get("name", "?") for tc in tool_calls[:5]],
+            })
+
             # AoT State Contraction every 3 turns
             if turn > 0 and turn % 3 == 0 and turn < MAX_SUBAGENT_TURNS:
+                contraction_span = langfuse_config.start_span(
+                    req_id, f"subagent:contraction:{sa_id}:t{turn}",
+                    input={"turn": turn},
+                )
                 contraction_msgs = agent_messages + [
                     {"role": "user", "content": CONDITION_EXTRACTION_PROMPT}
                 ]
@@ -635,6 +664,11 @@ async def run_subagent(
                             f"compressed {len(mid_conditions)} conditions, "
                             f"novelty={novelty:.2f}, reset context"
                         )
+                        langfuse_config.end_span(contraction_span, output={
+                            "conditions_extracted": len(mid_conditions),
+                            "novelty": novelty,
+                            "saturated": novelty < NOVELTY_STOP_THRESHOLD,
+                        })
 
             result.turns_used = turn
 
@@ -672,6 +706,10 @@ async def run_subagent(
                 and result.conditions
                 and len(result.novelty_history) > 0
                 and result.novelty_history[-1] > NOVELTY_EXPAND_THRESHOLD):
+            gap_span = langfuse_config.start_span(
+                req_id, f"subagent:gap_analysis:{sa_id}",
+                input={"conditions": len(result.conditions), "novelty": result.novelty_history[-1]},
+            )
             findings_text = "\n".join(c.to_text() for c in result.conditions[:15])
             gap_messages = [
                 {"role": "system", "content": GAP_ANALYSIS_PROMPT.format(
@@ -722,6 +760,9 @@ async def run_subagent(
 
                 except (json.JSONDecodeError, ValueError):
                     pass
+            langfuse_config.end_span(gap_span, output={
+                "children_spawned": result.spawned_children,
+            })
 
     except Exception as e:
         log.error(f"[{sa_id}] Subagent error: {e}\n{traceback.format_exc()}")
@@ -749,6 +790,13 @@ async def run_subagent(
         f"{result.turns_used} turns, {result.tool_calls_made} tool calls, "
         f"{result.spawned_children} children spawned"
     )
+    langfuse_config.end_span(sa_span, output={
+        "conditions": len(result.conditions),
+        "turns": result.turns_used,
+        "tool_calls": result.tool_calls_made,
+        "children": result.spawned_children,
+        "error": result.error or None,
+    })
     return result
 
 

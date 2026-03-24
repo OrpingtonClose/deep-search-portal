@@ -1060,8 +1060,8 @@ async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
     query_entities = [w for w in user_query.split() if len(w) > 3][:5]
 
     prior_conditions, graph_neighbors = await asyncio.gather(
-        _retrieve_related(user_query, MAX_PRIOR_CONDITIONS),
-        _retrieve_graph_neighbors(query_entities, max_hops=2, limit=10),
+        _retrieve_related(user_query, MAX_PRIOR_CONDITIONS, req_id=req_id),
+        _retrieve_graph_neighbors(query_entities, max_hops=2, limit=10, req_id=req_id),
     )
 
     if prior_conditions:
@@ -1813,14 +1813,21 @@ def _after_tree_research(state: PersistentResearchState) -> str:
     has been exceeded, skip entities/verify/reflect/persist and jump
     straight to synthesis with whatever findings exist.
     """
+    req_id = state["req_id"]
+    span = langfuse_config.start_span(
+        req_id, "edge:after_tree_research",
+        input={"research_iterations": state.get("research_iterations", 0)},
+    )
     if _pipeline_time_exceeded(state):
         elapsed = time.monotonic() - state["start_time"]
         log.warning(
             "[%s] Pipeline hard timeout exceeded (%.0fs) — "
             "skipping entities/verify/reflect/persist, jumping to synthesis",
-            state["req_id"], elapsed,
+            req_id, elapsed,
         )
+        langfuse_config.end_span(span, output={"decision": "synthesize", "reason": "timeout"})
         return "synthesize"
+    langfuse_config.end_span(span, output={"decision": "entities"})
     return "entities"
 
 
@@ -1831,23 +1838,35 @@ def _should_reresearch(state: PersistentResearchState) -> str:
     This implements the reflect → tree_research feedback loop.
     Respects RESEARCH_TIME_LIMIT and hard pipeline timeout.
     """
+    req_id = state["req_id"]
+    targeted = state.get("targeted_questions", [])
+    span = langfuse_config.start_span(
+        req_id, "edge:should_reresearch",
+        input={
+            "quality_score": state.get("quality_score", 0),
+            "targeted_questions": len(targeted),
+            "research_iterations": state.get("research_iterations", 0),
+        },
+    )
     if _pipeline_time_exceeded(state):
         elapsed = time.monotonic() - state["start_time"]
         log.warning(
             "[%s] Pipeline hard timeout (%.0fs) — skipping re-research, "
             "proceeding to persist",
-            state["req_id"], elapsed,
+            req_id, elapsed,
         )
+        langfuse_config.end_span(span, output={"decision": "persist", "reason": "timeout"})
         return "persist"
-    targeted = state.get("targeted_questions", [])
     if targeted:
         log.info(
             "[%s] Reflect feedback loop: routing back to tree_research "
             "with %d targeted questions (iteration %d)",
-            state["req_id"], len(targeted),
+            req_id, len(targeted),
             state.get("research_iterations", 0),
         )
+        langfuse_config.end_span(span, output={"decision": "tree_research", "reason": "low_quality"})
         return "tree_research"
+    langfuse_config.end_span(span, output={"decision": "persist"})
     return "persist"
 
 
@@ -1860,30 +1879,42 @@ def _should_reresearch_after_synthesis(state: PersistentResearchState) -> str:
     Safety: always respects MAX_RESEARCH_ITERATIONS and the hard pipeline
     timeout to prevent runaway execution.
     """
+    req_id = state["req_id"]
+    targeted = state.get("targeted_questions", [])
+    iterations = state.get("research_iterations", 0)
+    span = langfuse_config.start_span(
+        req_id, "edge:should_reresearch_after_synthesis",
+        input={
+            "targeted_questions": len(targeted),
+            "research_iterations": iterations,
+            "max_iterations": MAX_RESEARCH_ITERATIONS,
+        },
+    )
     if _pipeline_time_exceeded(state):
         elapsed = time.monotonic() - state["start_time"]
         log.warning(
             "[%s] Pipeline hard timeout (%.0fs) — skipping post-synthesis "
             "re-research, proceeding to END",
-            state["req_id"], elapsed,
+            req_id, elapsed,
         )
+        langfuse_config.end_span(span, output={"decision": "__end__", "reason": "timeout"})
         return "__end__"
-    targeted = state.get("targeted_questions", [])
-    iterations = state.get("research_iterations", 0)
     if targeted and iterations < MAX_RESEARCH_ITERATIONS:
         log.info(
             "[%s] Synthesis feedback loop: routing back to tree_research "
             "with %d gap questions (iteration %d/%d)",
-            state["req_id"], len(targeted),
+            req_id, len(targeted),
             iterations, MAX_RESEARCH_ITERATIONS,
         )
+        langfuse_config.end_span(span, output={"decision": "tree_research", "reason": "incomplete"})
         return "tree_research"
     if targeted:
         log.info(
             "[%s] Synthesis feedback loop: would re-research but "
             "MAX_RESEARCH_ITERATIONS (%d) reached — proceeding to END",
-            state["req_id"], MAX_RESEARCH_ITERATIONS,
+            req_id, MAX_RESEARCH_ITERATIONS,
         )
+    langfuse_config.end_span(span, output={"decision": "__end__"})
     return "__end__"
 
 
@@ -2170,6 +2201,8 @@ async def run_persistent_research(
         session_id=req_id,
         tags=["persistent-research"] + (["follow-up"] if is_followup else []),
     )
+    # Register trace so downstream modules can create child spans
+    langfuse_config.register_trace(req_id, langfuse_trace_id)
 
     initial_state: dict[str, Any] = {
         "req_id": req_id,
@@ -2329,6 +2362,7 @@ async def run_persistent_research(
         _curated_queues.pop(req_id, None)
         _metrics_collectors.pop(req_id, None)
         _request_configs.pop(req_id, None)
+        langfuse_config.unregister_trace(req_id)
         langfuse_config.flush()
         tracker.finish(req_id)
 

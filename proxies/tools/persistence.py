@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
 
 import knowledge_client
+import langfuse_config
 
 from shared import make_sse_chunk
 
@@ -123,6 +124,10 @@ async def _store_conditions_neo4j(
     """
     if not conditions:
         return 0, ""
+    span = langfuse_config.start_span(
+        session_id, "neo4j:store_conditions",
+        input={"count": len(conditions), "query": query[:120]},
+    )
     cond_dicts = [
         {
             "fact": c.fact or "",
@@ -147,9 +152,12 @@ async def _store_conditions_neo4j(
             conditions=cond_dicts,
             namespace=RESEARCH_NAMESPACE,
         )
-        return result.get("stored", 0), ""
+        stored = result.get("stored", 0)
+        langfuse_config.end_span(span, output={"stored": stored})
+        return stored, ""
     except Exception as e:
         log.error(f"Neo4j condition storage error: {e}")
+        langfuse_config.end_span(span, output={"error": str(e)}, level="ERROR")
         return 0, str(e)
 
 
@@ -162,6 +170,10 @@ async def _store_entities_neo4j(
 
     Returns (entities_stored, relationships_stored, error_message).
     """
+    span = langfuse_config.start_span(
+        session_id, "neo4j:store_entities",
+        input={"entities": len(entities), "relationships": len(relationships)},
+    )
     try:
         result = await knowledge_client.store_entities(
             session_id=session_id,
@@ -169,21 +181,29 @@ async def _store_entities_neo4j(
             relationships=relationships,
             namespace=RESEARCH_NAMESPACE,
         )
-        return result.get("entities_stored", 0), result.get("relationships_stored", 0), ""
+        e_stored = result.get("entities_stored", 0)
+        r_stored = result.get("relationships_stored", 0)
+        langfuse_config.end_span(span, output={"entities_stored": e_stored, "relationships_stored": r_stored})
+        return e_stored, r_stored, ""
     except Exception as e:
         log.error(f"Neo4j entity storage error: {e}")
+        langfuse_config.end_span(span, output={"error": str(e)}, level="ERROR")
         return 0, 0, str(e)
 
 
-async def _retrieve_related(query: str, limit: int = 20) -> list[dict]:
+async def _retrieve_related(query: str, limit: int = 20, req_id: str = "") -> list[dict]:
     """Retrieve prior conditions related to the query using Neo4j fulltext search."""
+    span = langfuse_config.start_span(
+        req_id, "neo4j:retrieve_related",
+        input={"query": query[:120], "limit": limit},
+    ) if req_id else None
     try:
         results = await knowledge_client.search_conditions(
             query=query,
             namespace=RESEARCH_NAMESPACE,
             limit=limit,
         )
-        return [
+        out = [
             {
                 "fact": r.get("fact", ""),
                 "source_url": r.get("source_url", ""),
@@ -197,17 +217,24 @@ async def _retrieve_related(query: str, limit: int = 20) -> list[dict]:
             }
             for r in results
         ]
+        langfuse_config.end_span(span, output={"results": len(out)})
+        return out
     except Exception as e:
         log.warning(f"Neo4j condition search error: {e}")
+        langfuse_config.end_span(span, output={"error": str(e)}, level="WARNING")
         return []
 
 
 async def _retrieve_graph_neighbors(
-    entity_names: list[str], max_hops: int = 2, limit: int = 20
+    entity_names: list[str], max_hops: int = 2, limit: int = 20, req_id: str = "",
 ) -> list[dict]:
     """Retrieve related conditions via knowledge graph traversal in Neo4j."""
     if not entity_names:
         return []
+    span = langfuse_config.start_span(
+        req_id, "neo4j:graph_neighbors",
+        input={"entities": entity_names[:5], "max_hops": max_hops, "limit": limit},
+    ) if req_id else None
     try:
         results = await knowledge_client.graph_neighbors(
             entity_names=entity_names,
@@ -215,7 +242,7 @@ async def _retrieve_graph_neighbors(
             max_hops=max_hops,
             limit=limit,
         )
-        return [
+        out = [
             {
                 "fact": r.get("fact", ""),
                 "source_url": r.get("source_url", ""),
@@ -226,8 +253,11 @@ async def _retrieve_graph_neighbors(
             }
             for r in results
         ]
+        langfuse_config.end_span(span, output={"results": len(out)})
+        return out
     except Exception as e:
         log.warning(f"Neo4j graph neighbor error: {e}")
+        langfuse_config.end_span(span, output={"error": str(e)}, level="WARNING")
         return []
 
 

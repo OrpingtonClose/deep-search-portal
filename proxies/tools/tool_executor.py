@@ -13,6 +13,7 @@ from typing import Optional
 
 import httpx
 
+import langfuse_config
 import social_media_scrapers
 
 from shared import http_client
@@ -483,11 +484,16 @@ async def execute_tool(
             pass
 
     # --- Step 1: Check cache for search tools ---
+    tool_span = langfuse_config.start_span(
+        req_id, f"tool:{tool_name}",
+        input={"arguments": input_str},
+    )
     if tool_name in _CACHEABLE_TOOLS:
         query_str = _extract_query_for_cache(tool_name, arguments)
         cached = cache_get(tool_name, query_str)
         if cached is not None:
             log.debug(f"[{req_id}] Cache hit for {tool_name}: {query_str[:60]}")
+            langfuse_config.end_span(tool_span, output={"cache": "hit", "result_len": len(cached)})
             for cb in callbacks:
                 try:
                     cb.on_tool_end(f"[CACHED] {cached[:1000]}", run_id=run_id)
@@ -505,6 +511,7 @@ async def execute_tool(
     except Exception as e:
         error_str = str(e)
         record_outcome(tool_name, success=False, error=error_str)
+        langfuse_config.end_span(tool_span, output={"error": error_str[:200]}, level="ERROR")
         for cb in callbacks:
             try:
                 cb.on_tool_error(e, run_id=run_id)
@@ -532,6 +539,12 @@ async def execute_tool(
     if tool_name in _CACHEABLE_TOOLS and not is_error:
         query_str = _extract_query_for_cache(tool_name, arguments)
         cache_put(tool_name, query_str, result)
+
+    langfuse_config.end_span(tool_span, output={
+        "result_len": len(result),
+        "is_error": is_error,
+        "cached": tool_name in _CACHEABLE_TOOLS and not is_error,
+    })
 
     # Fire on_tool_end for all registered callbacks
     for cb in callbacks:

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Deep Research Proxy (MiroFlow) for Open WebUI.
+Deep Research Proxy (MiroFlow) for LibreChat.
 
 An OpenAI-compatible proxy that implements a MiroFlow-inspired agentic deep research
 loop using Mistral's native function calling. When a user asks a question, the proxy
 orchestrates multi-turn reasoning with tool use (SearXNG search, web page reading,
-Python execution) and streams the entire research process as <think> tags to Open WebUI,
+Python execution) and streams the entire research process as <think> tags to LibreChat,
 followed by a polished final answer.
 
 Architecture:
-  - Receives OpenAI-compatible chat/completions requests from Open WebUI
+  - Receives OpenAI-compatible chat/completions requests from LibreChat
   - Sends requests to Mistral API with native `tools` parameter
   - Parses tool_calls from the response, executes tools, feeds results back
   - All reasoning and tool interactions streamed as <think> content

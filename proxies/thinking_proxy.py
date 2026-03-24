@@ -2,7 +2,7 @@
 """
 Thinking Proxy for Mistral Large.
 
-An OpenAI-compatible proxy that sits between Open WebUI and the Mistral API.
+An OpenAI-compatible proxy that sits between LibreChat and the Mistral API.
 It injects a "think step-by-step" system instruction, then wraps the model's
 reasoning output in <think>...</think> tags before streaming it back to the client.
 
@@ -109,7 +109,7 @@ async def stream_thinking_response(
 ) -> AsyncGenerator[str, None]:
     """
     Stream the upstream response, transforming <THINKING>/<ANSWER> tags
-    into <think>/<content> format that Open WebUI renders natively.
+    into <think>/<content> format that LibreChat renders natively.
 
     Uses LangGraph for traced request preparation, then streams the
     upstream response through a token-level state machine.

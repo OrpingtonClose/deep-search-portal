@@ -1,0 +1,91 @@
+# =============================================================================
+# Deep Search Portal — LibreChat Gateway
+#
+# Docker Compose stack for LibreChat (ChatGPT-like UI) with MongoDB and
+# Meilisearch.  Custom endpoints are configured in config/librechat.yaml
+# to point at the Deep Search proxy services.
+#
+# Usage:
+#   docker compose -f config/docker-compose.librechat.yml up -d
+#   docker compose -f config/docker-compose.librechat.yml down
+#
+# Expects env vars (from /opt/.env or parent process):
+#   CREDS_KEY           — encryption key for credentials (openssl rand -hex 32)
+#   JWT_SECRET          — JWT signing secret (openssl rand -hex 32)
+#   GOOGLE_CLIENT_ID    — Google OAuth client ID
+#   GOOGLE_CLIENT_SECRET — Google OAuth client secret
+#   DOMAIN_CLIENT       — public URL (e.g. https://deep-search.uk)
+#   DOMAIN_SERVER       — public URL (same as DOMAIN_CLIENT for single-origin)
+#   MISTRAL_API_KEY     — Mistral API key (used by custom endpoints)
+# =============================================================================
+
+services:
+  api:
+    image: ghcr.io/danny-avila/librechat-dev:latest
+    container_name: librechat-api
+    ports:
+      - "3000:3080"
+    depends_on:
+      - mongodb
+      - meilisearch
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - /opt/.env
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3080
+      - NODE_ENV=production
+      - MONGO_URI=mongodb://mongodb:27017/LibreChat
+      - MEILI_HOST=http://meilisearch:7700
+      - MEILI_KEY=${MEILI_KEY:-}
+      # --- Auth ---
+      - CREDS_KEY=${CREDS_KEY:?CREDS_KEY not set}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET not set}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-${JWT_SECRET}}
+      # --- Google OAuth ---
+      - ALLOW_SOCIAL_LOGIN=true
+      - ALLOW_SOCIAL_REGISTRATION=true
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID not set}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:?GOOGLE_CLIENT_SECRET not set}
+      - GOOGLE_CALLBACK_URL=/oauth/google/callback
+      - DOMAIN_CLIENT=${DOMAIN_CLIENT:-http://localhost:3000}
+      - DOMAIN_SERVER=${DOMAIN_SERVER:-http://localhost:3000}
+      # --- Registration ---
+      - ALLOW_EMAIL_LOGIN=true
+      - ALLOW_REGISTRATION=false
+      # --- Endpoints ---
+      - ENDPOINTS=custom
+    volumes:
+      - type: bind
+        source: ./librechat.yaml
+        target: /app/librechat.yaml
+      - librechat-images:/app/client/public/images
+      - librechat-uploads:/app/uploads
+      - librechat-logs:/app/api/logs
+
+  mongodb:
+    image: mongo:8.0
+    container_name: librechat-mongodb
+    restart: always
+    volumes:
+      - librechat-mongo-data:/data/db
+    command: mongod --noauth
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    container_name: librechat-meilisearch
+    restart: always
+    environment:
+      - MEILI_NO_ANALYTICS=true
+      - MEILI_MASTER_KEY=${MEILI_KEY:-}
+    volumes:
+      - librechat-meili-data:/meili_data
+
+volumes:
+  librechat-mongo-data:
+  librechat-meili-data:
+  librechat-images:
+  librechat-uploads:
+  librechat-logs:

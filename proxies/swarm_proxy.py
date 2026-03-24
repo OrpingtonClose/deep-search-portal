@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Swarm Deep Search Proxy for Open WebUI.
+Swarm Deep Search Proxy for LibreChat.
 
 A fully self-contained swarm-based proxy that decomposes large corpora of text
 using an agentic swarm -- no external infrastructure required.  Background
@@ -18,7 +18,7 @@ Key design principles:
   * Zero external infrastructure -- everything runs within this process.
 
 Architecture:
-  Browser -> Open WebUI -> Swarm Proxy (port 9500)
+  Browser -> LibreChat -> Swarm Proxy (port 9500)
                               |
               +---------------+---------------+
               |               |               |

@@ -1,0 +1,90 @@
+# =============================================================================
+# Deep Search Portal — LibreChat Custom Endpoints
+#
+# Configures LibreChat to use the Deep Search proxy services as custom
+# OpenAI-compatible endpoints.  Each proxy exposes /v1/chat/completions
+# and /v1/models on its respective port.
+#
+# Proxy services run on the same VM (or reachable via HTTP):
+#   - Thinking Proxy:              port 9100
+#   - Deep Research Proxy:         port 9200
+#   - Persistent Deep Research:    port 9300
+#   - Swarm Deep Search:           port 9500
+#
+# Environment variables (MISTRAL_API_KEY, etc.) are read from /opt/.env
+# and referenced here with ${VAR_NAME} syntax.
+# =============================================================================
+
+version: 1.3.5
+cache: true
+
+endpoints:
+  custom:
+    - name: "Mistral Thinking"
+      apiKey: "not-needed"
+      baseURL: "http://host.docker.internal:9100/v1"
+      models:
+        default:
+          - "mistral-large-thinking"
+        fetch: true
+      titleConvo: true
+      titleModel: "mistral-large-thinking"
+      summarize: false
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+      modelDisplayLabel: "Mistral Thinking"
+      iconURL: "https://mistral.ai/favicon.ico"
+
+    - name: "Persistent MiroFlow"
+      apiKey: "not-needed"
+      baseURL: "http://host.docker.internal:9300/v1"
+      models:
+        default:
+          - "persistent-miroflow"
+        fetch: true
+      titleConvo: true
+      titleModel: "persistent-miroflow"
+      summarize: false
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+      modelDisplayLabel: "Persistent MiroFlow"
+
+    - name: "Deep Research"
+      apiKey: "not-needed"
+      baseURL: "http://host.docker.internal:9200/v1"
+      models:
+        default:
+          - "miroflow"
+        fetch: true
+      titleConvo: true
+      titleModel: "miroflow"
+      summarize: false
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+      modelDisplayLabel: "Deep Research"
+
+    - name: "Swarm Deep Search"
+      apiKey: "not-needed"
+      baseURL: "http://host.docker.internal:9500/v1"
+      models:
+        default:
+          - "swarm-deep-search"
+        fetch: true
+      titleConvo: true
+      titleModel: "swarm-deep-search"
+      summarize: false
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+      modelDisplayLabel: "Swarm Deep Search"

@@ -41,7 +41,7 @@ UTILITY_PATTERNS = [
 
 
 def is_utility_request(messages: list[dict]) -> bool:
-    """Detect automated utility requests from Open WebUI (title/tag gen, etc.)."""
+    """Detect automated utility requests from LibreChat (title/tag gen, etc.)."""
     for msg in messages:
         content = msg.get("content", "")
         if isinstance(content, str):

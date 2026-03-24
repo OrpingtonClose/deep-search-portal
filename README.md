@@ -1,11 +1,11 @@
 # Deep Search Portal
 
-A self-hosted, anti-censorship research portal combining [Open WebUI](https://github.com/open-webui/open-webui) with a custom multi-turn deep research agent (MiroFlow) and a thinking proxy, backed by SearXNG for private web search and Mistral AI for reasoning.
+A self-hosted, anti-censorship research portal combining [LibreChat](https://github.com/danny-avila/LibreChat) with a custom multi-turn deep research agent (MiroFlow) and a thinking proxy, backed by SearXNG for private web search and Mistral AI for reasoning.
 
 ## Architecture
 
 ```
-Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
+Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → LibreChat (port 3000)
                                                           │
                 ┌─────────────────────────────────────────┤
                 │                                         │
@@ -28,7 +28,7 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 
 | Component | Purpose | Port |
 |---|---|---|
-| **Open WebUI** | ChatGPT-like web interface with multi-provider support | 3000 |
+| **LibreChat** | ChatGPT-like web interface with multi-provider support (Docker) | 3000 |
 | **MiroFlow** (`deep_research_proxy.py`) | Agentic deep research — up to 15 rounds of search/read/analyze | 9200 |
 | **Persistent Research** (`persistent_deep_research_proxy.py`) | Multi-session research with knowledge accumulation | 9300 |
 | **Thinking Proxy** (`thinking_proxy.py`) | Wraps Mistral for `<think>` tag streaming support | 9100 |
@@ -39,12 +39,12 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 
 ## How MiroFlow Works
 
-1. User asks a question via Open WebUI
+1. User asks a question via LibreChat
 2. Proxy injects a research-focused system prompt and sends to Mistral with tool definitions
 3. Mistral reasons about the question and calls tools (search, fetch web pages, run Python)
 4. Proxy executes tools, feeds results back to Mistral
 5. Repeat for up to 15 rounds — push-back logic prevents early stopping
-6. All reasoning streams to the user inside `<think>` tags (collapsible in Open WebUI)
+6. All reasoning streams to the user inside `<think>` tags (collapsible in LibreChat)
 7. Final comprehensive answer streams after `</think>`
 
 ### Tools
@@ -81,7 +81,7 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 │       └── requirements.txt
 ├── scripts/
 │   ├── startup.sh                      # Master startup (all services)
-│   └── start_openwebui.sh              # Open WebUI with provider config
+│   └── start_librechat.sh              # LibreChat Docker Compose launcher
 ├── config/
 │   ├── searxng_settings_patch.yml      # Key SearXNG overrides
 │   └── searxng_settings_full.yml       # Full SearXNG settings reference
@@ -105,13 +105,14 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 
 1. Clone this repo to `/opt/deep-search-portal` on the VM
 2. Copy `.env.example` to `/opt/.env` and fill in credentials
-3. Install Open WebUI: `pip install open-webui==0.8.8` (into a venv at `/opt/openwebui-env`)
+3. Install Docker and Docker Compose (for LibreChat)
 4. Clone SearXNG: `git clone https://github.com/searxng/searxng.git /tmp/searxng`
 5. Apply `config/searxng_settings_patch.yml` to SearXNG's `settings.yml`
 6. Install proxy dependencies: `pip install fastapi uvicorn httpx`
 7. Copy proxy files to `/opt/` and scripts to `/opt/`
 8. Set up Cloudflare Tunnel pointing to `localhost:3000`
-9. Run `startup.sh`
+9. Generate LibreChat secrets: `openssl rand -hex 32` for CREDS_KEY and JWT_SECRET
+10. Run `startup.sh`
 
 ### Endpoints
 
@@ -123,18 +124,14 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 
 ## Provider Configuration
 
-Open WebUI connects to 8 providers (configured in `start_openwebui.sh`):
+LibreChat connects to 4 custom endpoints (configured in `config/librechat.yaml`):
 
-| Index | Provider | Models |
+| Endpoint | Models | Port |
 |---|---|---|
-| 0 | OpenRouter | Various |
-| 1 | Venice.ai | Uncensored models |
-| 2 | Together.ai | Open-source models |
-| 3 | Perplexity | Perplexity models |
-| 4 | RunPod | Custom deployments |
-| 5 | Thinking Proxy | `mistral-large-thinking` |
-| 6 | Deep Research | `miroflow` |
-| 7 | Mistral Direct | `mistral-large-latest`, `mistral-medium-latest` |
+| Mistral Thinking | `mistral-large-thinking` | 9100 |
+| Persistent MiroFlow | `persistent-miroflow` | 9300 |
+| Deep Research | `miroflow` | 9200 |
+| Swarm Deep Search | `swarm-deep-search` | 9500 |
 
 ## Knowledge Engine
 

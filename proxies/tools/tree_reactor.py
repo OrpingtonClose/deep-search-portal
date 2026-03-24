@@ -1,5 +1,8 @@
 """
-Tree research reactor: priority-based concurrent research with depth control.
+Research net reactor: priority-based concurrent research with semantic
+deduplication.  Questions form a net (not a tree) — before spawning a
+new question, the reactor checks the QuestionRegistry for semantic
+matches and CONNECTS to existing nodes instead of duplicating research.
 """
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ from .config import (
 )
 from .models import AtomicCondition, ResearchNode, SubagentResult
 from .llm import call_llm
-from .pipeline import ConditionStore, QueryComprehension, comprehend_query
+from .pipeline import ConditionStore, QuestionRegistry, QueryComprehension, comprehend_query
 from .subagent import run_subagent
 
 if TYPE_CHECKING:
@@ -42,14 +45,14 @@ Given the findings so far, generate follow-up questions that help answer the ORI
 **Deep understanding of the query:**
 {comprehension_context}
 
-**Knowledge net state:**
+**Knowledge net state (findings):**
 {net_summary}
+
+**Research question net (already asked/being researched):**
+{question_net_summary}
 
 **Findings from this investigation:**
 {findings_text}
-
-**Questions already in the research tree (avoid duplicates):**
-{existing_questions}
 
 Generate follow-up questions. For each, provide:
 - "question": a specific, searchable question
@@ -68,11 +71,15 @@ STRATEGY RULES:
 - Non-deepen strategies are optional. Only use them if they genuinely serve the user's question.
 - CRITICAL: "lateral" does NOT mean "free association with a keyword". If the user asks about buying insulin, a lateral question is about alternative purchasing channels — NOT about bodybuilding or side effects.
 
-KNOWLEDGE NET RULES:
-- If two claims CONTRADICT each other, generate a question that resolves the contradiction from an independent source
-- If a claim has ZERO cross-references, it's unverified — consider generating a question to corroborate or refute it
-- If a claim is confirmed by multiple sources, it's well-established — lower pressure for that area
-- Use the adjacent territories and deep knowledge targets from the query comprehension to guide where to look next
+RESEARCH NET RULES (CRITICAL — read carefully):
+The questions above form a RESEARCH NET. Before generating a new question:
+1. CHECK if a similar question is already [DONE], [ACTIVE], or [QUEUED] in the net
+2. If a question is ALREADY ANSWERED ([DONE]) — do NOT ask a rephrased version of it. Instead, if the answer needs deeper investigation, generate a MORE SPECIFIC follow-up that drills into a particular detail.
+3. If a question is [ACTIVE] or [QUEUED] — do NOT generate anything similar. It will be answered soon.
+4. Two questions are "similar" if they would produce the same search results. Examples of SIMILAR questions:
+   - "Are there documented cases of insulin importation prosecution in Poland?" ≈ "What do Polish court records show about insulin importation cases?"
+   - "Has anyone reviewed vendor X?" ≈ "What do people say about vendor X on forums?"
+5. If contradictions exist in the net, generate ONE targeted question to resolve them — not multiple variations.
 
 PRESSURE RULES:
 - Higher pressure for: contradictions in the knowledge net, unverified claims, critical gaps directly relevant to the query, unexplored adjacent territories
@@ -82,7 +89,7 @@ PRESSURE RULES:
 
 Other rules:
 - Generate 0-5 questions maximum
-- Do NOT repeat questions already in the tree
+- Each question MUST be semantically DISTINCT from all questions in the research net
 - Output ONLY valid JSON, no markdown fences
 
 Output format:
@@ -194,13 +201,20 @@ async def _spawn_sub_questions(
     existing_questions: list[str],
     req_id: str,
     condition_store: Optional["ConditionStore"] = None,
+    question_registry: Optional["QuestionRegistry"] = None,
 ) -> list[ResearchNode]:
-    """Ask LLM to generate follow-up questions from research findings.
+    """Ask LLM to generate follow-up questions, then apply connect-or-spawn gate.
 
-    Uses the condition store's comprehension map and knowledge net state
-    to guide question generation toward deep, rare knowledge.
+    Uses the condition store's comprehension map, knowledge net state,
+    AND the question registry to guide question generation toward deep,
+    rare knowledge while avoiding near-duplicate questions.
 
-    Returns a list of new ResearchNode children.
+    The connect-or-spawn gate (powered by QuestionRegistry) checks every
+    LLM-proposed question against all existing questions in the net:
+      - If a semantic match exists → CONNECT (add edge) instead of spawning
+      - If no match → SPAWN a new node
+
+    Returns a list of new ResearchNode children (only truly novel questions).
     """
     if not conditions or node.depth >= TREE_MAX_DEPTH:
         return []
@@ -210,11 +224,10 @@ async def _spawn_sub_questions(
         for c in conditions[:15]
     )
 
-    existing_text = "\n".join(f"- {q}" for q in existing_questions[-30:]) or "(none yet)"
-
     # Build comprehension context for the spawn prompt
     comprehension_context = "(no deep comprehension available)"
     net_summary = "(no knowledge net yet)"
+    question_net_summary = "(no questions in the net yet)"
     if condition_store:
         if condition_store.comprehension:
             comp = condition_store.comprehension
@@ -232,14 +245,17 @@ async def _spawn_sub_questions(
             comprehension_context = "\n".join(parts) if parts else comprehension_context
         net_summary = condition_store.get_net_summary(max_items=10)
 
+    if question_registry:
+        question_net_summary = question_registry.get_net_question_summary(max_items=20)
+
     prompt = SPAWN_QUESTIONS_PROMPT.format(
         user_query=user_query,
         node_question=node.question,
         node_context=node.context,
         comprehension_context=comprehension_context,
         net_summary=net_summary,
+        question_net_summary=question_net_summary,
         findings_text=findings_text,
-        existing_questions=existing_text,
     )
 
     result = await call_llm(
@@ -275,11 +291,33 @@ async def _spawn_sub_questions(
             return []
 
     children: list[ResearchNode] = []
+    connected_count = 0
+
     for sq in data.get("sub_questions", []):
         question = sq.get("question", "").strip()
         if not question:
             continue
-        # Skip near-duplicate questions
+
+        # ---- Connect-or-Spawn Gate ----
+        # Check the question registry for semantic matches BEFORE spawning.
+        # This is the core "net" mechanism: similar questions connect
+        # instead of duplicating research.
+        if question_registry:
+            matches = await question_registry.find_similar(question)
+            if matches:
+                best = matches[0]
+                # Connect to the existing node instead of spawning
+                await question_registry.add_edge(node.id, best.node_id)
+                node.connected_to.append(best.node_id)
+                connected_count += 1
+                log.info(
+                    f"[{req_id}] NET CONNECT: \"{question[:80]}\" → "
+                    f"existing \"{best.question[:80]}\" "
+                    f"(sim={best.similarity:.2f}, status={best.status})"
+                )
+                continue  # Do NOT spawn — already covered
+
+        # Legacy substring check as fallback (in case registry not available)
         q_lower = question.lower()
         if any(q_lower in eq.lower() or eq.lower() in q_lower for eq in existing_questions):
             continue
@@ -300,9 +338,9 @@ async def _spawn_sub_questions(
             prompt_distance=pd_score,
         )
 
-        # Phase 3: Saturation-aware pressure decay — if this question
+        # Saturation-aware pressure decay — if this question
         # covers entities we've already thoroughly researched, reduce
-        # pressure so the tree redirects budget to unexplored ground.
+        # pressure so the net redirects budget to unexplored ground.
         if condition_store:
             sat_ratio = condition_store.entity_saturation_ratio(question)
             if sat_ratio > 0:
@@ -321,6 +359,12 @@ async def _spawn_sub_questions(
             parent_id=node.id,
         )
         children.append(child)
+
+    if connected_count > 0:
+        log.info(
+            f"[{req_id}] Net dedup: {connected_count} questions connected to "
+            f"existing nodes, {len(children)} new questions spawned"
+        )
 
     return children
 
@@ -504,10 +548,14 @@ async def tree_research_reactor(
     collector: "LiveFindingsCollector",
     curated_queue: asyncio.Queue,
 ) -> dict:
-    """Tree-based research reactor with global condition admission pipeline.
+    """Research net reactor with global condition admission pipeline.
 
-    Explores the research space as a tree: each finding can spawn
-    sub-questions which get explored by concurrent workers.
+    Explores the research space as a NET: each finding can spawn
+    sub-questions, but before spawning, every candidate question is
+    checked against the QuestionRegistry for semantic matches.  If a
+    similar question already exists, the new question CONNECTS to the
+    existing node instead of duplicating research.
+
     All conditions pass through a global ConditionStore which handles
     dedup, relevance gating, serendipity scoring, and saturation signaling.
 
@@ -516,7 +564,7 @@ async def tree_research_reactor(
 
     Returns a dict with keys matching the old plan+subagents output:
       - subagent_results, all_conditions, total_turns, total_tools,
-        total_children, progress_log, admission_stats
+        total_children, progress_log, admission_stats, net_stats
     """
     sem = asyncio.Semaphore(TREE_MAX_CONCURRENT)
     pending: asyncio.PriorityQueue = asyncio.PriorityQueue()
@@ -551,6 +599,9 @@ async def tree_research_reactor(
         user_query=user_query, req_id=req_id, comprehension=comprehension,
     )
 
+    # Global question registry — tracks all questions for semantic dedup (the "net")
+    question_registry = QuestionRegistry()
+
     # Admit understanding conditions — they go through the same pipeline
     understanding_results = await condition_store.admit_understanding(comprehension)
     understanding_admitted = sum(1 for r in understanding_results if r.admitted)
@@ -568,7 +619,7 @@ async def tree_research_reactor(
     total_processed = 0
     active_workers = 0  # count of workers currently researching a node
     lock = asyncio.Lock()
-    done_event = asyncio.Event()  # set when tree exploration is complete
+    done_event = asyncio.Event()  # set when net exploration is complete
 
     # Build the root node
     prior_text = ""
@@ -593,6 +644,7 @@ async def tree_research_reactor(
     )
     nodes_by_id[root.id] = root
     await pending.put(root)
+    await question_registry.register(user_query, root.id, status="pending")
     total_queued = 1
 
     # --- Pre-seed: comprehension-guided initial angles ---
@@ -655,7 +707,22 @@ async def tree_research_reactor(
         # Create seed nodes from the angles — use prompt-distance
         # scoring instead of uniform 0.9 pressure so questions closer
         # to the core_need get explored first.
+        # Each seed angle goes through the question registry's connect-or-spawn
+        # gate to prevent the comprehension from seeding near-duplicate angles.
         for i, (q, ctx) in enumerate(seed_angles[:8]):
+            # Check the registry first — even seed angles can be near-duplicates
+            matches = await question_registry.find_similar(q)
+            if matches:
+                # Connect to existing instead of seeding a duplicate
+                await question_registry.add_edge(root.id, matches[0].node_id)
+                root.connected_to.append(matches[0].node_id)
+                log.info(
+                    f"[{req_id}] Seed angle deduped: \"{q[:60]}\" → "
+                    f"existing \"{matches[0].question[:60]}\" "
+                    f"(sim={matches[0].similarity:.2f})"
+                )
+                continue
+
             pd_score = _score_prompt_distance(
                 q, comprehension.core_need, comprehension.intent_type,
             )
@@ -673,16 +740,18 @@ async def tree_research_reactor(
             nodes_by_id[seed_node.id] = seed_node
             all_questions.append(q)
             await pending.put(seed_node)
+            await question_registry.register(q, seed_node.id, status="pending")
             total_queued += 1
 
         log.info(
-            f"[{req_id}] Seeded {len(seed_angles)} comprehension-guided research angles"
+            f"[{req_id}] Seeded {total_queued - 1} comprehension-guided research "
+            f"angles (after net dedup from {len(seed_angles)} candidates)"
         )
     except Exception as e:
         log.warning(f"[{req_id}] Pre-seed decomposition failed (non-fatal): {e}")
 
     progress.append(
-        f"\n**[Phase 2: Tree Research Reactor]** "
+        f"\n**[Phase 2: Research Net Reactor]** "
         f"(max {TREE_MAX_CONCURRENT} concurrent, "
         f"depth limit {TREE_MAX_DEPTH}, "
         f"node budget {TREE_MAX_NODES})\n"
@@ -731,6 +800,7 @@ async def tree_research_reactor(
                 # Acquire semaphore — only active research counts
                 async with sem:
                     node.status = "researching"
+                    await question_registry.update_status(node.id, "researching")
 
                     conditions, sa_result = await _research_single_node(
                         node, user_query, req_id, collector, curated_queue,
@@ -738,6 +808,14 @@ async def tree_research_reactor(
                     )
 
                     node.status = "done"
+                    await question_registry.update_status(node.id, "done")
+
+                    # Store top finding in the registry for net summary
+                    if conditions:
+                        top = max(conditions, key=lambda c: c.confidence)
+                        await question_registry.update_finding(
+                            node.id, top.fact,
+                        )
 
                 async with lock:
                     total_processed += 1
@@ -749,33 +827,52 @@ async def tree_research_reactor(
                     current_queued = total_queued
 
                 if current_queued < TREE_MAX_NODES and conditions:
-                    # 1. Regular sub-questions from LLM (includes
-                    #    "verify" strategy now)
+                    # 1. Regular sub-questions from LLM — now with
+                    #    connect-or-spawn gate via question_registry
                     children = await _spawn_sub_questions(
                         node, conditions, user_query, all_questions, req_id,
                         condition_store=condition_store,
+                        question_registry=question_registry,
                     )
 
                     # 2. Auto-spawn verification nodes for concrete
                     #    entities discovered in this node's findings.
-                    #    This ensures every vendor/person/product gets
-                    #    cross-referenced even if the LLM doesn't
-                    #    explicitly ask for it.
-                    #    Respects TREE_MAX_DEPTH to prevent unbounded
-                    #    depth cascading from verification → verification.
+                    #    These also go through the question registry
+                    #    to prevent duplicate verification.
                     if node.depth < TREE_MAX_DEPTH:
                         try:
                             entities = await _extract_entities_for_verification(
                                 conditions, req_id,
                             )
                             if entities:
-                                verify_children = _spawn_verification_nodes(
+                                raw_verify = _spawn_verification_nodes(
                                     entities, node, all_questions, req_id,
                                 )
-                                children.extend(verify_children)
+                                # Filter verification nodes through the
+                                # question registry too
+                                for vc in raw_verify:
+                                    matches = await question_registry.find_similar(
+                                        vc.question,
+                                    )
+                                    if matches:
+                                        await question_registry.add_edge(
+                                            node.id, matches[0].node_id,
+                                        )
+                                        node.connected_to.append(
+                                            matches[0].node_id,
+                                        )
+                                        log.info(
+                                            f"[{req_id}] Verify node deduped: "
+                                            f"\"{vc.question[:60]}\" → "
+                                            f"\"{matches[0].question[:60]}\""
+                                        )
+                                    else:
+                                        children.append(vc)
                                 log.info(
-                                    f"[{req_id}] Auto-spawned {len(verify_children)} "
-                                    f"verification nodes for {len(entities)} entities"
+                                    f"[{req_id}] Verification: "
+                                    f"{len(raw_verify)} candidates, "
+                                    f"{len([c for c in children if c in raw_verify])} "
+                                    f"after net dedup"
                                 )
                         except Exception as e:
                             log.warning(
@@ -791,6 +888,9 @@ async def tree_research_reactor(
                             nodes_by_id[child.id] = child
                             all_questions.append(child.question)
                             await pending.put(child)
+                            await question_registry.register(
+                                child.question, child.id, status="pending",
+                            )
                             total_queued += 1
                             actually_queued += 1
 
@@ -819,18 +919,32 @@ async def tree_research_reactor(
     total_tools = sum(r.tool_calls_made for r in all_results)
     total_children = sum(r.spawned_children for r in all_results)
 
+    # Compute net structure stats
+    net_stats = question_registry.stats
+    total_net_edges = sum(
+        len(n.connected_to) for n in nodes_by_id.values()
+    )
+
     progress.append(
-        f"\n**Tree Exploration Complete:** "
+        f"\n**Research Net Exploration Complete:** "
         f"{total_processed} nodes explored "
         f"(depth reached: {max((n.depth for n in nodes_by_id.values()), default=0)}), "
         f"{len(all_conditions)} atomic conditions, "
         f"{total_turns} total turns, {total_tools} tool calls\n"
+    )
+    progress.append(
+        f"**Net Structure:** {net_stats['unique_questions']} unique questions, "
+        f"{net_stats['total_connected']} questions connected to existing nodes "
+        f"(saved from duplicate research), "
+        f"{net_stats['net_edges']} net edges\n"
     )
 
     await curated_queue.put({
         "type": "summary",
         "nodes_explored": total_processed,
         "conditions_count": len(all_conditions),
+        "net_connections": net_stats["total_connected"],
+        "net_edges": total_net_edges,
     })
 
     # When using admission pipeline, the ConditionStore has the canonical set
@@ -855,5 +969,6 @@ async def tree_research_reactor(
         "total_children": total_children,
         "progress_log": progress,
         "admission_stats": admission_stats,
+        "net_stats": net_stats,
     }
 

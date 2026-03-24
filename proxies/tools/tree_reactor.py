@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import uuid
 from typing import TYPE_CHECKING, Optional
 
@@ -774,7 +775,6 @@ async def tree_research_reactor(
         if RESEARCH_TIME_LIMIT <= 0:
             return False
         return (time.monotonic() - _reactor_start) >= RESEARCH_TIME_LIMIT
-
     async def worker(worker_id: int) -> None:
         nonlocal total_processed, total_queued, active_workers
 
@@ -848,6 +848,14 @@ async def tree_research_reactor(
                     all_results.append(sa_result)
 
                 # Spawn children (doesn't hold semaphore)
+                # Skip spawning if time limit exceeded — let tree wind down
+                if _time_exceeded():
+                    log.info(
+                        f"[{req_id}] Skipping child spawn for {node.id} "
+                        f"— time limit exceeded"
+                    )
+                    continue
+
                 async with lock:
                     current_queued = total_queued
 

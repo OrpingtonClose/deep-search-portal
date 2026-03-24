@@ -356,6 +356,7 @@ async def tool_wikidata_query(entity: str) -> str:
                     "limit": 3,
                 },
                 timeout=15.0,
+                headers={"User-Agent": "DeepSearchPortal/1.0 (https://deep-search.uk; research tool)"},
             )
         if search_resp.status_code != 200:
             return f"[TOOL_ERROR] Wikidata search failed: HTTP {search_resp.status_code}. This is a technical failure, NOT 'no results found'."
@@ -388,6 +389,7 @@ async def tool_wikidata_query(entity: str) -> str:
                         "props": "labels|descriptions|claims",
                     },
                     timeout=15.0,
+                    headers={"User-Agent": "DeepSearchPortal/1.0 (https://deep-search.uk; research tool)"},
                 )
             if entity_resp.status_code == 200:
                 entity_data = entity_resp.json()
@@ -736,7 +738,7 @@ async def tool_wikipedia_search(query: str, limit: int = 8) -> str:
                     "format": "json",
                 },
                 timeout=15.0,
-                headers={"User-Agent": "DeepSearchPortal/1.0 (research tool)"},
+                headers={"User-Agent": "DeepSearchPortal/1.0 (https://deep-search.uk; research tool)"},
             )
         if resp.status_code != 200:
             return f"[TOOL_ERROR] Wikipedia search failed: HTTP {resp.status_code}. This is a technical failure, NOT 'no results found'."

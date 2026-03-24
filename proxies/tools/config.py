@@ -97,6 +97,7 @@ TREE_MAX_DEPTH = env_int("TREE_MAX_DEPTH", 5, minimum=1)
 TREE_MAX_NODES = env_int("TREE_MAX_NODES", 50, minimum=5)
 TREE_PRESSURE_THRESHOLD = float(os.getenv("TREE_PRESSURE_THRESHOLD", "0.15"))
 TREE_WORKER_IDLE_TIMEOUT = float(os.getenv("TREE_WORKER_IDLE_TIMEOUT", "60.0"))
+RESEARCH_TIME_LIMIT = float(os.getenv("RESEARCH_TIME_LIMIT", "300"))  # seconds; 0 = no limit
 
 # Research time limit: force synthesis after this many seconds (0 = no limit)
 RESEARCH_TIME_LIMIT = float(os.getenv("RESEARCH_TIME_LIMIT", "300.0"))
@@ -106,7 +107,7 @@ APIFY_API_KEY = os.getenv("APIFY_API_TOKEN", "")
 BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
 BRIGHT_DATA_HOST = os.getenv("BRIGHT_DATA_HOST", "")
 BRIGHT_DATA_CUSTOMER_ID = os.getenv("BRIGHT_DATA_CUSTOMER_ID", "hl_dc044bf4")
-BRIGHT_DATA_ZONE = os.getenv("BRIGHT_DATA_ZONE", "web_unlocker1")
+BRIGHT_DATA_ZONE = os.getenv("BRIGHT_DATA_ZONE", "mcp_unlocker")
 OXYLABS_USERNAME = os.getenv("OXYLABS_USERNAME", "")
 OXYLABS_PASSWORD = os.getenv("OXYLABS_PASSWORD", "")
 
@@ -133,7 +134,7 @@ VERITAS_HALLUCINATION_THRESHOLD = float(os.getenv("VERITAS_HALLUCINATION_THRESHO
 
 # Commercial search APIs
 COMMERCIAL_SEARCH_ENABLED = os.getenv("COMMERCIAL_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes")
-BRIGHT_DATA_SERP_ZONE = os.getenv("BRIGHT_DATA_SERP_ZONE", "serp")
+BRIGHT_DATA_SERP_ZONE = os.getenv("BRIGHT_DATA_SERP_ZONE", "mcp_unlocker")
 MODERATION_MODEL = os.getenv("MODERATION_MODEL", "mistral-small-latest")
 
 log.info(

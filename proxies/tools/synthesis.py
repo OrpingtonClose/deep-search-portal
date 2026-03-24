@@ -1797,6 +1797,7 @@ def _should_reresearch_after_synthesis(state: PersistentResearchState) -> str:
 
     This implements the synthesis → tree_research feedback loop.
     Respects RESEARCH_TIME_LIMIT — skips re-research if time is up.
+    Safety: always respects MAX_RESEARCH_ITERATIONS to prevent infinite loops.
     """
     # Time limit check: end pipeline with what we have
     if RESEARCH_TIME_LIMIT > 0:
@@ -1810,14 +1811,21 @@ def _should_reresearch_after_synthesis(state: PersistentResearchState) -> str:
             return "__end__"
 
     targeted = state.get("targeted_questions", [])
-    if targeted:
+    iterations = state.get("research_iterations", 0)
+    if targeted and iterations < MAX_RESEARCH_ITERATIONS:
         log.info(
             "[%s] Synthesis feedback loop: routing back to tree_research "
-            "with %d gap questions (iteration %d)",
+            "with %d gap questions (iteration %d/%d)",
             state["req_id"], len(targeted),
-            state.get("research_iterations", 0),
+            iterations, MAX_RESEARCH_ITERATIONS,
         )
         return "tree_research"
+    if targeted:
+        log.info(
+            "[%s] Synthesis feedback loop: would re-research but "
+            "MAX_RESEARCH_ITERATIONS (%d) reached — proceeding to END",
+            state["req_id"], MAX_RESEARCH_ITERATIONS,
+        )
     return "__end__"
 
 

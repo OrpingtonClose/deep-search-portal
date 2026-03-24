@@ -102,4 +102,4 @@ if ! pgrep -f "swarm_proxy.py" > /dev/null; then
 fi
 wait_for_health "http://localhost:9500/health" "Swarm Deep Search Proxy" 15
 
-echo "All services started. Portal: ${WEBUI_URL:-https://deep-search.uk}"
+echo "All services started. Portal: ${DOMAIN_CLIENT:-https://deep-search.uk}"

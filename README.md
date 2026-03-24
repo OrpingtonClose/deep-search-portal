@@ -16,6 +16,12 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
                                     Persistent Research (9300)
                                          │         │
                                     Knowledge Engine (9400) ←── Neo4j
+
+                                    Swarm Proxy (9500) ← fully self-contained
+                                         │
+                                  Background Swarm Workers
+                                 (in-memory knowledge store,
+                                  LLM-powered extraction)
 ```
 
 ## Components
@@ -27,6 +33,7 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 | **Persistent Research** (`persistent_deep_research_proxy.py`) | Multi-session research with knowledge accumulation | 9300 |
 | **Thinking Proxy** (`thinking_proxy.py`) | Wraps Mistral for `<think>` tag streaming support | 9100 |
 | **Knowledge Engine** (`services/knowledge-engine/`) | Neo4j-centric knowledge corpus ETL microservice | 9400 |
+| **Swarm Proxy** (`swarm_proxy.py`) | Swarm-based corpus decomposition with non-disruptive querying | 9500 |
 | **SearXNG** | Self-hosted meta-search engine (Brave, Bing, Wikipedia) | 8888 |
 | **Cloudflare Tunnel** | HTTPS + domain routing to the VM | — |
 
@@ -54,6 +61,7 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 ├── proxies/
 │   ├── deep_research_proxy.py          # MiroFlow deep research agent
 │   ├── persistent_deep_research_proxy.py # Multi-session persistent research
+│   ├── swarm_proxy.py                  # Swarm-based corpus decomposition proxy
 │   ├── thinking_proxy.py               # Thinking tag proxy
 │   └── knowledge_client.py             # Lightweight async client for knowledge engine
 ├── services/
@@ -221,6 +229,52 @@ Relationship types: `ANALOGOUS_TO`, `CONTRADICTS`, `EXPLAINS`, `SUPPORTED_BY`, `
 
 All data is namespaced by conversation/context. Every node gets a `namespace` property. Queries filter by namespace. Use `DELETE /v1/namespaces/{name}` to remove all data for a context. Set `rebuild=true` on ingest to clear the namespace before loading new data.
 
+## Swarm Proxy
+
+A swarm-based proxy (inspired by [swarms.world](https://swarms.world)) that decomposes large corpora of text using background worker agents. Unlike the other proxies, the swarm operates continuously — submitting text starts background processing that runs independently of any queries.
+
+### Key Principles
+
+- **Non-disruptive querying** — Sending a prompt does NOT interrupt the swarm's current work. Queries are answered from whatever knowledge the swarm has built so far.
+- **Sincerity** — The proxy honestly reports what the swarm is doing: processing progress, active workers, knowledge coverage, and any gaps. No pretending work is done when it isn't.
+- **Additive ingestion** — Further large corpora are treated identically to the initial send. They queue additively without resetting existing work.
+- **Background processing** — Corpus decomposition (chunking, entity extraction, relationship extraction, knowledge graph construction) happens asynchronously via a worker pool.
+
+### How It Works
+
+1. User sends a large body of text via the chat interface
+2. The swarm proxy detects it as a corpus (>5K chars, low question density) and queues it
+3. Background workers chunk the text and use the LLM to extract entities, relationships, and claims
+4. All extracted knowledge is stored in an in-memory knowledge store (no external DB)
+5. While processing continues, the user can ask questions at any time
+6. Queries search the in-memory knowledge store using TF-IDF-like scoring
+7. The proxy prefixes every response with an honest status of what the swarm is doing
+8. Sending more text adds to the queue — it never resets or interrupts existing work
+
+### Swarm API
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/v1/chat/completions` | POST | OpenAI-compatible chat (auto-routes corpus vs query) |
+| `/v1/swarm/status` | GET | Full swarm status (workers, corpora, knowledge stats) |
+| `/v1/swarm/corpora` | GET | List all submitted corpora with processing status |
+| `/v1/swarm/sincerity` | GET | Current sincerity preamble (what the swarm would tell a user) |
+| `/v1/swarm/submit` | POST | Direct corpus submission API |
+| `/v1/swarm/knowledge` | GET | Knowledge store statistics (entities, relationships, claims, chunks) |
+
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `SWARM_PROXY_PORT` | `9500` | Listen port |
+| `SWARM_SYNTHESIS_MODEL` | `mistral-large-latest` | Model for query synthesis |
+| `SWARM_WORKER_MODEL` | `mistral-small-latest` | Model for worker tasks |
+| `SWARM_MAX_WORKERS` | `6` | Max concurrent background workers |
+| `SWARM_MAX_CONCURRENT_QUERIES` | `4` | Max concurrent query handlers |
+| `SWARM_CHUNK_SIZE` | `2000` | Characters per chunk |
+| `SWARM_CHUNK_OVERLAP` | `200` | Overlap between chunks |
+| `SWARM_LARGE_DOC_THRESHOLD` | `5000` | Char threshold for corpus detection |
+
 ## Design Philosophy
 
 - **No censorship** — system prompts demand direct answers without moralizing, disclaimers, or safety theater
@@ -228,7 +282,7 @@ All data is namespaced by conversation/context. Every node gets a `namespace` pr
 - **Full transparency** — all reasoning visible in thinking traces; all errors surfaced to the user
 - **Self-hosted search** — SearXNG means no dependence on commercial search APIs
 - **API-provider architecture** — uses Mistral cloud API, not local model hosting
-- **Neo4j-centric knowledge** — graph database as single source of truth for extracted knowledge; enables graph algorithms for serendipitous discovery
+- **Self-contained swarm** — the swarm proxy builds its own in-memory knowledge store with no external infrastructure dependencies
 
 ## License
 

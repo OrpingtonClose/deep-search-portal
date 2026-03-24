@@ -12,6 +12,9 @@ Module map:
     web_fetch       — enhanced_web_fetch, multi-tier fallback chain, 4chan archives
     search_tools2   — Twitter/X, arXiv, Wayback, Wikidata, HN, SE, PubMed, etc.
     tool_executor   — retry wrappers, PDF extraction, execute_tool dispatcher
+    rate_governor   — per-provider rate limiting, global concurrency, request staggering
+    search_cache    — SQLite-backed search result cache with TTL
+    tool_health     — real-time failure tracking, LLM root-cause analysis
     llm             — call_llm, message conversion
     pipeline        — condition admission, ConditionStore, QueryComprehension
     planning        — question router, entity extraction, citation verification

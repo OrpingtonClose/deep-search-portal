@@ -1528,26 +1528,156 @@ def _extract_video_id(url_or_id: str) -> Optional[str]:
     return None
 
 
+async def _whisperx_transcribe(video_id: str, lang: str = "en") -> str:
+    """Transcribe YouTube audio using WhisperX for high-accuracy timestamps.
+
+    Downloads audio via yt-dlp, runs WhisperX for word-level aligned
+    transcription.  Returns formatted transcript or empty string on failure.
+    """
+    loop = asyncio.get_running_loop()
+    yt_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    def _run_whisperx() -> str:
+        try:
+            import whisperx
+        except ImportError:
+            log.debug("WhisperX not installed, skipping")
+            return ""
+
+        try:
+            import yt_dlp
+        except ImportError:
+            log.debug("yt-dlp not installed, cannot download audio for WhisperX")
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = os.path.join(tmpdir, "audio.wav")
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "format": "bestaudio/best",
+                "outtmpl": os.path.join(tmpdir, "audio.%(ext)s"),
+                "postprocessors": [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "wav",
+                    "preferredquality": "16",
+                }],
+                "max_filesize": 200 * 1024 * 1024,  # 200MB cap
+            }
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([yt_url])
+            except Exception as e:
+                log.warning(f"WhisperX: yt-dlp download failed for {video_id}: {e}")
+                return ""
+
+            if not os.path.exists(audio_path):
+                # yt-dlp may name it differently
+                import glob as _glob
+                wavs = _glob.glob(os.path.join(tmpdir, "*.wav"))
+                if wavs:
+                    audio_path = wavs[0]
+                else:
+                    log.debug("WhisperX: no WAV file produced by yt-dlp")
+                    return ""
+
+            # Detect device
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            compute_type = "float16" if device == "cuda" else "int8"
+
+            # Load and transcribe
+            try:
+                model = whisperx.load_model(
+                    "large-v3", device, compute_type=compute_type,
+                    language=lang,
+                )
+                audio = whisperx.load_audio(audio_path)
+                result = model.transcribe(audio, batch_size=16)
+            except Exception as e:
+                log.warning(f"WhisperX transcription failed for {video_id}: {e}")
+                return ""
+
+            # Alignment for word-level timestamps
+            try:
+                model_a, metadata = whisperx.load_align_model(
+                    language_code=lang, device=device,
+                )
+                result = whisperx.align(
+                    result["segments"], model_a, metadata, audio, device,
+                    return_char_alignments=False,
+                )
+            except Exception as e:
+                log.debug(f"WhisperX alignment failed (using unaligned): {e}")
+
+            # Format output
+            segments = result.get("segments", [])
+            if not segments:
+                return ""
+
+            lines = []
+            for seg in segments:
+                start = seg.get("start", 0)
+                text = seg.get("text", "").strip()
+                if not text:
+                    continue
+                mins, secs = divmod(int(start), 60)
+                hours, mins = divmod(mins, 60)
+                if hours > 0:
+                    ts = f"[{hours}:{mins:02d}:{secs:02d}]"
+                else:
+                    ts = f"[{mins}:{secs:02d}]"
+                lines.append(f"{ts} {text}")
+
+            full_text = "\n".join(lines)
+            max_chars = 30000
+            if len(full_text) > max_chars:
+                full_text = (
+                    full_text[:max_chars]
+                    + f"\n\n[WHISPERX TRANSCRIPT TRUNCATED — {len(segments)} segments total]"
+                )
+            return f"YOUTUBE TRANSCRIPT (WhisperX) for {video_id}:\n{full_text}"
+
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _run_whisperx),
+            timeout=300.0,  # WhisperX can take several minutes
+        )
+    except asyncio.TimeoutError:
+        log.warning(f"WhisperX timed out for {video_id}")
+        return ""
+    except Exception as e:
+        log.warning(f"WhisperX error for {video_id}: {e}")
+        return ""
+
+
 async def tool_youtube_transcript(url: str, lang: str = "en") -> str:
     """Extract the full transcript/subtitles from a YouTube video.
 
-    Primary path uses LangChain's YoutubeLoader (wraps youtube-transcript-api).
-    Falls back to raw youtube-transcript-api with timestamped output if the
-    LangChain loader fails.  No API key needed, no browser needed.
+    Transcription priority:
+      1. **WhisperX** — most accurate, word-level timestamps, handles any language.
+         Requires: whisperx, torch, yt-dlp, ffmpeg.
+      2. **LangChain YoutubeLoader** — uses YouTube's own captions (fast, no GPU).
+      3. **youtube-transcript-api** — raw caption fallback with timestamps.
 
-    This is the PRIMARY way to extract spoken content from YouTube videos.
-    Contains the actual knowledge — practitioner explanations, lecture content,
+    YouTube videos are a MANDATORY data source for research.  This tool extracts
+    the actual spoken content — practitioner explanations, lecture content,
     interview dialogue, tutorial steps.
     """
     video_id = _extract_video_id(url)
     if not video_id:
         return f"Could not extract video ID from: {url}"
 
+    # --- Priority 1: WhisperX (best accuracy) ---
+    whisperx_result = await _whisperx_transcribe(video_id, lang)
+    if whisperx_result:
+        return whisperx_result
+
     loop = asyncio.get_running_loop()
     yt_url = f"https://www.youtube.com/watch?v={video_id}"
 
     def _fetch_transcript() -> str:
-        # --- Primary: LangChain YoutubeLoader ---
+        # --- Priority 2: LangChain YoutubeLoader ---
         try:
             from langchain_community.document_loaders import YoutubeLoader
 
@@ -1585,7 +1715,7 @@ async def tool_youtube_transcript(url: str, lang: str = "en") -> str:
         except Exception as e:
             log.debug(f"YoutubeLoader failed for {video_id}, falling back: {e}")
 
-        # --- Fallback: raw youtube-transcript-api with timestamps ---
+        # --- Priority 3: raw youtube-transcript-api with timestamps ---
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
         except ImportError:

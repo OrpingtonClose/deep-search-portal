@@ -367,6 +367,79 @@ async def throttle_stats():
     return JSONResponse({"throttlers": all_throttler_stats()})
 
 
+# ---------------------------------------------------------------------------
+# Tool Health Monitor + Search Cache + Rate Governor endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/v1/tool-health")
+async def tool_health_status():
+    """Return real-time health status for all tracked tools.
+
+    Shows per-tool success/failure rates, consecutive failure counts,
+    and flags degraded tools.  Open issues include LLM-generated root
+    cause analysis when available.
+    """
+    from tools.tool_health import get_monitor
+    from tools.search_cache import cache_stats
+    from tools.rate_governor import governor_stats
+
+    monitor = get_monitor()
+    return JSONResponse({
+        "tool_status": monitor.get_all_status(),
+        "open_issues": monitor.get_open_issues(),
+        "cache": cache_stats(),
+        "governor": governor_stats(),
+    })
+
+
+@app.get("/v1/tool-issues")
+async def tool_issues():
+    """List all open tool issues with LLM root-cause analysis."""
+    from tools.tool_health import get_monitor
+    monitor = get_monitor()
+    return JSONResponse({"issues": monitor.get_open_issues()})
+
+
+@app.post("/v1/tool-issues/{issue_id}/resolve")
+async def resolve_tool_issue(issue_id: int, request: Request):
+    """Mark a tool issue as resolved."""
+    if not await _validate_owui_token(request):
+        return _auth_denied()
+    from tools.tool_health import get_monitor
+    monitor = get_monitor()
+    ok = monitor.resolve_issue(issue_id)
+    if ok:
+        return JSONResponse({"resolved": True, "issue_id": issue_id})
+    return JSONResponse({"error": "Failed to resolve issue"}, status_code=400)
+
+
+@app.get("/v1/cache-stats")
+async def cache_statistics():
+    """Return search result cache statistics."""
+    from tools.search_cache import cache_stats, cache_evict_expired
+    evicted = cache_evict_expired()
+    stats = cache_stats()
+    stats["just_evicted"] = evicted
+    return JSONResponse(stats)
+
+
+@app.post("/v1/cache/clear")
+async def clear_cache(request: Request):
+    """Clear all cached search results."""
+    if not await _validate_owui_token(request):
+        return _auth_denied()
+    from tools.search_cache import cache_clear
+    deleted = cache_clear()
+    return JSONResponse({"cleared": deleted})
+
+
+@app.get("/v1/governor-stats")
+async def governor_statistics():
+    """Return rate governor statistics (global concurrency + per-provider)."""
+    from tools.rate_governor import governor_stats
+    return JSONResponse(governor_stats())
+
+
 @app.get("/v1/models")
 @app.get("/models")
 async def list_models():

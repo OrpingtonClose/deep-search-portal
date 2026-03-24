@@ -21,6 +21,9 @@ from .config import (
     log,
 )
 from .llm import _request_configs
+from .rate_governor import governed_request
+from .search_cache import cache_get, cache_put
+from .tool_health import record_outcome
 from .search_tools import (
     tool_news_search,
 )
@@ -403,15 +406,68 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
         return f"[TOOL_ERROR] Unknown tool: {tool_name}. This tool does not exist in the system."
 
 
+# Tools whose results are cacheable (search-type tools)
+_CACHEABLE_TOOLS = {
+    "searxng_search", "web_search", "news_search", "arxiv_search",
+    "wikidata_query", "hackernews_search", "stackexchange_search",
+    "pubmed_search", "wikipedia_search", "archiveorg_search",
+    "forum_search", "scholar_search", "substack_search",
+    "youtube_search", "youtube_transcript", "youtube_video_metadata",
+    "twitter_search", "telegram_search", "darknet_market_search",
+    "facebook_search", "discord_search", "signal_search",
+    "whatsapp_search", "crunchbase_search", "trustpilot_search",
+    "whois_lookup", "wayback_fetch",
+    "social_media_search", "reddit_search", "instagram_search",
+    "tiktok_search", "linkedin_search",
+    "chan_4plebs_search", "chan_b4k_search", "chan_warosu_search",
+}
+
+# Tools that involve long-running local computation (e.g. WhisperX GPU
+# transcription) and should NOT hold a global concurrency slot.  They are
+# still cacheable but bypass the rate governor entirely.
+_UNGOVERNED_HEAVY_TOOLS: set[str] = {
+    "youtube_transcript",    # WhisperX can take up to 300s of local GPU work
+    "youtube_video_analyze", # downloads + analyses video locally
+}
+
+# Tools that access the internet (governed by rate limiter).
+# Excludes heavy local-compute tools that would starve the global semaphore.
+_GOVERNED_TOOLS = (_CACHEABLE_TOOLS | {"fetch_webpage"}) - _UNGOVERNED_HEAVY_TOOLS
+
+
+def _extract_query_for_cache(tool_name: str, arguments: dict) -> str:
+    """Extract a normalized cache-relevant string from tool arguments.
+
+    Normalizes the primary query field (case-folding, stop-word removal,
+    word-order sorting) so that near-duplicate queries hit the cache,
+    while preserving all other parameters (subreddit, platform, etc.)
+    to avoid collisions.
+    """
+    from .search_cache import normalize_query
+
+    # Keys that contain the primary natural-language query
+    _QUERY_KEYS = ("query", "search_query", "question", "term", "keywords")
+
+    normalized = dict(arguments)
+    for key in _QUERY_KEYS:
+        val = normalized.get(key)
+        if isinstance(val, str) and val and not val.startswith("http"):
+            normalized[key] = normalize_query(val)
+    return json.dumps(normalized, sort_keys=True)
+
+
 async def execute_tool(
     tool_name: str,
     arguments: dict,
     req_id: str = "",
 ) -> str:
-    """Route and execute a tool call, firing LangChain callbacks.
+    """Route and execute a tool call with rate limiting, caching, and health tracking.
 
-    Wraps the inner tool execution with on_tool_start / on_tool_end
-    callbacks so that ResearchMetricsCallback tracks every tool call.
+    Wraps the inner tool execution with:
+      1. Search result cache (check before, store after)
+      2. Rate governor (per-provider throttling + global concurrency)
+      3. Tool health monitor (track success/failure rates)
+      4. LangChain callbacks for metrics
     """
     config = _request_configs.get(req_id, {}) if req_id else {}
     callbacks = config.get("callbacks", [])
@@ -426,16 +482,56 @@ async def execute_tool(
         except Exception:
             pass
 
+    # --- Step 1: Check cache for search tools ---
+    if tool_name in _CACHEABLE_TOOLS:
+        query_str = _extract_query_for_cache(tool_name, arguments)
+        cached = cache_get(tool_name, query_str)
+        if cached is not None:
+            log.debug(f"[{req_id}] Cache hit for {tool_name}: {query_str[:60]}")
+            for cb in callbacks:
+                try:
+                    cb.on_tool_end(f"[CACHED] {cached[:1000]}", run_id=run_id)
+                except Exception:
+                    pass
+            return cached
+
+    # --- Step 2: Execute with rate governor ---
     try:
-        result = await _execute_tool_inner(tool_name, arguments)
+        if tool_name in _GOVERNED_TOOLS:
+            async with governed_request(tool_name):
+                result = await _execute_tool_inner(tool_name, arguments)
+        else:
+            result = await _execute_tool_inner(tool_name, arguments)
     except Exception as e:
         error_str = str(e)
+        record_outcome(tool_name, success=False, error=error_str)
         for cb in callbacks:
             try:
                 cb.on_tool_error(e, run_id=run_id)
             except Exception:
                 pass
         return f"Tool error ({tool_name}): {error_str}"
+
+    # --- Step 3: Record health outcome ---
+    result_prefix = result[:80]
+    is_error = (
+        result_prefix.lower().startswith("error")
+        or result_prefix.lower().startswith("failed")
+        or "search error:" in result_prefix.lower()
+        or "timed out" in result_prefix.lower()
+        or result.startswith("[TOOL_ERROR]")
+        or result.startswith("Tool error")
+        or result.startswith("Unknown tool:")
+    )
+    if is_error:
+        record_outcome(tool_name, success=False, error=result[:500])
+    else:
+        record_outcome(tool_name, success=True)
+
+    # --- Step 4: Store in cache ---
+    if tool_name in _CACHEABLE_TOOLS and not is_error:
+        query_str = _extract_query_for_cache(tool_name, arguments)
+        cache_put(tool_name, query_str, result)
 
     # Fire on_tool_end for all registered callbacks
     for cb in callbacks:

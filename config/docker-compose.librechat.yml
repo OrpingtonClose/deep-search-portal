@@ -21,7 +21,7 @@
 
 services:
   api:
-    image: ghcr.io/danny-avila/librechat-dev:latest
+    image: ghcr.io/danny-avila/librechat:latest
     container_name: librechat-api
     ports:
       - "3000:3080"

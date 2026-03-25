@@ -65,6 +65,51 @@ services:
       - librechat-uploads:/app/uploads
       - librechat-logs:/app/api/logs
 
+  api-staging:
+    image: ghcr.io/danny-avila/librechat:latest
+    container_name: librechat-api-staging
+    ports:
+      - "3001:3080"
+    depends_on:
+      - mongodb
+      - meilisearch
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - /opt/.env
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3080
+      - NODE_ENV=production
+      - MONGO_URI=mongodb://mongodb:27017/LibreChatStaging
+      - MEILI_HOST=http://meilisearch:7700
+      - MEILI_KEY=${MEILI_KEY:-}
+      # --- Auth ---
+      - CREDS_KEY=${CREDS_KEY:?CREDS_KEY not set}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET not set}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-${JWT_SECRET}}
+      # --- Google OAuth ---
+      - ALLOW_SOCIAL_LOGIN=true
+      - ALLOW_SOCIAL_REGISTRATION=true
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID not set}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:?GOOGLE_CLIENT_SECRET not set}
+      - GOOGLE_CALLBACK_URL=/oauth/google/callback
+      - DOMAIN_CLIENT=https://staging.deep-search.uk
+      - DOMAIN_SERVER=https://staging.deep-search.uk
+      # --- Registration ---
+      - ALLOW_EMAIL_LOGIN=true
+      - ALLOW_REGISTRATION=false
+      # --- Endpoints ---
+      - ENDPOINTS=custom
+    volumes:
+      - type: bind
+        source: ./librechat.yaml
+        target: /app/librechat.yaml
+      - librechat-staging-images:/app/client/public/images
+      - librechat-staging-uploads:/app/uploads
+      - librechat-staging-logs:/app/api/logs
+
   mongodb:
     image: mongo:8.0
     container_name: librechat-mongodb
@@ -89,3 +134,6 @@ volumes:
   librechat-images:
   librechat-uploads:
   librechat-logs:
+  librechat-staging-images:
+  librechat-staging-uploads:
+  librechat-staging-logs:

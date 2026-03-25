@@ -275,7 +275,7 @@ async def stream_thinking_response(
                         if remaining.strip():
                             if "</THINKING>" in remaining:
                                 think_part = remaining[:remaining.index("</THINKING>")]
-                                buffer = remaining[remaining.index("</THINKING>"):]
+                                buffer = remaining[remaining.index("</THINKING>") + len("</THINKING>"):]
                                 if think_part.strip():
                                     yield _chunk(reasoning=think_part)
                                 in_thinking = False

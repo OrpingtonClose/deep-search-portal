@@ -69,7 +69,7 @@ services:
     image: ghcr.io/danny-avila/librechat:latest
     container_name: librechat-api-staging
     ports:
-      - "3001:3080"
+      - "${LIBRECHAT_STAGING_PORT:-3002}:3080"
     depends_on:
       - mongodb
       - meilisearch

@@ -350,6 +350,7 @@ async def _heartbeat_loop(
     req_id: str,
     interval: float = 8.0,
     curated_queue: Optional[asyncio.Queue] = None,
+    reasoning_chunk_fn=None,
 ) -> None:
     """Background task: emit curated research updates into the SSE stream.
 
@@ -360,6 +361,8 @@ async def _heartbeat_loop(
     Also emits `: keepalive` SSE comments every 5 seconds to prevent
     proxy/CDN timeouts (these are invisible to the UI parser).
     """
+    if reasoning_chunk_fn is None:
+        reasoning_chunk_fn = chunk_fn
     phrase_idx = [0]
     last_heartbeat = time.monotonic()
     KEEPALIVE_INTERVAL = 5.0
@@ -380,11 +383,11 @@ async def _heartbeat_loop(
             if curated_msg is not None:
                 formatted = await _format_curated_event_llm(curated_msg, req_id)
                 if formatted:
-                    await output_queue.put(chunk_fn(f"\n{formatted}\n"))
+                    await output_queue.put(reasoning_chunk_fn(f"\n{formatted}\n"))
                     last_heartbeat = time.monotonic()
             elif time_since_heartbeat >= interval:
                 msg = await _generate_heartbeat_message(collector, req_id, phrase_idx)
-                await output_queue.put(chunk_fn(f"\n{msg}\n"))
+                await output_queue.put(reasoning_chunk_fn(f"\n{msg}\n"))
                 last_heartbeat = time.monotonic()
             else:
                 # Emit invisible keepalive comment
@@ -1973,6 +1976,7 @@ async def _pipeline_producer(
     chunk_fn,
     req_id: str,
     graph: Any = None,
+    reasoning_chunk_fn=None,
 ) -> None:
     """Run the LangGraph pipeline and push SSE chunks to the output queue.
 
@@ -1986,6 +1990,8 @@ async def _pipeline_producer(
         graph: The compiled LangGraph to run.  Defaults to the module-level
             ``_persistent_research_graph`` (no checkpointer) if not provided.
     """
+    if reasoning_chunk_fn is None:
+        reasoning_chunk_fn = chunk_fn
     if graph is None:
         graph = _persistent_research_graph
 
@@ -1998,11 +2004,8 @@ async def _pipeline_producer(
             final_state = state_update
             progress_list = state_update.get("progress_log", [])
             for msg in progress_list[last_progress_idx:]:
-                await output_queue.put(chunk_fn(msg))
+                await output_queue.put(reasoning_chunk_fn(msg))
             last_progress_idx = len(progress_list)
-
-        # Pipeline done — emit closing think tag, links header, and final answer
-        await output_queue.put(chunk_fn("\n</think>\n\n"))
 
         # Emit report + trace links as the first visible lines
         report_url = final_state.get("report_url", "")
@@ -2064,8 +2067,7 @@ async def _pipeline_producer(
         elapsed = time.monotonic() - start_time if start_time else 0
         tb = traceback.format_exc()
         log.error(f"[{req_id}] Persistent research error after {elapsed:.2f}s: {e}\n{tb}")
-        await output_queue.put(chunk_fn(f"\nError: {str(e)}\n"))
-        await output_queue.put(chunk_fn("\n</think>\n\n"))
+        await output_queue.put(reasoning_chunk_fn(f"\nError: {str(e)}\n"))
         await output_queue.put(chunk_fn(f"**Deep Research Error**\n\nAn error occurred during research: {str(e)}"))
         await output_queue.put(chunk_fn("", finish_reason="stop"))
         await output_queue.put("data: [DONE]\n\n")
@@ -2217,7 +2219,15 @@ async def run_persistent_research(
     _metrics_collectors[req_id] = metrics_collector
     metrics_callback = ResearchMetricsCallback(metrics_collector)
 
-    yield chunk("<think>\n")
+    def reasoning_chunk(content: str) -> str:
+        """Emit a reasoning_content delta (collapsible Thinking block)."""
+        return make_sse_chunk(
+            "",
+            request_id=request_id,
+            created=created,
+            model_id=model_id,
+            reasoning_content=content,
+        )
 
     callbacks = [metrics_callback]
     if langfuse_handler is not None:
@@ -2270,6 +2280,7 @@ async def run_persistent_research(
         _pipeline_producer(
             initial_state, config, output_queue, chunk, req_id,
             graph=checkpointed_graph,
+            reasoning_chunk_fn=reasoning_chunk,
         )
     )
 
@@ -2278,6 +2289,7 @@ async def run_persistent_research(
         _heartbeat_loop(
             output_queue, collector, chunk, req_id,
             interval=8.0, curated_queue=curated_queue,
+            reasoning_chunk_fn=reasoning_chunk,
         )
     )
 

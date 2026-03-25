@@ -1242,6 +1242,16 @@ async def _handle_query(
             finish_reason=finish_reason,
         )
 
+    def reasoning_sse(content: str) -> str:
+        """Emit a reasoning_content delta (collapsible Thinking block)."""
+        return make_sse_chunk(
+            "",
+            request_id=request_id,
+            created=created,
+            model_id=model_id,
+            reasoning_content=content,
+        )
+
     # Extract the user's question
     user_query = ""
     for msg in reversed(messages):
@@ -1269,19 +1279,18 @@ async def _handle_query(
     status_preamble = await swarm.build_sincerity_preamble()
 
     # Stream the thinking section with status
-    yield sse("<think>\n")
-    yield sse(status_preamble)
-    yield sse(f"**Query:** {user_query[:200]}\n\n")
+    yield reasoning_sse(status_preamble)
+    yield reasoning_sse(f"**Query:** {user_query[:200]}\n\n")
 
     # Query the knowledge store
-    yield sse("**[Searching swarm knowledge...]**\n")
+    yield reasoning_sse("**[Searching swarm knowledge...]**\n")
     knowledge_results = await _query_knowledge(user_query, req_id)
 
     # Show what we found
     result_summary = knowledge_results[:500]
     if len(knowledge_results) > 500:
         result_summary += "..."
-    yield sse(f"Found knowledge:\n{result_summary}\n\n")
+    yield reasoning_sse(f"Found knowledge:\n{result_summary}\n\n")
 
     # Build the synthesis prompt
     system_prompt = _QUERY_SYSTEM_PROMPT.format(
@@ -1304,8 +1313,7 @@ async def _handle_query(
                 "content": msg_content,
             })
 
-    yield sse("**[Synthesising answer...]**\n")
-    yield sse("</think>\n\n")
+    yield reasoning_sse("**[Synthesising answer...]**\n")
 
     # Call LLM for synthesis and stream the response
     try:
@@ -1405,10 +1413,19 @@ async def _handle_corpus_submission(
 
     title = text[:80].replace("\n", " ").strip()
 
-    yield sse("<think>\n")
-    yield sse(f"**[Corpus Received]** {len(text):,} characters\n")
-    yield sse(f"Title: {title}...\n")
-    yield sse(
+    def reasoning_sse(content: str) -> str:
+        """Emit a reasoning_content delta (collapsible Thinking block)."""
+        return make_sse_chunk(
+            "",
+            request_id=request_id,
+            created=created,
+            model_id=model_id,
+            reasoning_content=content,
+        )
+
+    yield reasoning_sse(f"**[Corpus Received]** {len(text):,} characters\n")
+    yield reasoning_sse(f"Title: {title}...\n")
+    yield reasoning_sse(
         "Submitting to the swarm for background processing...\n",
     )
 
@@ -1417,13 +1434,12 @@ async def _handle_corpus_submission(
         text, title=title, source="chat-submission",
     )
 
-    yield sse(f"Corpus ID: {record.id}\n")
-    yield sse("Status: Queued for processing\n")
+    yield reasoning_sse(f"Corpus ID: {record.id}\n")
+    yield reasoning_sse("Status: Queued for processing\n")
 
     # Show current swarm state
     status = await swarm.build_sincerity_preamble()
-    yield sse(f"\n{status}")
-    yield sse("</think>\n\n")
+    yield reasoning_sse(f"\n{status}")
 
     # User-facing response
     snapshot = await swarm.get_status_snapshot()

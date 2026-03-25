@@ -633,8 +633,11 @@ async def _pipeline_producer(
     output_queue: asyncio.Queue,
     chunk_fn,
     req_id: str,
+    reasoning_chunk_fn=None,
 ) -> None:
     """Run the LangGraph pipeline and push SSE chunks to the output queue."""
+    if reasoning_chunk_fn is None:
+        reasoning_chunk_fn = chunk_fn
     last_progress_idx = 0
     final_state = initial_state
 
@@ -647,19 +650,19 @@ async def _pipeline_producer(
             # Emit new progress messages
             progress_list = state_update.get("progress_log", [])
             for msg in progress_list[last_progress_idx:]:
-                await output_queue.put(chunk_fn(f"  {msg}\n"))
+                await output_queue.put(reasoning_chunk_fn(f"  {msg}\n"))
             last_progress_idx = len(progress_list)
 
             # Stream phase transitions
             phase = state_update.get("phase", "")
             if phase == "verify":
-                await output_queue.put(chunk_fn(
+                await output_queue.put(reasoning_chunk_fn(
                     "\n**[Phase 2: Veritas Fact-Check]**\n"
                     "Running claim decomposition, evidence gathering, debate, "
                     "and final judgement...\n\n"
                 ))
             elif phase == "revise":
-                await output_queue.put(chunk_fn(
+                await output_queue.put(reasoning_chunk_fn(
                     "\n**[Phase 3: Revision]**\n"
                     "Correcting hallucinated/overconfident claims...\n\n"
                 ))
@@ -667,8 +670,7 @@ async def _pipeline_producer(
         # Check for error state
         error = final_state.get("error", "")
         if error:
-            await output_queue.put(chunk_fn(f"\nError: {error}\n"))
-            await output_queue.put(chunk_fn("\n</think>\n\n"))
+            await output_queue.put(reasoning_chunk_fn(f"\nError: {error}\n"))
             await output_queue.put(chunk_fn(
                 f"**Mistral (Real) Error**\n\nAn error occurred: {error}"
             ))
@@ -676,7 +678,7 @@ async def _pipeline_producer(
             await output_queue.put("data: [DONE]\n\n")
             return
 
-        # Emit verification summary before closing think tags
+        # Emit verification summary before final answer
         report = final_state.get("veritas_report", {})
         if report:
             score = final_state.get("overall_score", -1)
@@ -684,18 +686,18 @@ async def _pipeline_producer(
             claims = final_state.get("claims_summary", [])
             revision_round = final_state.get("revision_round", 0)
 
-            await output_queue.put(chunk_fn("\n---\n"))
-            await output_queue.put(chunk_fn(
+            await output_queue.put(reasoning_chunk_fn("\n---\n"))
+            await output_queue.put(reasoning_chunk_fn(
                 f"**Verification Summary:** "
                 f"truthfulness={score:.0%}, "
                 f"hallucination_risk={halluc:.0%}, "
                 f"claims_checked={len(claims)}"
             ))
             if revision_round > 0:
-                await output_queue.put(chunk_fn(
+                await output_queue.put(reasoning_chunk_fn(
                     f", revision_rounds={revision_round}"
                 ))
-            await output_queue.put(chunk_fn("\n"))
+            await output_queue.put(reasoning_chunk_fn("\n"))
 
             # Show claim statuses
             for c in claims:
@@ -706,12 +708,9 @@ async def _pipeline_producer(
                     "hallucinated": "FAIL",
                     "overconfident": "WARN",
                 }.get(status, status.upper())
-                await output_queue.put(chunk_fn(
+                await output_queue.put(reasoning_chunk_fn(
                     f"  [{marker}] {c['claim'][:100]}\n"
                 ))
-
-        # Close thinking tags
-        await output_queue.put(chunk_fn("\n</think>\n\n"))
 
         # Stream the final answer
         final_answer = final_state.get("final_answer", "(No answer generated)")
@@ -724,8 +723,7 @@ async def _pipeline_producer(
     except Exception as e:
         tb = traceback.format_exc()
         log.error(f"[{req_id}] Pipeline error: {e}\n{tb}")
-        await output_queue.put(chunk_fn(f"\nError: {e}\n"))
-        await output_queue.put(chunk_fn("\n</think>\n\n"))
+        await output_queue.put(reasoning_chunk_fn(f"\nError: {e}\n"))
         await output_queue.put(chunk_fn(
             f"**Mistral (Real) Error**\n\nAn error occurred during "
             f"verified response generation: {e}"
@@ -805,12 +803,21 @@ async def run_mistral_real(
         tags=["mistral-real"],
     )
 
+    def reasoning_chunk(content: str) -> str:
+        """Emit a reasoning_content delta (collapsible Thinking block)."""
+        return make_sse_chunk(
+            "",
+            request_id=request_id,
+            created=created,
+            model_id=model_id,
+            reasoning_content=content,
+        )
+
     if langfuse_trace_url:
         yield chunk(f"[Langfuse trace]({langfuse_trace_url})\n\n")
 
-    yield chunk("<think>\n")
-    yield chunk("**[Phase 1: Draft Generation]**\n")
-    yield chunk(f"Using {UPSTREAM_MODEL} to generate a reasoned draft...\n\n")
+    yield reasoning_chunk("**[Phase 1: Draft Generation]**\n")
+    yield reasoning_chunk(f"Using {UPSTREAM_MODEL} to generate a reasoned draft...\n\n")
 
     # Wire LangChain callbacks so metrics fire for every LLM/tool call
     metrics_collector = MetricsCollector(session_id=req_id, query=user_query)
@@ -825,7 +832,8 @@ async def run_mistral_real(
     _real_request_configs[req_id] = config
 
     pipeline_task = asyncio.create_task(
-        _pipeline_producer(initial_state, config, output_queue, chunk, req_id)
+        _pipeline_producer(initial_state, config, output_queue, chunk, req_id,
+                           reasoning_chunk_fn=reasoning_chunk)
     )
 
     try:

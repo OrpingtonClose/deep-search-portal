@@ -278,10 +278,20 @@ def extract_user_text_with_attachments(messages: list[dict]) -> str:
     user_text = extract_user_text(messages)
 
     # 2) Look for a system message whose content starts with the
-    #    LibreChat attachment marker.  We search backwards so that the
-    #    *nearest* system message to the user message wins.
+    #    LibreChat attachment marker — but ONLY in the *current turn*.
+    #    In multi-turn conversations the full history is sent with each
+    #    request, so an attachment system message from turn 1 would still
+    #    be present in turns 2, 3, etc.  Scoping to messages after the
+    #    last assistant reply prevents stale attachments from being
+    #    re-injected on every follow-up.
     attachment_prefix = "Attached document(s):"
-    for msg in reversed(messages):
+    last_asst_idx = -1
+    for idx in range(len(messages) - 1, -1, -1):
+        if messages[idx].get("role") == "assistant":
+            last_asst_idx = idx
+            break
+    current_turn = messages[last_asst_idx + 1:]
+    for msg in reversed(current_turn):
         if msg.get("role") != "system":
             continue
         text = _msg_text(msg)

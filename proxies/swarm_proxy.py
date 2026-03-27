@@ -872,7 +872,7 @@ async def _extract_from_chunk(
         corpus_title=corpus_title,
         chunk_index=chunk_index + 1,
         total_chunks=total_chunks,
-        chunk_text=chunk_text[:3000],
+        chunk_text=chunk_text,
     )
 
     result = await _call_llm(
@@ -1731,7 +1731,7 @@ async def chat_completions(request: Request):
                         # Build synthesis with document context
                         doc_context = "\n\n".join(
                             f"[From attachment: {d.filename}]\n"
-                            f"{d.content[:3000]}"
+                            f"{d.content}"
                             for d in parsed.documents
                         )
 
@@ -1748,7 +1748,7 @@ async def chat_completions(request: Request):
                             "**SWARM STATUS:**\n"
                             f"{status}\n\n"
                             "**DOCUMENT EXCERPTS:**\n"
-                            f"{doc_context[:8000]}\n\n"
+                            f"{doc_context}\n\n"
                             "**EXISTING KNOWLEDGE:**\n"
                             f"{knowledge_results}\n\n"
                             "**RULES:**\n"

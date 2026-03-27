@@ -2236,6 +2236,7 @@ async def run_persistent_research(
     config = {
         "configurable": {"thread_id": req_id},
         "callbacks": callbacks,
+        "recursion_limit": 150,  # persistent pipeline has many nodes per cycle
         "run_name": "persistent_research_pipeline",
         "metadata": {
             "req_id": req_id,

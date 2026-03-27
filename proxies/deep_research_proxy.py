@@ -808,6 +808,13 @@ async def node_process_result(state: ResearchState) -> dict:
     agent_messages = list(state["agent_messages"])
     progress: list[str] = []
 
+    log.info(
+        f"[{req_id}] process_result: turn={turn}, has_error={'error' in result}, "
+        f"content_len={len(result.get('content', ''))}, "
+        f"has_tool_calls={bool(result.get('tool_calls'))}, "
+        f"consecutive_no_tool={consecutive_no_tool_turns}, turns_with_tools={turns_with_tools}"
+    )
+
     # --- Error handling ---
     if "error" in result:
         consecutive_errors += 1
@@ -872,6 +879,10 @@ async def node_process_result(state: ResearchState) -> dict:
             }
 
         # Model is done
+        log.info(
+            f"[{req_id}] Research stopping: can_stop=True, content_len={len(content)}, "
+            f"content_preview={content[:200]!r}"
+        )
         progress.append(
             f"\nResearch complete ({turns_with_tools} rounds, "
             f"{total_tool_calls} tool calls). Generating answer...\n"
@@ -1136,6 +1147,7 @@ async def run_deep_research(
     config = {
         "configurable": {"thread_id": req_id},
         "callbacks": callbacks,
+        "recursion_limit": MAX_AGENT_TURNS * 5 + 10,  # ~4 nodes per turn + headroom
     }
     _deep_request_configs[req_id] = config
     last_progress_idx = 0
@@ -1171,6 +1183,11 @@ async def run_deep_research(
             last_progress_idx = len(progress_list)
 
         # Emit final answer
+        log.info(
+            f"[{req_id}] Graph done. final_answer len={len(final_state.get('final_answer', ''))}, "
+            f"phase={final_state.get('phase')}, finish_reason={final_state.get('finish_reason')}, "
+            f"turn={final_state.get('turn')}, turns_with_tools={final_state.get('turns_with_tools')}"
+        )
         final_answer = final_state.get("final_answer") or "(No answer generated)"
         for i in range(0, len(final_answer), 200):
             yield chunk(final_answer[i:i + 200])

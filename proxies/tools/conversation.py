@@ -410,3 +410,71 @@ def build_followup_context(
         "prior_comprehension": prior_comprehension,
         "turn_count": len(prior_turns),
     }
+
+
+# ---------------------------------------------------------------------------
+# Prompt inheritance: merge prior focus with new prompt
+# ---------------------------------------------------------------------------
+
+_MERGE_FOCUS_PROMPT = """You are a research direction merger. You have two inputs:
+
+PRIOR FOCUS (the research direction from the previous turn):
+{prior_focus}
+
+NEW PROMPT (the user's latest instruction):
+{new_prompt}
+
+Rules — follow these EXACTLY:
+1. CONFLICT: If the new prompt explicitly states something that conflicts with the prior focus, the NEW PROMPT wins. Remove or replace the conflicting term from the prior focus.
+2. NON-CONTRADICTION: If the prior focus contains terms, constraints, or scope that the new prompt does NOT mention or contradict, carry them forward UNCHANGED into the merged result.
+3. UNSTATED: Aspects of the prior focus not addressed at all by the new prompt are assumed unchanged and MUST be preserved.
+
+Output ONLY the merged research direction as a single coherent sentence or short paragraph. Do NOT explain your reasoning, do NOT list rules, do NOT use bullet points. Just output the merged focus."""
+
+
+async def merge_research_focus(
+    prior_focus: str,
+    new_prompt: str,
+    req_id: str,
+) -> str:
+    """Merge a prior research focus with a new user prompt.
+
+    Implements the prompt-inheritance rules from PMFB-FU-02 through PMFB-FU-04:
+    - New prompt takes precedence on conflict.
+    - Non-contradicting terms from prior focus are inherited.
+    - Unstated aspects are carried forward unchanged.
+
+    Falls back to the new prompt verbatim if the LLM call fails.
+
+    See ``docs/persistent-miroflow-behaviors.md`` for the full spec.
+    """
+    if not prior_focus or not prior_focus.strip():
+        return new_prompt
+
+    prompt = (
+        _MERGE_FOCUS_PROMPT
+        .replace("{prior_focus}", prior_focus[:2000])
+        .replace("{new_prompt}", new_prompt[:2000])
+    )
+
+    try:
+        result = await call_llm(
+            [{"role": "user", "content": prompt}],
+            req_id,
+            model=SUBAGENT_MODEL,
+            max_tokens=500,
+            temperature=0.1,
+        )
+        if "error" not in result:
+            merged = result.get("content", "").strip()
+            if merged:
+                log.info(
+                    "[%s] Merged research focus: prior=%r new=%r -> merged=%r",
+                    req_id, prior_focus[:80], new_prompt[:80], merged[:120],
+                )
+                return merged
+    except Exception as e:
+        log.warning(f"[{req_id}] Focus merge LLM call failed (using new prompt): {e}")
+
+    # Fallback: just use the new prompt as-is
+    return new_prompt

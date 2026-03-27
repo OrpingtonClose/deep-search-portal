@@ -1171,7 +1171,7 @@ async def run_deep_research(
             last_progress_idx = len(progress_list)
 
         # Emit final answer
-        final_answer = final_state.get("final_answer", "(No answer generated)")
+        final_answer = final_state.get("final_answer") or "(No answer generated)"
         for i in range(0, len(final_answer), 200):
             yield chunk(final_answer[i:i + 200])
         yield chunk("", finish_reason="stop")

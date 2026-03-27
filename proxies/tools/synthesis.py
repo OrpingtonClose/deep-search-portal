@@ -2021,7 +2021,7 @@ async def _pipeline_producer(
         if link_lines:
             await output_queue.put(chunk_fn(" | ".join(link_lines) + "\n\n"))
 
-        final_answer = final_state.get("final_answer", "(No answer generated)")
+        final_answer = final_state.get("final_answer") or "(No answer generated)"
         for i in range(0, len(final_answer), 200):
             await output_queue.put(chunk_fn(final_answer[i:i + 200]))
         await output_queue.put(chunk_fn("", finish_reason="stop"))

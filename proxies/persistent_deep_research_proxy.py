@@ -1159,8 +1159,16 @@ async def chat_completions(request: Request):
                 )
             elif raw_prompt:
                 effective_prompt = raw_prompt
+            elif prior_focus:
+                # No explicit prompt but prior focus exists — inherit it
+                # (PMFB-FU-04: unstated aspects carried forward unchanged)
+                effective_prompt = prior_focus
+                log.info(
+                    f"[{req_id}] No typed prompt with attachment; "
+                    f"inheriting prior focus: {prior_focus[:80]!r}"
+                )
             else:
-                # No explicit prompt — use a default research directive
+                # No explicit prompt and no prior focus — use default
                 # (PMFB-ATT-05)
                 effective_prompt = (
                     "Analyse the attached document(s) thoroughly. "

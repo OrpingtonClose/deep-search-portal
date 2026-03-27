@@ -123,7 +123,8 @@ def _find_attachment_block(text: str) -> tuple[str, str] | None:
 
     body_start = m.end()          # first char after the opening ```md\n
     lines = text[body_start:].split("\n")
-    depth = 0
+    depth = 0                     # nesting depth for language-tagged fences
+    bare_open = False             # toggle: inside a bare-fence code block?
     closing_idx: int | None = None
 
     for i, line in enumerate(lines):
@@ -136,48 +137,61 @@ def _find_attachment_block(text: str) -> tuple[str, str] | None:
             continue
 
         has_lang = len(stripped) > 3 and stripped[3:].strip() != ""
-        if has_lang:
-            # Opening fence like ```python, ```bash, etc.
+        if has_lang and not bare_open:
+            # Opening fence like ```python — only when not inside a bare block
             depth += 1
+        elif has_lang and bare_open:
+            # Language-tagged fence inside a bare block — ignore (content)
+            pass
         else:
-            # Bare ``` — could be opening or closing an inner block,
-            # or the real attachment-closing marker.
+            # Bare ``` line
             if depth > 0:
-                # Close an inner code block
+                # Close a language-tagged inner code block
                 depth -= 1
-            elif depth == 0 and i > 0:
-                # Not the very first line and depth is 0.
-                # Heuristic: if the previous bare ``` at depth 0 was
-                # an opening fence for a bare code block, this one
-                # closes it. We use a simple toggle to pair them.
-                # But first check if there are more bare fences ahead;
-                # if so, this is an inner open. Scan forward to decide.
-                # Simple approach: treat as inner-open (depth++) when
-                # there is at least one more bare ``` ahead at the
-                # same nesting level, otherwise it's the real closer.
-                remaining = lines[i + 1:]
-                has_future_bare = any(
-                    ln.strip() == "```" or (
-                        ln.strip().startswith("```")
-                        and not ln.strip().startswith("````")
-                        and ln.strip()[3:].strip() == ""
+            elif bare_open:
+                # Close a bare-fence inner code block (toggle off)
+                bare_open = False
+            else:
+                # depth == 0 and not inside a bare block.
+                # Check if the next non-blank line looks like document
+                # content (e.g. starts with text, a heading, etc.)
+                # rather than the end of the attachment block.
+                # Heuristic: if the next non-blank line exists AND
+                # doesn't look like a user prompt separator, treat
+                # this as opening a bare inner code block.
+                # But the simplest correct approach: peek ahead to see
+                # if there's a matching bare ``` before any file header
+                # (# "filename") or end-of-string. If yes, this is an
+                # inner open. If no, this is the real closer.
+                found_pair = False
+                inner_depth = 0
+                for j in range(i + 1, len(lines)):
+                    js = lines[j].strip()
+                    js_is_fence = (
+                        js.startswith("```")
+                        and not js.startswith("````")
                     )
-                    for ln in remaining
-                )
-                if has_future_bare:
-                    # There's at least one more bare ``` ahead — treat
-                    # this one as opening an inner bare code block.
-                    depth += 1
+                    if not js_is_fence:
+                        continue
+                    js_has_lang = len(js) > 3 and js[3:].strip() != ""
+                    if js_has_lang:
+                        inner_depth += 1
+                    elif inner_depth > 0:
+                        inner_depth -= 1
+                    else:
+                        # Found a matching bare ``` — this pair is
+                        # an inner bare code block, not the closer.
+                        found_pair = True
+                        break
+
+                if found_pair:
+                    bare_open = True  # toggle on — inside bare block
                 else:
-                    # No more bare fences ahead — this is the real
-                    # closing marker of the attachment block.
+                    # No matching bare ``` ahead (ignoring nested
+                    # language-tagged fences) — this is the real
+                    # attachment-closing marker.
                     closing_idx = i
                     break
-            else:
-                # Very first line is a bare ``` at depth 0 — that's the
-                # real closing marker (empty attachment block edge case).
-                closing_idx = i
-                break
 
     if closing_idx is None:
         return None

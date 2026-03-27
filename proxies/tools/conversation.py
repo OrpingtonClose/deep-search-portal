@@ -451,11 +451,10 @@ async def merge_research_focus(
     if not prior_focus or not prior_focus.strip():
         return new_prompt
 
-    prompt = (
-        _MERGE_FOCUS_PROMPT
-        .replace("{prior_focus}", prior_focus[:2000])
-        .replace("{new_prompt}", new_prompt[:2000])
-    )
+    prompt = _MERGE_FOCUS_PROMPT.format_map({
+        "prior_focus": prior_focus[:2000],
+        "new_prompt": new_prompt[:2000],
+    })
 
     try:
         result = await call_llm(

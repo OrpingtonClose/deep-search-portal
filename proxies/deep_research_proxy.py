@@ -1024,6 +1024,9 @@ async def node_force_answer(state: ResearchState) -> dict:
 def route_research(state: ResearchState) -> str:
     """Conditional edge router for the research graph."""
     phase = state.get("phase", "done")
+    req_id = state.get("req_id", "?")
+    turn = state.get("turn", 0)
+    log.info(f"[{req_id}] route_research: phase={phase}, turn={turn}")
     if phase == "call_llm":
         return "call_llm"
     if phase == "execute_tools":
@@ -1157,23 +1160,46 @@ async def run_deep_research(
         # Wrap astream iteration with keepalive: emit a dot every 8s when
         # no state update arrives (e.g. during long LLM calls) to prevent
         # reverse proxies and HTTP clients from timing out the SSE stream.
+        #
+        # IMPORTANT: We must NOT use asyncio.wait_for() on __anext__()
+        # because cancelling the coroutine corrupts the async generator's
+        # internal state, causing a spurious StopAsyncIteration on the
+        # next call.  Instead we consume the stream in a background task
+        # that pushes items into a queue, and read from the queue with a
+        # timeout for keepalive.
         KEEPALIVE_INTERVAL = 8  # seconds
-        astream_iter = _research_graph.astream(
-            initial_state, config=config, stream_mode="values",
-        ).__aiter__()
-        done = False
-        while not done:
+        _SENTINEL = object()
+        state_queue: asyncio.Queue = asyncio.Queue()
+
+        async def _consume_astream():
             try:
-                state_update = await asyncio.wait_for(
-                    astream_iter.__anext__(), timeout=KEEPALIVE_INTERVAL,
+                async for state_update in _research_graph.astream(
+                    initial_state, config=config, stream_mode="values",
+                ):
+                    await state_queue.put(state_update)
+            except Exception as exc:
+                await state_queue.put(exc)
+            finally:
+                await state_queue.put(_SENTINEL)
+
+        consumer_task = asyncio.create_task(_consume_astream())
+
+        while True:
+            try:
+                item = await asyncio.wait_for(
+                    state_queue.get(), timeout=KEEPALIVE_INTERVAL,
                 )
             except asyncio.TimeoutError:
                 yield reasoning_chunk(".")
                 continue
-            except StopAsyncIteration:
-                done = True
-                break
 
+            if item is _SENTINEL:
+                log.info(f"[{req_id}] astream completed")
+                break
+            if isinstance(item, Exception):
+                raise item
+
+            state_update = item
             final_state = state_update
             tracker.update(req_id, current_turn=state_update.get("turn", 0))
             # Emit new progress messages

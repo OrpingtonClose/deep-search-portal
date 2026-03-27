@@ -77,10 +77,10 @@ endpoints:
       baseURL: "http://host.docker.internal:9500/v1"
       models:
         default:
-          - "swarm-deep-search"
+          - "swarm-miroflow"
         fetch: true
       titleConvo: true
-      titleModel: "swarm-deep-search"
+      titleModel: "swarm-miroflow"
       summarize: false
       dropParams:
         - "stop"

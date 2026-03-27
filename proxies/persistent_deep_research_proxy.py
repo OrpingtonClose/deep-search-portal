@@ -1118,6 +1118,7 @@ async def chat_completions(request: Request):
         #   - Sending a new prompt restarts research with new focus (PMFB-FU-01)
         # ------------------------------------------------------------------
         prior_focus = ""
+        conversation_id = ""
         try:
             conversation_id = derive_conversation_id(
                 messages, chat_id=body.get("chat_id"),

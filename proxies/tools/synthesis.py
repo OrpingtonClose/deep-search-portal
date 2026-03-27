@@ -2084,6 +2084,8 @@ async def run_persistent_research(
     user_messages: list[dict],
     original_body: dict,
     req_id: str,
+    *,
+    conversation_id_override: str = "",
 ) -> AsyncGenerator[str, None]:
     """Orchestrate the full persistent deep research pipeline via LangGraph.
 
@@ -2131,7 +2133,12 @@ async def run_persistent_research(
     log.info(f"[{req_id}] Starting persistent deep research: {user_query[:100]}")
 
     # --- Conversation continuity: detect follow-ups ---
-    conversation_id = derive_conversation_id(
+    # Use pre-computed conversation_id if provided (e.g. when the outer
+    # code has already derived it from the *original* messages before
+    # augmenting them with attachment directives).  This prevents ID
+    # mismatches when the first turn has file attachments but no typed
+    # prompt — see Devin Review BUG_pr-review-job-38f492e..._0001.
+    conversation_id = conversation_id_override or derive_conversation_id(
         user_messages, chat_id=original_body.get("chat_id"),
     )
     conversation_turn = count_user_turns(user_messages) - 1  # 0-indexed

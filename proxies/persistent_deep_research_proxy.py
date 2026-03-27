@@ -1234,6 +1234,7 @@ async def chat_completions(request: Request):
                 async with limiter.hold():
                     async for event in run_persistent_research(
                         augmented_messages, body, req_id,
+                        conversation_id_override=conversation_id,
                     ):
                         yield event
 
@@ -1298,7 +1299,10 @@ async def chat_completions(request: Request):
 
             async def _guarded_research():
                 async with limiter.hold():
-                    async for event in run_persistent_research(messages, body, req_id):
+                    async for event in run_persistent_research(
+                        messages, body, req_id,
+                        conversation_id_override=conversation_id,
+                    ):
                         yield event
 
             generator = _guarded_research()

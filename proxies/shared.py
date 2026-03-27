@@ -89,21 +89,59 @@ class ParsedMessage:
         )
 
 
-# Regex to match the LibreChat "Attached document(s):" block.
-# LibreChat wraps file text like:
-#   Attached document(s):
-#   ```md
-#   # "filename.txt"
-#   <content>
-#   ```
-#
-# The block may contain multiple files separated by \n\n---\n\n
-_ATTACHMENT_BLOCK_RE = re.compile(
-    r"^Attached document\(s\):\s*```md\n"   # opening marker
-    r"(.*)"                                   # captured: all file content (greedy)
-    r"\n```\s*$",                             # closing marker (last ```, anchored to EOL)
-    re.DOTALL | re.MULTILINE,
+# Regex to detect the opening marker of a LibreChat "Attached document(s):" block.
+# The actual closing marker is found via nesting-aware scanning (see
+# ``_find_attachment_block`` below) so that code fences inside documents
+# AND code fences in the user's prompt are both handled correctly.
+_ATTACHMENT_OPEN_RE = re.compile(
+    r"^Attached document\(s\):\s*```md\n",
+    re.MULTILINE,
 )
+
+
+def _find_attachment_block(text: str) -> tuple[str, str] | None:
+    """Locate the LibreChat attachment block using nesting-aware fence matching.
+
+    Returns ``(block_content, after_block)`` or *None* if no block is found.
+
+    Strategy:
+    1. Find the opening ``Attached document(s): ```md`` marker.
+    2. Scan line-by-line from there, tracking code-fence nesting depth.
+       - A line matching ``^```<lang>`` (opening fence) increments depth.
+       - A bare ``^````` at depth > 0 decrements depth (closes an inner fence).
+       - A bare ``^````` at depth 0 is the **real** closing marker.
+    3. Everything between open and close is document content; everything after
+       the closing line is the user's prompt.
+    """
+    m = _ATTACHMENT_OPEN_RE.search(text)
+    if m is None:
+        return None
+
+    body_start = m.end()          # first char after the opening ```md\n
+    lines = text[body_start:].split("\n")
+    depth = 0
+    closing_idx: int | None = None
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```") and len(stripped) > 3 and not stripped[3:].strip() == "":
+            # Opening fence like ```python, ```bash, etc.
+            depth += 1
+        elif stripped == "```" or (stripped.startswith("```") and stripped[3:].strip() == ""):
+            # Bare closing fence ``` (possibly with trailing whitespace)
+            if depth > 0:
+                depth -= 1
+            else:
+                # depth == 0 → this is the real closing marker
+                closing_idx = i
+                break
+
+    if closing_idx is None:
+        return None
+
+    block_content = "\n".join(lines[:closing_idx])
+    after_block = "\n".join(lines[closing_idx + 1:])
+    return block_content, after_block
 
 # Within the block, each file starts with # "filename"
 _FILE_HEADER_RE = re.compile(
@@ -137,13 +175,12 @@ def parse_attachments(text: str) -> ParsedMessage:
     if not text:
         return ParsedMessage(raw=text, prompt=text)
 
-    match = _ATTACHMENT_BLOCK_RE.search(text)
-    if not match:
+    result = _find_attachment_block(text)
+    if result is None:
         return ParsedMessage(raw=text, prompt=text.strip())
 
-    block_content = match.group(1)
-    # Everything after the closing ``` is the user's prompt
-    after_block = text[match.end():].strip()
+    block_content, after_block = result
+    after_block = after_block.strip()
 
     # Split block into individual documents by the --- separator
     documents: list[AttachedDocument] = []

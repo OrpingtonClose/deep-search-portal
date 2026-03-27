@@ -713,7 +713,7 @@ async def _pipeline_producer(
                 ))
 
         # Stream the final answer
-        final_answer = final_state.get("final_answer", "(No answer generated)")
+        final_answer = final_state.get("final_answer") or "(No answer generated)"
         for i in range(0, len(final_answer), 200):
             await output_queue.put(chunk_fn(final_answer[i:i + 200]))
 

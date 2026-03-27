@@ -12,11 +12,13 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import sqlite3
 import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
 
@@ -50,6 +52,157 @@ def is_utility_request(messages: list[dict]) -> bool:
                 if pattern in content_lower:
                     return True
     return False
+
+
+# ============================================================================
+# LibreChat file-attachment parsing
+# ============================================================================
+
+@dataclass
+class AttachedDocument:
+    """A single file extracted from a LibreChat "Upload as Text" message."""
+    filename: str
+    content: str
+
+
+@dataclass
+class ParsedMessage:
+    """Result of separating LibreChat file attachments from the user prompt.
+
+    *documents* — zero or more attached files (from "Upload as Text").
+    *prompt*    — the user's actual text after removing the attachment block.
+    *raw*       — the original, unparsed message text.
+    """
+    documents: list[AttachedDocument] = field(default_factory=list)
+    prompt: str = ""
+    raw: str = ""
+
+    @property
+    def has_attachments(self) -> bool:
+        return len(self.documents) > 0
+
+    @property
+    def all_document_text(self) -> str:
+        """Concatenate all attached document content into a single string."""
+        return "\n\n---\n\n".join(
+            f"# {doc.filename}\n{doc.content}" for doc in self.documents
+        )
+
+
+# Regex to match the LibreChat "Attached document(s):" block.
+# LibreChat wraps file text like:
+#   Attached document(s):
+#   ```md
+#   # "filename.txt"
+#   <content>
+#   ```
+#
+# The block may contain multiple files separated by \n\n---\n\n
+_ATTACHMENT_BLOCK_RE = re.compile(
+    r"^Attached document\(s\):\s*```md\n"   # opening marker
+    r"(.*?)"                                  # captured: all file content
+    r"\n```",                                 # closing marker
+    re.DOTALL,
+)
+
+# Within the block, each file starts with # "filename"
+_FILE_HEADER_RE = re.compile(
+    r'^# "([^"]+)"',
+    re.MULTILINE,
+)
+
+
+def parse_attachments(text: str) -> ParsedMessage:
+    """Parse a LibreChat user message that may contain "Upload as Text" files.
+
+    LibreChat's ``extractFileContext`` produces::
+
+        Attached document(s):
+        ```md
+        # "report.pdf"
+        <extracted text>
+
+        ---
+
+        # "notes.txt"
+        <more text>
+        ```
+        <user's actual prompt here>
+
+    This function separates the attachment block from the prompt and returns
+    a ``ParsedMessage`` with structured documents and the clean prompt.
+
+    If no attachment block is detected the full text is returned as the prompt.
+    """
+    if not text:
+        return ParsedMessage(raw=text, prompt=text)
+
+    match = _ATTACHMENT_BLOCK_RE.search(text)
+    if not match:
+        return ParsedMessage(raw=text, prompt=text.strip())
+
+    block_content = match.group(1)
+    # Everything after the closing ``` is the user's prompt
+    after_block = text[match.end():].strip()
+
+    # Split block into individual documents by the --- separator
+    documents: list[AttachedDocument] = []
+
+    # Find all file headers and their positions
+    headers = list(_FILE_HEADER_RE.finditer(block_content))
+
+    if headers:
+        for i, header_match in enumerate(headers):
+            filename = header_match.group(1)
+            # Content starts after the header line
+            content_start = header_match.end()
+            # Content ends at the next file's --- separator or end of block
+            if i + 1 < len(headers):
+                # Find the --- separator between this file and the next
+                next_header_pos = headers[i + 1].start()
+                # Look backwards from next header for ---
+                chunk = block_content[content_start:next_header_pos]
+                # Strip trailing separator
+                chunk = re.sub(r"\n\n---\s*\n\n?$", "", chunk)
+            else:
+                chunk = block_content[content_start:]
+
+            content = chunk.strip()
+            if content:
+                documents.append(AttachedDocument(
+                    filename=filename,
+                    content=content,
+                ))
+    elif block_content.strip():
+        # No file headers found but there's content — treat as single unnamed doc
+        documents.append(AttachedDocument(
+            filename="document",
+            content=block_content.strip(),
+        ))
+
+    return ParsedMessage(
+        documents=documents,
+        prompt=after_block,
+        raw=text,
+    )
+
+
+def extract_user_text(messages: list[dict]) -> str:
+    """Extract the last user message text from a messages array.
+
+    Handles both string content and OpenAI multipart content arrays.
+    """
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                return content
+            elif isinstance(content, list):
+                return " ".join(
+                    p.get("text", "") for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+    return ""
 
 
 # ============================================================================

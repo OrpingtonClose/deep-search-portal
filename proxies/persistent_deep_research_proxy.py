@@ -37,10 +37,12 @@ from shared import (
     all_throttler_stats,
     create_app,
     env_int,  # noqa: F401
+    extract_user_text,
     get_throttler,  # noqa: F401
     http_client,  # noqa: F401
     is_utility_request,
     make_sse_chunk,
+    parse_attachments,
     register_standard_routes,
     require_env,  # noqa: F401
     setup_logging,  # noqa: F401
@@ -1090,21 +1092,100 @@ async def chat_completions(request: Request):
             log=log,
         )
     else:
-        # Check if the last user message is a large document for ingestion
-        user_text = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    user_text = content
-                elif isinstance(content, list):
-                    user_text = " ".join(
-                        p.get("text", "") for p in content
-                        if isinstance(p, dict) and p.get("type") == "text"
-                    )
-                break
+        # Extract the last user message and check for file attachments
+        user_text = extract_user_text(messages)
+        parsed = parse_attachments(user_text)
 
-        if _is_large_document(user_text):
+        if parsed.has_attachments:
+            # --- File attachments detected ---
+            # Attachments are first-class research inputs: decompose them
+            # into atomic conditions, cross-reference, and fact-check.
+            # The prompt (if any) provides research direction/focus.
+            doc_summary = ", ".join(
+                f"{d.filename} ({len(d.content):,} chars)"
+                for d in parsed.documents
+            )
+            log.info(
+                f"[{req_id}] ATTACHMENT DETECTED: {len(parsed.documents)} "
+                f"doc(s) [{doc_summary}], prompt={parsed.prompt[:80]!r}"
+            )
+
+            # Inject the document content as a research-source system message
+            # so the pipeline treats it as material to decompose and verify.
+            # The user's prompt becomes the research direction.
+            augmented_messages = list(messages)
+            # Replace the last user message with the clean prompt
+            # and add the document content as a preceding system message
+            for i in range(len(augmented_messages) - 1, -1, -1):
+                if augmented_messages[i].get("role") == "user":
+                    # Insert document-source message before the user message
+                    doc_system_msg = {
+                        "role": "system",
+                        "content": (
+                            "The user has attached the following document(s) "
+                            "for research analysis. Treat these as PRIMARY "
+                            "research sources — decompose every claim into "
+                            "atomic conditions, cross-reference facts across "
+                            "paragraphs, and fact-check all assertions. "
+                            "The user's prompt provides the research "
+                            "direction and focus.\n\n"
+                            "=== ATTACHED DOCUMENTS ===\n\n"
+                            + parsed.all_document_text
+                            + "\n\n=== END DOCUMENTS ==="
+                        ),
+                    }
+                    augmented_messages.insert(i, doc_system_msg)
+                    # Update the user message to just the prompt
+                    if parsed.prompt:
+                        augmented_messages[i + 1] = {
+                            **augmented_messages[i + 1],
+                            "content": parsed.prompt,
+                        }
+                    else:
+                        # No explicit prompt — use a default research directive
+                        augmented_messages[i + 1] = {
+                            **augmented_messages[i + 1],
+                            "content": (
+                                "Analyse the attached document(s) thoroughly. "
+                                "Decompose all claims into atomic conditions, "
+                                "cross-reference facts, identify "
+                                "contradictions, and fact-check key "
+                                "assertions against external sources."
+                            ),
+                        }
+                    break
+
+            if not limiter.available():
+                tracker.finish(req_id)
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": {
+                            "message": (
+                                f"Too many concurrent persistent research "
+                                f"sessions ({limiter.max_concurrent}). "
+                                f"Try again shortly."
+                            ),
+                            "type": "rate_limit",
+                        }
+                    },
+                )
+
+            log.info(
+                f"[{req_id}] Routing to PERSISTENT DEEP RESEARCH "
+                f"(with {len(parsed.documents)} attached doc(s))"
+            )
+
+            async def _guarded_research_with_docs():
+                async with limiter.hold():
+                    async for event in run_persistent_research(
+                        augmented_messages, body, req_id,
+                    ):
+                        yield event
+
+            generator = _guarded_research_with_docs()
+
+        elif _is_large_document(user_text):
             log.info(
                 f"[{req_id}] Routing to DOCUMENT INGESTION "
                 f"({len(user_text):,} chars)"

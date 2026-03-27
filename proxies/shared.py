@@ -93,8 +93,12 @@ class ParsedMessage:
 # The actual closing marker is found via nesting-aware scanning (see
 # ``_find_attachment_block`` below) so that code fences inside documents
 # AND code fences in the user's prompt are both handled correctly.
+#
+# LibreChat v0.8.x may or may not emit a newline between the opening
+# fence (` ```md`) and the first file header (`# "file.txt"`), so the
+# pattern uses `\n?` to accept both variants.
 _ATTACHMENT_OPEN_RE = re.compile(
-    r"^Attached document\(s\):\s*```md\n",
+    r"^Attached document\(s\):\s*```md\n?",
     re.MULTILINE,
 )
 
@@ -153,7 +157,7 @@ _FILE_HEADER_RE = re.compile(
 def parse_attachments(text: str) -> ParsedMessage:
     """Parse a LibreChat user message that may contain "Upload as Text" files.
 
-    LibreChat's ``extractFileContext`` produces::
+    LibreChat's ``extractFileContext`` produces a format like::
 
         Attached document(s):
         ```md
@@ -166,6 +170,15 @@ def parse_attachments(text: str) -> ParsedMessage:
         <more text>
         ```
         <user's actual prompt here>
+
+    .. note::
+
+       In LibreChat v0.8.x the attachment block is delivered as a
+       **system** message while the user's typed prompt is a separate
+       *user* message.  Use ``extract_user_text_with_attachments()``
+       to reassemble them into the single-string format this function
+       expects.  The opening fence may or may not have a newline
+       between ` ```md` and the first ``# "filename"`` header.
 
     This function separates the attachment block from the prompt and returns
     a ``ParsedMessage`` with structured documents and the clean prompt.
@@ -224,6 +237,19 @@ def parse_attachments(text: str) -> ParsedMessage:
     )
 
 
+def _msg_text(msg: dict) -> str:
+    """Return the text content of a single message dict."""
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            p.get("text", "") for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return ""
+
+
 def extract_user_text(messages: list[dict]) -> str:
     """Extract the last user message text from a messages array.
 
@@ -231,15 +257,43 @@ def extract_user_text(messages: list[dict]) -> str:
     """
     for msg in reversed(messages):
         if msg.get("role") == "user":
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                return content
-            elif isinstance(content, list):
-                return " ".join(
-                    p.get("text", "") for p in content
-                    if isinstance(p, dict) and p.get("type") == "text"
-                )
+            return _msg_text(msg)
     return ""
+
+
+def extract_user_text_with_attachments(messages: list[dict]) -> str:
+    """Build a combined text that includes any LibreChat attachment context.
+
+    LibreChat v0.8.x sends "Upload as Text" file content in a **system**
+    message whose text starts with ``Attached document(s):`` while the
+    user's typed prompt is in a separate *user* message.  To let
+    ``parse_attachments()`` work on a single string that mirrors the
+    original LibreChat wire format, this helper locates the attachment
+    system message (if any) and concatenates it with the user prompt.
+
+    If no attachment system message exists the result is identical to
+    ``extract_user_text()``.
+    """
+    # 1) Find the last user message text.
+    user_text = extract_user_text(messages)
+
+    # 2) Look for a system message whose content starts with the
+    #    LibreChat attachment marker.  We search backwards so that the
+    #    *nearest* system message to the user message wins.
+    attachment_prefix = "Attached document(s):"
+    for msg in reversed(messages):
+        if msg.get("role") != "system":
+            continue
+        text = _msg_text(msg)
+        if text.startswith(attachment_prefix):
+            # Re-assemble into the single-string format that
+            # ``parse_attachments`` expects:
+            #   <attachment block>\n<user prompt>
+            if user_text:
+                return text + "\n" + user_text
+            return text
+
+    return user_text
 
 
 # ============================================================================

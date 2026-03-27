@@ -38,6 +38,7 @@ from shared import (
     create_app,
     env_int,  # noqa: F401
     extract_user_text,
+    extract_user_text_with_attachments,
     get_throttler,  # noqa: F401
     http_client,  # noqa: F401
     is_utility_request,
@@ -1098,8 +1099,11 @@ async def chat_completions(request: Request):
             log=log,
         )
     else:
-        # Extract the last user message and check for file attachments
-        user_text = extract_user_text(messages)
+        # Extract the last user message and check for file attachments.
+        # Use extract_user_text_with_attachments() which also checks system
+        # messages for the LibreChat attachment block (LibreChat v0.8.x
+        # sends file content as a system message, not in the user message).
+        user_text = extract_user_text_with_attachments(messages)
         parsed = parse_attachments(user_text)
 
         # ------------------------------------------------------------------

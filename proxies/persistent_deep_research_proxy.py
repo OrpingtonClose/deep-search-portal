@@ -1249,10 +1249,10 @@ async def chat_completions(request: Request):
 
             generator = _guarded_research_with_docs()
 
-        elif _is_large_document(user_text):
+        elif _is_large_document(parsed.prompt or user_text):
             log.info(
                 f"[{req_id}] Routing to DOCUMENT INGESTION "
-                f"({len(user_text):,} chars)"
+                f"({len(parsed.prompt or user_text):,} chars)"
             )
 
             async def _guarded_ingest():

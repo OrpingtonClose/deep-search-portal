@@ -1856,7 +1856,7 @@ async def chat_completions(request: Request):
 
             generator = _handle_attachment_submission()
 
-        elif _is_large_document(user_text):
+        elif _is_large_document(parsed.prompt or user_text):
             # Large document without attachment markers -> submit to swarm
             log.info(
                 f"[{req_id}] Routing to SWARM CORPUS SUBMISSION "

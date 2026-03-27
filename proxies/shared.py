@@ -128,15 +128,54 @@ def _find_attachment_block(text: str) -> tuple[str, str] | None:
 
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped.startswith("```") and not stripped.startswith("````") and len(stripped) > 3 and stripped[3:].strip() != "":
-            # Opening fence like ```python, ```bash, etc. (exactly 3 backticks)
+        is_fence = (
+            stripped.startswith("```")
+            and not stripped.startswith("````")
+        )
+        if not is_fence:
+            continue
+
+        has_lang = len(stripped) > 3 and stripped[3:].strip() != ""
+        if has_lang:
+            # Opening fence like ```python, ```bash, etc.
             depth += 1
-        elif stripped == "```" or (stripped.startswith("```") and not stripped.startswith("````") and stripped[3:].strip() == ""):
-            # Bare closing fence ``` (possibly with trailing whitespace)
+        else:
+            # Bare ``` — could be opening or closing an inner block,
+            # or the real attachment-closing marker.
             if depth > 0:
+                # Close an inner code block
                 depth -= 1
+            elif depth == 0 and i > 0:
+                # Not the very first line and depth is 0.
+                # Heuristic: if the previous bare ``` at depth 0 was
+                # an opening fence for a bare code block, this one
+                # closes it. We use a simple toggle to pair them.
+                # But first check if there are more bare fences ahead;
+                # if so, this is an inner open. Scan forward to decide.
+                # Simple approach: treat as inner-open (depth++) when
+                # there is at least one more bare ``` ahead at the
+                # same nesting level, otherwise it's the real closer.
+                remaining = lines[i + 1:]
+                has_future_bare = any(
+                    ln.strip() == "```" or (
+                        ln.strip().startswith("```")
+                        and not ln.strip().startswith("````")
+                        and ln.strip()[3:].strip() == ""
+                    )
+                    for ln in remaining
+                )
+                if has_future_bare:
+                    # There's at least one more bare ``` ahead — treat
+                    # this one as opening an inner bare code block.
+                    depth += 1
+                else:
+                    # No more bare fences ahead — this is the real
+                    # closing marker of the attachment block.
+                    closing_idx = i
+                    break
             else:
-                # depth == 0 → this is the real closing marker
+                # Very first line is a bare ``` at depth 0 — that's the
+                # real closing marker (empty attachment block edge case).
                 closing_idx = i
                 break
 

@@ -131,7 +131,7 @@ LibreChat connects to 4 custom endpoints (configured in `config/librechat.yaml`)
 | Mistral Thinking | `mistral-large-thinking` | 9100 |
 | Persistent MiroFlow | `persistent-miroflow` | 9300 |
 | Deep Research | `miroflow` | 9200 |
-| Swarm Deep Search | `swarm-deep-search` | 9500 |
+| Swarm Deep Search | `swarm-miroflow` | 9500 |
 
 ## Knowledge Engine
 

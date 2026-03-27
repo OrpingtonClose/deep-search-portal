@@ -1155,6 +1155,7 @@ async def run_deep_research(
     _deep_request_configs[req_id] = config
     last_progress_idx = 0
     final_state = initial_state
+    consumer_task = None
 
     try:
         # Wrap astream iteration with keepalive: emit a dot every 8s when
@@ -1230,6 +1231,14 @@ async def run_deep_research(
         yield "data: [DONE]\n\n"
 
     finally:
+        # Cancel the background consumer task to stop expensive LLM calls
+        # if the client disconnected or an error occurred.
+        if consumer_task is not None and not consumer_task.done():
+            consumer_task.cancel()
+            try:
+                await consumer_task
+            except asyncio.CancelledError:
+                pass
         _deep_request_configs.pop(req_id, None)
         langfuse_config.flush()
         tracker.finish(req_id)

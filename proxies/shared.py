@@ -124,10 +124,10 @@ def _find_attachment_block(text: str) -> tuple[str, str] | None:
 
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped.startswith("```") and len(stripped) > 3 and not stripped[3:].strip() == "":
-            # Opening fence like ```python, ```bash, etc.
+        if stripped.startswith("```") and not stripped.startswith("````") and len(stripped) > 3 and stripped[3:].strip() != "":
+            # Opening fence like ```python, ```bash, etc. (exactly 3 backticks)
             depth += 1
-        elif stripped == "```" or (stripped.startswith("```") and stripped[3:].strip() == ""):
+        elif stripped == "```" or (stripped.startswith("```") and not stripped.startswith("````") and stripped[3:].strip() == ""):
             # Bare closing fence ``` (possibly with trailing whitespace)
             if depth > 0:
                 depth -= 1

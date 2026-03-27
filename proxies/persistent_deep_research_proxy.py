@@ -1172,7 +1172,18 @@ async def chat_completions(request: Request):
             # Inject the document content as a research-source system message
             # so the pipeline treats it as material to decompose and verify.
             # (PMFB-ATT-03: system message before user message)
-            augmented_messages = list(messages)
+            #
+            # Remove the original LibreChat attachment system message to avoid
+            # sending document content to the LLM twice (v0.8.x sends it as
+            # a separate system message with "Attached document(s):" prefix).
+            augmented_messages = [
+                msg for msg in messages
+                if not (
+                    msg.get("role") == "system"
+                    and isinstance(msg.get("content", ""), str)
+                    and msg["content"].lstrip().startswith("Attached document(s):")
+                )
+            ]
             for i in range(len(augmented_messages) - 1, -1, -1):
                 if augmented_messages[i].get("role") == "user":
                     doc_system_msg = {

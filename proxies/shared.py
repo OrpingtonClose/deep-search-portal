@@ -100,9 +100,9 @@ class ParsedMessage:
 # The block may contain multiple files separated by \n\n---\n\n
 _ATTACHMENT_BLOCK_RE = re.compile(
     r"^Attached document\(s\):\s*```md\n"   # opening marker
-    r"(.*?)"                                  # captured: all file content
-    r"\n```",                                 # closing marker
-    re.DOTALL,
+    r"(.*)"                                   # captured: all file content (greedy)
+    r"\n```\s*$",                             # closing marker (last ```, anchored to EOL)
+    re.DOTALL | re.MULTILINE,
 )
 
 # Within the block, each file starts with # "filename"

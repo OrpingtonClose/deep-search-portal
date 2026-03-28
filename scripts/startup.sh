@@ -83,28 +83,28 @@ fi
 
 # --- Thinking Proxy (Mistral Direct API) ---
 if ! pgrep -f "thinking_proxy:app" > /dev/null; then
-    screen -dmS thinking-proxy bash -c "set -a && source /opt/.env && set +a && cd $PROXY_DIR && python3 -m uvicorn thinking_proxy:app --host 0.0.0.0 --port 9100 2>&1 | tee /var/log/thinking_proxy.log"
+    screen -dmS thinking-proxy bash -c "if [ -f /opt/.env ]; then set -a && source /opt/.env && set +a; fi && cd $PROXY_DIR && python3 -m uvicorn thinking_proxy:app --host 0.0.0.0 --port 9100 2>&1 | tee /var/log/thinking_proxy.log"
     echo "Thinking Proxy starting..."
 fi
 wait_for_health "http://localhost:9100/health" "Thinking Proxy" 15
 
 # --- Deep Research Proxy (MiroFlow) ---
 if ! pgrep -f "deep_research_proxy:app" > /dev/null; then
-    screen -dmS deep-research bash -c "set -a && source /opt/.env && set +a && cd $PROXY_DIR && python3 -m uvicorn deep_research_proxy:app --host 0.0.0.0 --port 9200 2>&1 | tee /var/log/deep_research_proxy.log"
+    screen -dmS deep-research bash -c "if [ -f /opt/.env ]; then set -a && source /opt/.env && set +a; fi && cd $PROXY_DIR && python3 -m uvicorn deep_research_proxy:app --host 0.0.0.0 --port 9200 2>&1 | tee /var/log/deep_research_proxy.log"
     echo "Deep Research Proxy starting..."
 fi
 wait_for_health "http://localhost:9200/health" "Deep Research Proxy" 15
 
 # --- Persistent Deep Research Proxy (Tree Reactor + Subagent Map-Reduce) ---
 if ! pgrep -f "persistent_deep_research_proxy:app" > /dev/null; then
-    screen -dmS persistent-research bash -c "set -a && source /opt/.env && set +a && cd $PROXY_DIR && python3 -m uvicorn persistent_deep_research_proxy:app --host 0.0.0.0 --port 9300 2>&1 | tee /var/log/persistent_research_proxy.log"
+    screen -dmS persistent-research bash -c "if [ -f /opt/.env ]; then set -a && source /opt/.env && set +a; fi && cd $PROXY_DIR && python3 -m uvicorn persistent_deep_research_proxy:app --host 0.0.0.0 --port 9300 2>&1 | tee /var/log/persistent_research_proxy.log"
     echo "Persistent Deep Research Proxy starting..."
 fi
 wait_for_health "http://localhost:9300/health" "Persistent Deep Research Proxy" 15
 
 # --- Swarm Deep Search Proxy ---
 if ! pgrep -f "swarm_proxy:app" > /dev/null; then
-    screen -dmS swarm-proxy bash -c "set -a && source /opt/.env && set +a && cd $PROXY_DIR && python3 -m uvicorn swarm_proxy:app --host 0.0.0.0 --port 9500 2>&1 | tee /var/log/swarm_proxy.log"
+    screen -dmS swarm-proxy bash -c "if [ -f /opt/.env ]; then set -a && source /opt/.env && set +a; fi && cd $PROXY_DIR && python3 -m uvicorn swarm_proxy:app --host 0.0.0.0 --port 9500 2>&1 | tee /var/log/swarm_proxy.log"
     echo "Swarm Deep Search Proxy starting..."
 fi
 wait_for_health "http://localhost:9500/health" "Swarm Deep Search Proxy" 15

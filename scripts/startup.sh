@@ -65,11 +65,15 @@ fi
 
 # --- LibreChat (native Node.js) ---
 LIBRECHAT_DIR="${LIBRECHAT_DIR:-/opt/LibreChat}"
-if [ -d "$LIBRECHAT_DIR" ] && ! pgrep -f "node api/server/index.js" > /dev/null; then
-    screen -dmS librechat bash -c "cd $LIBRECHAT_DIR && npm run backend 2>&1 | tee /var/log/librechat.log"
-    echo "LibreChat starting..."
+if [ -d "$LIBRECHAT_DIR" ]; then
+    if ! pgrep -f "node api/server/index.js" > /dev/null; then
+        screen -dmS librechat bash -c "cd $LIBRECHAT_DIR && npm run backend 2>&1 | tee /var/log/librechat.log"
+        echo "LibreChat starting..."
+    fi
+    wait_for_health "http://localhost:3000" "LibreChat" 60
+else
+    echo "WARNING: LIBRECHAT_DIR ($LIBRECHAT_DIR) not found, skipping LibreChat"
 fi
-wait_for_health "http://localhost:3000" "LibreChat" 60
 
 # --- Cloudflare Tunnel ---
 if [ -n "$CLOUDFLARE_TUNNEL_TOKEN" ] && ! pgrep -f "cloudflared tunnel" > /dev/null; then

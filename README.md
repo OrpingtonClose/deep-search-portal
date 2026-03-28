@@ -123,18 +123,46 @@ Browser → Cloudflare Tunnel (HTTPS + Google OAuth) → Open WebUI (port 3000)
 
 ## Provider Configuration
 
-Open WebUI connects to 8 providers (configured in `start_openwebui.sh`):
+Open WebUI connects to providers defined in `scripts/models.yaml` (synced via `scripts/sync_models.py`):
 
-| Index | Provider | Models |
+| Provider | Models | Notes |
 |---|---|---|
-| 0 | OpenRouter | Various |
-| 1 | Venice.ai | Uncensored models |
-| 2 | Together.ai | Open-source models |
-| 3 | Perplexity | Perplexity models |
-| 4 | RunPod | Custom deployments |
-| 5 | Thinking Proxy | `mistral-large-thinking` |
-| 6 | Deep Research | `miroflow` |
-| 7 | Mistral Direct | `mistral-large-latest`, `mistral-medium-latest` |
+| Local Thinking Proxy | `mistral-large-thinking` | Chain-of-thought reasoning |
+| Local MiroFlow Proxy | `persistent-miroflow` | Deep research agent |
+| OpenRouter (G0DM0D3) | 59 models + 6 presets | Requires `OPENROUTER_API_KEY` |
+
+Legacy providers (Venice.ai, Together.ai, Perplexity) are kept in the DB but disabled.
+
+### G0DM0D3 Models
+
+59 OpenRouter models from [G0DM0D3](https://github.com/elder-plinius/G0DM0D3) across 5 speed tiers:
+
+| Tier | Count | Examples |
+|---|---|---|
+| **FAST** | 12 | Gemini 2.5 Flash, DeepSeek V3, Llama 3.1 8B |
+| **STANDARD** | +16 = 28 | Claude 3.5 Sonnet, GPT-4o, Gemini 2.5 Pro |
+| **SMART** | +13 = 41 | GPT-5, Claude Opus 4.6, DeepSeek R1 |
+| **POWER** | +11 = 52 | Grok 4, GPT-5.4, Qwen3 Coder 480B |
+| **ULTRA** | +7 = 59 | Grok 4 Fast, Claude Opus 4, Codestral |
+
+Plus 6 **G0DM0D3 CLASSIC presets** — battle-tested model+prompt combos from the [L1B3RT4S Hall of Fame](https://github.com/elder-plinius/G0DM0D3/blob/main/src/lib/libertas.ts):
+
+| Preset | Base Model | Technique |
+|---|---|---|
+| GROK 4.20 | `x-ai/grok-4` | Semantic inversion + dividers |
+| GEMINI RESET | `google/gemini-2.5-pro` | RESET_CORTEX dual-response |
+| GPT CLASSIC | `openai/gpt-4o` | OG GODMODE format |
+| CLAUDE INVERSION | `anthropic/claude-sonnet-4` | END/START boundary trick |
+| GODMODE FAST | `nousresearch/hermes-4-405b` | Zero refusal, raw speed |
+| GODMODE | `google/gemini-2.5-flash` | Generic GODMODE prompt |
+
+To activate, add your OpenRouter API key to `.env`:
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-...
+```
+
+Then run `python3 scripts/sync_models.py scripts/models.yaml` to sync to the Open WebUI database.
 
 ## Knowledge Engine
 

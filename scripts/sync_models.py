@@ -81,7 +81,12 @@ def sync_providers(
         provider_url = model_cfg["provider_url"]
         if provider_url not in model_ids_by_url:
             model_ids_by_url[provider_url] = []
-            model_keys_by_url[provider_url] = model_cfg.get("api_key", "not-needed")
+            # Resolve API key: api_key_env (from env var) takes precedence over api_key (literal)
+            key_env = model_cfg.get("api_key_env", "")
+            if key_env:
+                model_keys_by_url[provider_url] = os.environ.get(key_env, "not-set")
+            else:
+                model_keys_by_url[provider_url] = model_cfg.get("api_key", "not-needed")
         model_ids_by_url[provider_url].append(model_id)
 
     for i, (provider_url, model_ids) in enumerate(model_ids_by_url.items()):
@@ -160,41 +165,54 @@ def sync_model_rows(
             "profile_image_url": "",
             "capabilities": {"vision": False},
         })
-        params = json.dumps({})
+        # Build params: include system prompt and sampling params if configured
+        params_dict: dict = {}
+        if model_cfg.get("system_prompt"):
+            params_dict["system"] = model_cfg["system_prompt"]
+        if model_cfg.get("temperature") is not None:
+            params_dict["temperature"] = model_cfg["temperature"]
+        if model_cfg.get("top_p") is not None:
+            params_dict["top_p"] = model_cfg["top_p"]
+        params = json.dumps(params_dict)
+
+        base_model = model_cfg.get("base_model_id")
 
         if existing is None:
             changes.append(f"  model: INSERT {model_id} ({display_name})")
             if not dry_run:
                 conn.execute(
                     """INSERT INTO model (id, name, meta, params, base_model_id, is_active, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, NULL, 1, ?, ?)""",
-                    (model_id, display_name, meta, params, now, now),
+                       VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
+                    (model_id, display_name, meta, params, base_model, now, now),
                 )
         else:
             if not existing["is_active"]:
                 changes.append(f"  model: ACTIVATE {model_id}")
                 if not dry_run:
                     conn.execute(
-                        "UPDATE model SET is_active = 1, base_model_id = NULL, name = ?, meta = ?, updated_at = ? WHERE id = ?",
-                        (display_name, meta, now, model_id),
+                        "UPDATE model SET is_active = 1, base_model_id = ?, name = ?, meta = ?, params = ?, updated_at = ? WHERE id = ?",
+                        (base_model, display_name, meta, params, now, model_id),
                     )
             else:
-                # Ensure base_model_id is NULL and name is correct
+                # Ensure base_model_id, name, and params are correct
                 cur2 = conn.execute(
-                    "SELECT base_model_id, name FROM model WHERE id = ?", (model_id,)
+                    "SELECT base_model_id, name, params FROM model WHERE id = ?", (model_id,)
                 )
                 row = cur2.fetchone()
                 needs_update = False
-                if row["base_model_id"] is not None:
-                    changes.append(f"  model: FIX base_model_id=NULL for {model_id}")
+                if row["base_model_id"] != base_model:
+                    changes.append(f"  model: FIX base_model_id={base_model} for {model_id}")
                     needs_update = True
                 if row["name"] != display_name:
                     changes.append(f"  model: UPDATE name {model_id} -> {display_name}")
                     needs_update = True
+                if row["params"] != params:
+                    changes.append(f"  model: UPDATE params for {model_id}")
+                    needs_update = True
                 if needs_update and not dry_run:
                     conn.execute(
-                        "UPDATE model SET base_model_id = NULL, name = ?, meta = ?, updated_at = ? WHERE id = ?",
-                        (display_name, meta, now, model_id),
+                        "UPDATE model SET base_model_id = ?, name = ?, meta = ?, params = ?, updated_at = ? WHERE id = ?",
+                        (base_model, display_name, meta, params, now, model_id),
                     )
 
     # Deactivate models not in YAML

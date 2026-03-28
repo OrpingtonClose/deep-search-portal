@@ -1,7 +1,8 @@
 #!/bin/bash
 # =============================================================================
-# Deep Search Portal — Master Startup Script
+# Deep Search Portal — Master Startup Script (Native Deployment)
 # Starts all services in order with health-check waits.
+# Supports native (Vast.ai) deployments without Docker.
 # Deploy to /opt/startup.sh on the VM.
 # =============================================================================
 
@@ -13,7 +14,10 @@ if [ -f /opt/.env ]; then
 fi
 
 MISTRAL_API_KEY="${MISTRAL_API_KEY:?MISTRAL_API_KEY not set}"
-CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN not set}"
+CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
+
+REPO_DIR="${REPO_DIR:-/opt/deep-search-portal}"
+PROXY_DIR="$REPO_DIR/proxies"
 
 # --- Helper: wait for an HTTP endpoint to become healthy ---
 wait_for_health() {
@@ -34,9 +38,11 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in swarm-proxy persistent-research deep-research thinking-proxy cftunnel owui searxng; do
+    for session in swarm-proxy persistent-research deep-research thinking-proxy cftunnel librechat searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
+    # Stop MongoDB if running
+    pkill mongod 2>/dev/null || true
     echo "All services stopped."
 }
 trap cleanup SIGTERM SIGINT
@@ -49,52 +55,54 @@ if ! pgrep -f "searx.webapp" > /dev/null; then
 fi
 wait_for_health "http://localhost:8888" "SearXNG" 30
 
-# --- Open WebUI ---
-if ! pgrep -f "open-webui serve" > /dev/null; then
-    screen -dmS owui bash /opt/start_openwebui.sh
-    echo "Open WebUI started"
+# --- MongoDB (required for LibreChat) ---
+if ! pgrep -f "mongod" > /dev/null; then
+    mkdir -p /data/db
+    nohup mongod --dbpath /data/db --bind_ip 127.0.0.1 > /var/log/mongod.log 2>&1 &
+    echo "MongoDB started"
+    sleep 3
 fi
-wait_for_health "http://localhost:3000" "Open WebUI" 60
 
-# --- Sync Models (YAML → DB) ---
-if [ -f /opt/sync_models.py ] && [ -f /opt/models.yaml ]; then
-    echo "Syncing models from models.yaml..."
-    python3 /opt/sync_models.py /opt/models.yaml --db-path /opt/openwebui-data/webui.db || echo "WARNING: sync_models.py failed (exit $?), continuing startup"
+# --- LibreChat (native Node.js) ---
+LIBRECHAT_DIR="${LIBRECHAT_DIR:-/opt/LibreChat}"
+if [ -d "$LIBRECHAT_DIR" ] && ! pgrep -f "node api/server/index.js" > /dev/null; then
+    screen -dmS librechat bash -c "cd $LIBRECHAT_DIR && npm run backend 2>&1 | tee /var/log/librechat.log"
+    echo "LibreChat starting..."
 fi
+wait_for_health "http://localhost:3000" "LibreChat" 60
 
 # --- Cloudflare Tunnel ---
-if ! pgrep -f "cloudflared tunnel" > /dev/null; then
+if [ -n "$CLOUDFLARE_TUNNEL_TOKEN" ] && ! pgrep -f "cloudflared tunnel" > /dev/null; then
     screen -dmS cftunnel cloudflared tunnel run --token "$CLOUDFLARE_TUNNEL_TOKEN"
     echo "Cloudflare tunnel started"
 fi
 
 # --- Thinking Proxy (Mistral Direct API) ---
-pip3 install fastapi uvicorn httpx -q
-if ! pgrep -f "thinking_proxy.py" > /dev/null; then
-    screen -dmS thinking-proxy bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export UPSTREAM_MODEL='mistral-large-latest' && export THINKING_PROXY_PORT='9100' && python3 /opt/thinking_proxy.py 2>&1 | tee /var/log/thinking_proxy.log"
+if ! pgrep -f "thinking_proxy:app" > /dev/null; then
+    screen -dmS thinking-proxy bash -c "set -a && source /opt/.env && set +a && cd $PROXY_DIR && python3 -m uvicorn thinking_proxy:app --host 0.0.0.0 --port 9100 2>&1 | tee /var/log/thinking_proxy.log"
     echo "Thinking Proxy starting..."
 fi
 wait_for_health "http://localhost:9100/health" "Thinking Proxy" 15
 
 # --- Deep Research Proxy (MiroFlow) ---
-if ! pgrep -f "deep_research_proxy.py" > /dev/null; then
-    screen -dmS deep-research bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export UPSTREAM_MODEL='mistral-large-latest' && export SEARXNG_URL='http://localhost:8888' && export MOJEEK_API_KEY='${MOJEEK_API_KEY:-}' && export BRAVE_SEARCH_API_KEY='${BRAVE_SEARCH_API_KEY:-}' && export DEEP_RESEARCH_PORT='9200' && python3 /opt/deep_research_proxy.py 2>&1 | tee /var/log/deep_research_proxy.log"
+if ! pgrep -f "deep_research_proxy:app" > /dev/null; then
+    screen -dmS deep-research bash -c "set -a && source /opt/.env && set +a && cd $PROXY_DIR && python3 -m uvicorn deep_research_proxy:app --host 0.0.0.0 --port 9200 2>&1 | tee /var/log/deep_research_proxy.log"
     echo "Deep Research Proxy starting..."
 fi
 wait_for_health "http://localhost:9200/health" "Deep Research Proxy" 15
 
-# --- Persistent Deep Research Proxy (Subagent Map-Reduce + AoT) ---
-if ! pgrep -f "persistent_deep_research_proxy.py" > /dev/null; then
-    screen -dmS persistent-research bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export UPSTREAM_MODEL='mistral-large-latest' && export SUBAGENT_MODEL='mistral-small-latest' && export SEARXNG_URL='http://localhost:8888' && export MOJEEK_API_KEY='${MOJEEK_API_KEY:-}' && export BRAVE_SEARCH_API_KEY='${BRAVE_SEARCH_API_KEY:-}' && export PERSISTENT_RESEARCH_PORT='9300' && python3 /opt/persistent_deep_research_proxy.py 2>&1 | tee /var/log/persistent_research_proxy.log"
+# --- Persistent Deep Research Proxy (Tree Reactor + Subagent Map-Reduce) ---
+if ! pgrep -f "persistent_deep_research_proxy:app" > /dev/null; then
+    screen -dmS persistent-research bash -c "set -a && source /opt/.env && set +a && cd $PROXY_DIR && python3 -m uvicorn persistent_deep_research_proxy:app --host 0.0.0.0 --port 9300 2>&1 | tee /var/log/persistent_research_proxy.log"
     echo "Persistent Deep Research Proxy starting..."
 fi
 wait_for_health "http://localhost:9300/health" "Persistent Deep Research Proxy" 15
 
 # --- Swarm Deep Search Proxy ---
-if ! pgrep -f "swarm_proxy.py" > /dev/null; then
-    screen -dmS swarm-proxy bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export SWARM_SYNTHESIS_MODEL='mistral-large-latest' && export SWARM_WORKER_MODEL='mistral-small-latest' && export SWARM_PROXY_PORT='9500' && python3 /opt/swarm_proxy.py 2>&1 | tee /var/log/swarm_proxy.log"
+if ! pgrep -f "swarm_proxy:app" > /dev/null; then
+    screen -dmS swarm-proxy bash -c "set -a && source /opt/.env && set +a && cd $PROXY_DIR && python3 -m uvicorn swarm_proxy:app --host 0.0.0.0 --port 9500 2>&1 | tee /var/log/swarm_proxy.log"
     echo "Swarm Deep Search Proxy starting..."
 fi
 wait_for_health "http://localhost:9500/health" "Swarm Deep Search Proxy" 15
 
-echo "All services started. Portal: ${WEBUI_URL:-https://deep-search.uk}"
+echo "All services started. Portal: ${DOMAIN_CLIENT:-https://deep-search.uk}"

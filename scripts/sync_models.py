@@ -87,7 +87,9 @@ def sync_providers(
                 model_keys_by_url[provider_url] = os.environ.get(key_env, "not-set")
             else:
                 model_keys_by_url[provider_url] = model_cfg.get("api_key", "not-needed")
-        model_ids_by_url[provider_url].append(model_id)
+        # Skip preset wrappers (have base_model_id) — they aren't real provider model IDs
+        if not model_cfg.get("base_model_id"):
+            model_ids_by_url[provider_url].append(model_id)
 
     for i, (provider_url, model_ids) in enumerate(model_ids_by_url.items()):
         idx = active_offset + i

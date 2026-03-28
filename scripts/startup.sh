@@ -34,7 +34,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in swarm-proxy persistent-research deep-research thinking-proxy cftunnel owui searxng; do
+    for session in godmode-proxy swarm-proxy persistent-research deep-research thinking-proxy cftunnel owui searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     echo "All services stopped."
@@ -96,5 +96,12 @@ if ! pgrep -f "swarm_proxy.py" > /dev/null; then
     echo "Swarm Deep Search Proxy starting..."
 fi
 wait_for_health "http://localhost:9500/health" "Swarm Deep Search Proxy" 15
+
+# --- G0DM0D3 Proxy (OpenRouter multi-model) ---
+if ! pgrep -f "godmode_proxy.py" > /dev/null; then
+    screen -dmS godmode-proxy bash -c "export OPENROUTER_API_KEY='${OPENROUTER_API_KEY:-}' && export GODMODE_PROXY_PORT='9600' && python3 /opt/godmode_proxy.py 2>&1 | tee /var/log/godmode_proxy.log"
+    echo "G0DM0D3 Proxy starting..."
+fi
+wait_for_health "http://localhost:9600/health" "G0DM0D3 Proxy" 15
 
 echo "All services started. Portal: ${WEBUI_URL:-https://deep-search.uk}"

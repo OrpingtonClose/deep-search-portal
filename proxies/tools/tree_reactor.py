@@ -28,7 +28,7 @@ from .config import (
 from .models import AtomicCondition, ResearchNode, SubagentResult
 from .llm import call_llm
 from .pipeline import ConditionStore, QuestionRegistry, QueryComprehension, comprehend_query
-from .subagent import run_subagent
+from .subagent import run_subagent, _is_llm_refusal
 
 if TYPE_CHECKING:
     from .synthesis import LiveFindingsCollector
@@ -532,28 +532,46 @@ async def _research_single_node(
     # Clear the active question now that research is done
     await collector.clear_active_question(node.question)
 
-    # Feed conditions to the live findings collector for heartbeat
-    if sa_result.conditions:
-        await collector.add_conditions(sa_result.conditions)
+    # Filter out any LLM refusals before they enter the system
+    non_refusal_conditions = [
+        c for c in sa_result.conditions if not _is_llm_refusal(c.fact)
+    ]
+    refusal_count = len(sa_result.conditions) - len(non_refusal_conditions)
+    if refusal_count:
+        log.warning(
+            "[%s] Filtered %d LLM refusal(s) from node %s conditions",
+            req_id, refusal_count, node.id,
+        )
 
-    # Emit a curated update about what we found
-    if sa_result.conditions:
-        top_finding = max(sa_result.conditions, key=lambda c: c.confidence)
+    # Feed non-refusal conditions to collector and emit curated update
+    if non_refusal_conditions:
+        await collector.add_conditions(non_refusal_conditions)
+        top_finding = max(non_refusal_conditions, key=lambda c: c.confidence)
         await curated_queue.put({
             "type": "finding",
             "node_id": node.id,
             "question": node.question,
             "finding": top_finding.fact,
-            "conditions_count": len(sa_result.conditions),
+            "conditions_count": len(non_refusal_conditions),
             "depth": node.depth,
         })
+    elif sa_result.conditions:
+        # All conditions were refusals — log but don't surface to user
+        log.warning(
+            "[%s] All %d conditions from node %s were LLM refusals — suppressed from thoughts",
+            req_id, len(sa_result.conditions), node.id,
+        )
+
+    # Patch sa_result so downstream synthesis doesn't see refusals
+    sa_result.conditions = non_refusal_conditions
 
     langfuse_config.end_span(span, output={
-        "conditions": len(sa_result.conditions),
+        "conditions": len(non_refusal_conditions),
+        "conditions_filtered_refusals": refusal_count,
         "turns": sa_result.turns_used,
         "tools": sa_result.tool_calls_made,
     })
-    return sa_result.conditions, sa_result
+    return non_refusal_conditions, sa_result
 
 
 async def tree_research_reactor(

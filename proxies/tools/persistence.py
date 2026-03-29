@@ -49,6 +49,32 @@ def _append_jsonl(session_id: str, record: dict) -> None:
         log.warning(f"JSONL write error: {e}")
 
 
+def log_stage_output(
+    session_id: str,
+    stage: str,
+    data: dict,
+) -> None:
+    """Persist arbitrary pipeline stage output to the session's JSONL log.
+
+    Every pipeline node calls this so that a synthesis failure (or any
+    later crash) never destroys earlier work.  The record can be read
+    back to resume or retry downstream stages without re-running the
+    full pipeline.
+
+    Args:
+        session_id: The request / session identifier.
+        stage: Pipeline stage name (e.g. ``"comprehend"``, ``"retrieve"``).
+        data: Stage-specific payload — must be JSON-serialisable.
+    """
+    _append_jsonl(session_id, {
+        "type": "stage_output",
+        "stage": stage,
+        "session_id": session_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        **data,
+    })
+
+
 def _log_conditions_jsonl(
     session_id: str,
     query: str,

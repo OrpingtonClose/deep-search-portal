@@ -28,10 +28,10 @@ LOG_DIR = os.getenv("PERSISTENT_RESEARCH_LOG_DIR", "/opt/persistent_research_log
 log = setup_logging("persistent-research", LOG_DIR)
 
 # --- Configuration ---
-UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://api.mistral.ai/v1")
+UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://openrouter.ai/api/v1")
 UPSTREAM_KEY = require_env("UPSTREAM_KEY")
-UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "mistral-large-latest")
-SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "mistral-small-latest")
+UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "x-ai/grok-4.20-beta")
+SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "x-ai/grok-4.1-fast")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
 LISTEN_PORT = env_int("PERSISTENT_RESEARCH_PORT", 9300, minimum=1)
 PORTAL_PUBLIC_URL = os.getenv("PORTAL_PUBLIC_URL", "").rstrip("/")
@@ -50,11 +50,11 @@ def _get_llm(
     temperature: float = 0.3,
     timeout: float = 300.0,
 ) -> ChatOpenAI:
-    """Create a LangChain ChatOpenAI instance pointing at the Mistral API.
+    """Create a LangChain ChatOpenAI instance pointing at the upstream LLM API.
 
     Note: We pass max_tokens via extra_body instead of the native parameter
     because langchain-openai >=1.0 converts max_tokens to
-    max_completion_tokens, which the Mistral API rejects with a 422.
+    max_completion_tokens, which some APIs (e.g. Mistral) reject with a 422.
     """
     return ChatOpenAI(
         model=model or UPSTREAM_MODEL,
@@ -140,7 +140,7 @@ VERITAS_HALLUCINATION_THRESHOLD = float(os.getenv("VERITAS_HALLUCINATION_THRESHO
 # Commercial search APIs
 COMMERCIAL_SEARCH_ENABLED = os.getenv("COMMERCIAL_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes")
 BRIGHT_DATA_SERP_ZONE = os.getenv("BRIGHT_DATA_SERP_ZONE", "mcp_unlocker")
-MODERATION_MODEL = os.getenv("MODERATION_MODEL", "mistral-small-latest")
+MODERATION_MODEL = os.getenv("MODERATION_MODEL", "x-ai/grok-4.1-fast")
 
 log.info(
     f"Config: synthesis_model={UPSTREAM_MODEL}, subagent_model={SUBAGENT_MODEL}, "

@@ -586,8 +586,8 @@ class TestConfigToggles:
         assert isinstance(pdr.COMMERCIAL_SEARCH_ENABLED, bool)
 
     def test_moderation_model_default(self):
-        """MODERATION_MODEL defaults to x-ai/grok-4.1-fast."""
-        assert pdr.MODERATION_MODEL == "x-ai/grok-4.1-fast"
+        """MODERATION_MODEL defaults to grok-3-fast (xAI direct API, no provider prefix)."""
+        assert pdr.MODERATION_MODEL == "grok-3-fast"
 
 
 # ============================================================================

@@ -20,6 +20,14 @@ VENICE_API_KEY="${VENICE_API_KEY:-}"
 XAI_API_KEY="${XAI_API_KEY:-}"
 OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
 
+# Warn if new API keys are missing (services will fail to authenticate)
+if [ -z "$XAI_API_KEY" ]; then
+    echo "WARNING: XAI_API_KEY not set — deep-research, persistent-research, and miroflow-sprint will fail"
+fi
+if [ -z "$VENICE_API_KEY" ]; then
+    echo "WARNING: VENICE_API_KEY not set — swarm proxy will fail"
+fi
+
 # --- Helper: wait for an HTTP endpoint to become healthy ---
 wait_for_health() {
     local url="$1"

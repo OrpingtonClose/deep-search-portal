@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Swarm Deep Search Proxy for Open WebUI.
+Swarm Deep Search Proxy for LibreChat.
 
 A fully self-contained swarm-based proxy that decomposes large corpora of text
 using an agentic swarm -- no external infrastructure required.  Background
@@ -18,7 +18,7 @@ Key design principles:
   * Zero external infrastructure -- everything runs within this process.
 
 Architecture:
-  Browser -> Open WebUI -> Swarm Proxy (port 9500)
+  Browser -> LibreChat -> Swarm Proxy (port 9500)
                               |
               +---------------+---------------+
               |               |               |
@@ -51,15 +51,20 @@ from shared import (
     RequestTracker,
     create_app,
     env_int,
+    extract_user_text,
+    extract_user_text_with_attachments,
+    get_throttler,
     http_client,
     is_utility_request,
     make_sse_chunk,
+    parse_attachments,
     register_standard_routes,
     require_env,
     setup_logging,
     stream_passthrough,
-    get_throttler,
 )
+
+import langfuse_config as lf
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -845,12 +850,18 @@ async def _extract_from_chunk(
     chunk_index: int,
     total_chunks: int,
     worker_id: str,
+    req_id: str = "",
 ) -> tuple[int, int, int]:
     """Use LLM to extract entities, relationships, and claims.
 
     Returns (entities_count, relationships_count, claims_count).
     """
     chunk_id = f"{corpus_id}-chunk-{chunk_index}"
+    span = lf.start_span(
+        req_id, f"swarm:extract_chunk:{chunk_index}",
+        input={"corpus_id": corpus_id, "chunk_index": chunk_index,
+               "total_chunks": total_chunks, "worker_id": worker_id},
+    )
 
     # Store the raw chunk in the knowledge store
     kchunk = KnowledgeChunk(
@@ -869,7 +880,7 @@ async def _extract_from_chunk(
         corpus_title=corpus_title,
         chunk_index=chunk_index + 1,
         total_chunks=total_chunks,
-        chunk_text=chunk_text[:3000],
+        chunk_text=chunk_text,
     )
 
     result = await _call_llm(
@@ -884,6 +895,7 @@ async def _extract_from_chunk(
             f"[{worker_id}] Extraction error for chunk "
             f"{chunk_index}: {result['error']}"
         )
+        lf.end_span(span, output={"error": result["error"]}, level="ERROR")
         return (0, 0, 0)
 
     # Parse the JSON response
@@ -906,12 +918,14 @@ async def _extract_from_chunk(
                     f"[{worker_id}] Failed to parse extraction "
                     f"for chunk {chunk_index}"
                 )
+                lf.end_span(span, output={"error": "json_parse_failed"}, level="ERROR")
                 return (0, 0, 0)
         else:
             log.warning(
                 f"[{worker_id}] No JSON found in extraction "
                 f"for chunk {chunk_index}"
             )
+            lf.end_span(span, output={"error": "no_json_found"}, level="ERROR")
             return (0, 0, 0)
 
     entities_count = 0
@@ -962,10 +976,17 @@ async def _extract_from_chunk(
         ))
         claims_count += 1
 
+    lf.end_span(span, output={
+        "entities": entities_count,
+        "relationships": rels_count,
+        "claims": claims_count,
+    })
     return (entities_count, rels_count, claims_count)
 
 
-async def _process_corpus(corpus_id: str, text: str) -> None:
+async def _process_corpus(
+    corpus_id: str, text: str, req_id: str = "",
+) -> None:
     """Process a single corpus through the swarm pipeline.
 
     Steps:
@@ -977,6 +998,10 @@ async def _process_corpus(corpus_id: str, text: str) -> None:
     This runs as a background task and does NOT block any queries.
     """
     worker_id = f"worker-{uuid.uuid4().hex[:8]}"
+    corpus_span = lf.start_span(
+        req_id, "swarm:process_corpus",
+        input={"corpus_id": corpus_id, "chars": len(text)},
+    )
 
     async with worker_semaphore:
         await swarm.register_worker(worker_id)
@@ -986,6 +1011,10 @@ async def _process_corpus(corpus_id: str, text: str) -> None:
             if not record:
                 log.error(
                     f"[{worker_id}] Corpus {corpus_id} not found",
+                )
+                lf.end_span(
+                    corpus_span, output={"error": "corpus_not_found"},
+                    level="ERROR",
                 )
                 return
 
@@ -1048,6 +1077,7 @@ async def _process_corpus(corpus_id: str, text: str) -> None:
                             i,
                             total_chunks,
                             worker_id,
+                            req_id=req_id,
                         )
                     )
                     total_entities += ent_count
@@ -1085,11 +1115,21 @@ async def _process_corpus(corpus_id: str, text: str) -> None:
                 f"{total_rels} relationships, "
                 f"{total_claims} claims from {total_chunks} chunks"
             )
+            lf.end_span(corpus_span, output={
+                "entities": total_entities,
+                "relationships": total_rels,
+                "claims": total_claims,
+                "chunks": total_chunks,
+            })
 
         except Exception as e:
             log.error(
                 f"[{worker_id}] Unexpected error processing "
                 f"{corpus_id}: {e}"
+            )
+            lf.end_span(
+                corpus_span, output={"error": str(e)},
+                level="ERROR", status_message=str(e),
             )
             await swarm.update_corpus(
                 corpus_id,
@@ -1120,6 +1160,7 @@ def _is_large_document(text: str) -> bool:
 
 async def _submit_corpus(
     text: str, title: str = "", source: str = "",
+    req_id: str = "",
 ) -> CorpusRecord:
     """Submit a new corpus to the swarm for background processing.
 
@@ -1140,7 +1181,7 @@ async def _submit_corpus(
     await swarm.add_corpus(record)
 
     # Fire-and-forget background task -- does NOT block the response
-    task = asyncio.create_task(_process_corpus(corpus_id, text))
+    task = asyncio.create_task(_process_corpus(corpus_id, text, req_id))
     _worker_tasks.append(task)
 
     # Clean up finished tasks
@@ -1160,6 +1201,10 @@ async def _submit_corpus(
 
 async def _query_knowledge(query: str, req_id: str) -> str:
     """Query the in-memory knowledge store for relevant information."""
+    span = lf.start_span(
+        req_id, "swarm:query_knowledge",
+        input={"query": query[:200]},
+    )
     results = await knowledge.search(query, limit=20)
     parts: list[str] = []
 
@@ -1210,12 +1255,20 @@ async def _query_knowledge(query: str, req_id: str) -> str:
         parts.append(f"**Claims:**\n{claim_text}")
 
     if not parts:
-        return (
+        answer = (
             "(No knowledge available yet. "
             "The swarm has not processed any corpora.)"
         )
+        lf.end_span(span, output={"result": "no_knowledge"})
+        return answer
 
-    return "\n\n".join(parts)
+    answer = "\n\n".join(parts)
+    lf.end_span(span, output={
+        "chunks": len(results.get("chunks", [])),
+        "entities": len(results.get("entities", [])),
+        "claims": len(results.get("claims", [])),
+    })
+    return answer
 
 
 async def _handle_query(
@@ -1242,20 +1295,20 @@ async def _handle_query(
             finish_reason=finish_reason,
         )
 
-    # Extract the user's question
-    user_query = ""
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                user_query = content
-            elif isinstance(content, list):
-                user_query = " ".join(
-                    p.get("text", "")
-                    for p in content
-                    if isinstance(p, dict) and p.get("type") == "text"
-                )
-            break
+    def reasoning_sse(content: str) -> str:
+        """Emit a reasoning_content delta (collapsible Thinking block)."""
+        return make_sse_chunk(
+            "",
+            request_id=request_id,
+            created=created,
+            model_id=model_id,
+            reasoning_content=content,
+        )
+
+    # Extract the user's question (strip any attachment markers)
+    raw_query = extract_user_text(messages)
+    parsed_q = parse_attachments(raw_query)
+    user_query = parsed_q.prompt if parsed_q.has_attachments else raw_query
 
     if not user_query:
         yield sse(
@@ -1265,23 +1318,27 @@ async def _handle_query(
         yield "data: [DONE]\n\n"
         return
 
+    query_span = lf.start_span(
+        req_id, "swarm:handle_query",
+        input={"query": user_query[:300]},
+    )
+
     # Get swarm status preamble (sincerity mechanism)
     status_preamble = await swarm.build_sincerity_preamble()
 
     # Stream the thinking section with status
-    yield sse("<think>\n")
-    yield sse(status_preamble)
-    yield sse(f"**Query:** {user_query[:200]}\n\n")
+    yield reasoning_sse(status_preamble)
+    yield reasoning_sse(f"**Query:** {user_query[:200]}\n\n")
 
     # Query the knowledge store
-    yield sse("**[Searching swarm knowledge...]**\n")
+    yield reasoning_sse("**[Searching swarm knowledge...]**\n")
     knowledge_results = await _query_knowledge(user_query, req_id)
 
     # Show what we found
     result_summary = knowledge_results[:500]
     if len(knowledge_results) > 500:
         result_summary += "..."
-    yield sse(f"Found knowledge:\n{result_summary}\n\n")
+    yield reasoning_sse(f"Found knowledge:\n{result_summary}\n\n")
 
     # Build the synthesis prompt
     system_prompt = _QUERY_SYSTEM_PROMPT.format(
@@ -1304,8 +1361,7 @@ async def _handle_query(
                 "content": msg_content,
             })
 
-    yield sse("**[Synthesising answer...]**\n")
-    yield sse("</think>\n\n")
+    yield reasoning_sse("**[Synthesising answer...]**\n")
 
     # Call LLM for synthesis and stream the response
     try:
@@ -1339,6 +1395,7 @@ async def _handle_query(
                         f"[{req_id}] Synthesis LLM error "
                         f"{resp.status_code}: {error_text}"
                     )
+                    lf.end_span(query_span, output={"error": f"HTTP {resp.status_code}"}, level="ERROR")
                     yield sse(
                         "Error synthesising answer: "
                         f"{error_text[:200]}",
@@ -1365,6 +1422,7 @@ async def _handle_query(
 
     except Exception as e:
         log.error(f"[{req_id}] Synthesis streaming error: {e}")
+        lf.end_span(query_span, output={"error": str(e)}, level="ERROR")
         yield sse(
             f"\n\nError during synthesis: {e}",
             finish_reason="stop",
@@ -1373,6 +1431,7 @@ async def _handle_query(
         return
 
     await swarm.increment_queries()
+    lf.end_span(query_span, output={"status": "complete"})
 
     yield sse("", finish_reason="stop")
     yield "data: [DONE]\n\n"
@@ -1404,26 +1463,39 @@ async def _handle_corpus_submission(
         )
 
     title = text[:80].replace("\n", " ").strip()
+    submit_span = lf.start_span(
+        req_id, "swarm:corpus_submission",
+        input={"title": title, "chars": len(text)},
+    )
 
-    yield sse("<think>\n")
-    yield sse(f"**[Corpus Received]** {len(text):,} characters\n")
-    yield sse(f"Title: {title}...\n")
-    yield sse(
+    def reasoning_sse(content: str) -> str:
+        """Emit a reasoning_content delta (collapsible Thinking block)."""
+        return make_sse_chunk(
+            "",
+            request_id=request_id,
+            created=created,
+            model_id=model_id,
+            reasoning_content=content,
+        )
+
+    yield reasoning_sse(f"**[Corpus Received]** {len(text):,} characters\n")
+    yield reasoning_sse(f"Title: {title}...\n")
+    yield reasoning_sse(
         "Submitting to the swarm for background processing...\n",
     )
 
     # Submit to the swarm -- this returns immediately
     record = await _submit_corpus(
         text, title=title, source="chat-submission",
+        req_id=req_id,
     )
 
-    yield sse(f"Corpus ID: {record.id}\n")
-    yield sse("Status: Queued for processing\n")
+    yield reasoning_sse(f"Corpus ID: {record.id}\n")
+    yield reasoning_sse("Status: Queued for processing\n")
 
     # Show current swarm state
     status = await swarm.build_sincerity_preamble()
-    yield sse(f"\n{status}")
-    yield sse("</think>\n\n")
+    yield reasoning_sse(f"\n{status}")
 
     # User-facing response
     snapshot = await swarm.get_status_snapshot()
@@ -1450,6 +1522,10 @@ async def _handle_corpus_submission(
         f"{snapshot['active_workers']} active workers, "
         f"{snapshot['total_entities']} entities in knowledge store.\n"
     )
+
+    lf.end_span(submit_span, output={
+        "corpus_id": record.id, "status": record.status.value,
+    })
 
     yield sse("", finish_reason="stop")
     yield "data: [DONE]\n\n"
@@ -1608,9 +1684,14 @@ async def chat_completions(request: Request):
         messages=len(messages), phase="init",
     )
 
+    # --- Langfuse trace (only for non-utility requests) ---
+    trace_id = lf.create_trace_id(req_id)
+    lf.register_trace(req_id, trace_id)
+
     # Utility requests (title/tag generation) pass through
     if utility:
         log.info(f"[{req_id}] Routing to PASSTHROUGH")
+        lf.unregister_trace(req_id)  # no spans needed for utility
         generator = stream_passthrough(
             messages, body,
             req_id=req_id,
@@ -1622,24 +1703,236 @@ async def chat_completions(request: Request):
             log=log,
         )
     else:
-        # Extract the last user message
-        user_text = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    user_text = content
-                elif isinstance(content, list):
-                    user_text = " ".join(
-                        p.get("text", "")
-                        for p in content
-                        if isinstance(p, dict)
-                        and p.get("type") == "text"
-                    )
-                break
+        # Extract the last user message and check for file attachments.
+        # Use extract_user_text_with_attachments() which also checks system
+        # messages for the LibreChat attachment block (LibreChat v0.8.x
+        # sends file content as a system message, not in the user message).
+        user_text = extract_user_text_with_attachments(messages)
+        parsed = parse_attachments(user_text)
 
-        if _is_large_document(user_text):
-            # Large document -> submit to swarm (non-blocking)
+        if parsed.has_attachments:
+            # --- File attachments detected ---
+            # Submit each document to the swarm for gossiping.
+            # The swarm agents will read batches, gossip about content,
+            # and spawn more agents if more context space is needed.
+            # If there's a prompt, it becomes an immediate query.
+            doc_summary = ", ".join(
+                f"{d.filename} ({len(d.content):,} chars)"
+                for d in parsed.documents
+            )
+            log.info(
+                f"[{req_id}] ATTACHMENT DETECTED: {len(parsed.documents)} "
+                f"doc(s) [{doc_summary}], prompt={parsed.prompt[:80]!r}"
+            )
+
+            async def _handle_attachment_submission():
+                """Submit attached docs to swarm and optionally query."""
+                model_id = body.get("model", "swarm-miroflow")
+                request_id = f"chatcmpl-swarm-attach-{uuid.uuid4().hex[:12]}"
+                created = int(time.time())
+
+                def sse(
+                    content: str,
+                    finish_reason: Optional[str] = None,
+                ) -> str:
+                    return make_sse_chunk(
+                        content,
+                        request_id=request_id,
+                        created=created,
+                        model_id=model_id,
+                        finish_reason=finish_reason,
+                    )
+
+                def reasoning_sse(content: str) -> str:
+                    return make_sse_chunk(
+                        "",
+                        request_id=request_id,
+                        created=created,
+                        model_id=model_id,
+                        reasoning_content=content,
+                    )
+
+                try:
+                    # Submit each document as a corpus
+                    yield reasoning_sse(
+                        f"**[Attachments Received]** "
+                        f"{len(parsed.documents)} document(s)\n"
+                    )
+
+                    submitted_ids = []
+                    for doc in parsed.documents:
+                        yield reasoning_sse(
+                            f"  Submitting: {doc.filename} "
+                            f"({len(doc.content):,} chars)\n"
+                        )
+                        record = await _submit_corpus(
+                            doc.content,
+                            title=doc.filename,
+                            source="attachment",
+                            req_id=req_id,
+                        )
+                        submitted_ids.append(record.id)
+                        yield reasoning_sse(
+                            f"  -> Corpus {record.id} queued "
+                            f"for swarm processing\n"
+                        )
+
+                    yield reasoning_sse(
+                        "\nThe swarm will now gossip about "
+                        "these documents — reading them in batches, "
+                        "extracting knowledge, and building ever-deeper "
+                        "insights through collaborative discussion.\n\n"
+                    )
+
+                    status = await swarm.build_sincerity_preamble()
+                    yield reasoning_sse(f"\n{status}")
+
+                    if parsed.prompt:
+                        # User also typed a question — answer it
+                        yield reasoning_sse(
+                            f"\n**[Answering query while swarm "
+                            f"processes documents...]**\n"
+                            f"Query: {parsed.prompt[:200]}\n\n"
+                        )
+
+                        # Query the knowledge store (may have
+                        # partial results if processing already started)
+                        knowledge_results = await _query_knowledge(
+                            parsed.prompt, req_id,
+                        )
+
+                        # Build synthesis with document context
+                        doc_context = "\n\n".join(
+                            f"[From attachment: {d.filename}]\n"
+                            f"{d.content}"
+                            for d in parsed.documents
+                        )
+
+                        system_prompt = (
+                            "You are a research analyst powered by a "
+                            "swarm knowledge system. The user has just "
+                            "submitted document(s) to the swarm for "
+                            "deep analysis.\n\n"
+                            "The swarm is currently processing these "
+                            "documents — gossiping about them to extract "
+                            "knowledge. Meanwhile, answer the user's "
+                            "question using the document content provided "
+                            "and any knowledge already in the store.\n\n"
+                            "**SWARM STATUS:**\n"
+                            f"{status}\n\n"
+                            "**DOCUMENT EXCERPTS:**\n"
+                            f"{doc_context}\n\n"
+                            "**EXISTING KNOWLEDGE:**\n"
+                            f"{knowledge_results}\n\n"
+                            "**RULES:**\n"
+                            "- Answer from the documents and knowledge "
+                            "store. Be thorough and specific.\n"
+                            "- Note that the swarm is still processing — "
+                            "deeper insights will be available as the "
+                            "swarm continues its work.\n"
+                            "- Be direct. No moralising.\n"
+                        )
+
+                        synthesis_messages = [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": parsed.prompt},
+                        ]
+
+                        async with get_throttler("mistral").throttle():
+                            client = http_client()
+                            resp_body = {
+                                "model": SYNTHESIS_MODEL,
+                                "messages": synthesis_messages,
+                                "max_tokens": 4096,
+                                "temperature": 0.3,
+                                "stream": True,
+                            }
+                            headers = {
+                                "Authorization": f"Bearer {UPSTREAM_KEY}",
+                                "Content-Type": "application/json",
+                            }
+
+                            async with client.stream(
+                                "POST",
+                                f"{UPSTREAM_BASE}/chat/completions",
+                                json=resp_body,
+                                headers=headers,
+                                timeout=120.0,
+                            ) as resp:
+                                if resp.status_code != 200:
+                                    error_body = await resp.aread()
+                                    error_text = error_body.decode(
+                                        "utf-8", errors="replace",
+                                    )[:500]
+                                    yield sse(
+                                        f"Error: {error_text[:200]}",
+                                        finish_reason="stop",
+                                    )
+                                    yield "data: [DONE]\n\n"
+                                    return
+
+                                async for line in resp.aiter_lines():
+                                    if line.startswith("data: "):
+                                        payload = line[6:].strip()
+                                        if payload == "[DONE]":
+                                            break
+                                        try:
+                                            data = json.loads(payload)
+                                            choices = data.get(
+                                                "choices", [],
+                                            )
+                                            if choices:
+                                                delta = choices[0].get(
+                                                    "delta", {},
+                                                )
+                                                content = delta.get(
+                                                    "content", "",
+                                                )
+                                                if content:
+                                                    yield sse(content)
+                                        except json.JSONDecodeError:
+                                            pass
+
+                        await swarm.increment_queries()
+                    else:
+                        # No query — just confirm submission
+                        snapshot = await swarm.get_status_snapshot()
+                        corpus_list = ", ".join(
+                            f"`{cid}`" for cid in submitted_ids
+                        )
+                        yield sse(
+                            f"## Documents Submitted to Swarm\n\n"
+                            f"**{len(parsed.documents)} document(s)** "
+                            f"submitted for swarm processing.\n\n"
+                            f"**Corpus IDs:** {corpus_list}\n\n"
+                            f"The swarm agents will now:\n"
+                            f"1. Read documents in batches\n"
+                            f"2. Gossip about content — building "
+                            f"collaborative insights\n"
+                            f"3. Spawn more agents if more context "
+                            f"space is needed\n"
+                            f"4. Continuously refine understanding\n\n"
+                            f"**Ask questions at any time** — I'll "
+                            f"answer from the swarm's current "
+                            f"collective understanding.\n\n"
+                            f"**Current swarm:** "
+                            f"{snapshot['total_corpora']} corpora, "
+                            f"{snapshot['active_workers']} active "
+                            f"workers.\n"
+                        )
+
+                    yield sse("", finish_reason="stop")
+                    yield "data: [DONE]\n\n"
+
+                finally:
+                    lf.unregister_trace(req_id)
+                    lf.flush()
+                    tracker.finish(req_id)
+
+            generator = _handle_attachment_submission()
+
+        elif _is_large_document(parsed.prompt or user_text):
+            # Large document without attachment markers -> submit to swarm
             log.info(
                 f"[{req_id}] Routing to SWARM CORPUS SUBMISSION "
                 f"({len(user_text):,} chars)"
@@ -1652,12 +1945,15 @@ async def chat_completions(request: Request):
                     ):
                         yield event
                 finally:
+                    lf.unregister_trace(req_id)
+                    lf.flush()
                     tracker.finish(req_id)
 
             generator = _guarded_submit()
         else:
             # Regular query -> answer from swarm knowledge
             if not query_limiter.available():
+                lf.unregister_trace(req_id)
                 tracker.finish(req_id)
                 return JSONResponse(
                     status_code=503,
@@ -1683,6 +1979,8 @@ async def chat_completions(request: Request):
                         ):
                             yield event
                 finally:
+                    lf.unregister_trace(req_id)
+                    lf.flush()
                     tracker.finish(req_id)
 
             generator = _guarded_query()

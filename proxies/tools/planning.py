@@ -7,6 +7,7 @@ import json
 import re
 from typing import Optional
 
+import langfuse_config
 import veritas_inquisitor
 
 from .config import (
@@ -383,6 +384,10 @@ async def verify_conditions_with_veritas(
     log.info(
         f"[{req_id}] Running Veritas verification on {len(conditions)} conditions"
     )
+    veritas_span = langfuse_config.start_span(
+        req_id, "veritas:verify",
+        input={"conditions": len(conditions), "query": user_query[:120]},
+    )
 
     try:
         result = await veritas_inquisitor.verify_output(
@@ -392,6 +397,7 @@ async def verify_conditions_with_veritas(
         )
     except Exception as e:
         log.error(f"[{req_id}] Veritas reactor error: {e}")
+        langfuse_config.end_span(veritas_span, output={"error": str(e)}, level="ERROR")
         return conditions, {"error": str(e)}
 
     report = result.get("report", {})
@@ -399,6 +405,7 @@ async def verify_conditions_with_veritas(
 
     if not claims:
         log.warning(f"[{req_id}] Veritas produced no claim verdicts")
+        langfuse_config.end_span(veritas_span, output={"claims": 0})
         return conditions, report
 
     # Map Veritas verdicts back to conditions.
@@ -486,6 +493,15 @@ async def verify_conditions_with_veritas(
         f"{len(confidence_overrides)} confidence-adjusted, "
         f"{len(filtered)}/{len(conditions)} conditions retained"
     )
+    langfuse_config.end_span(veritas_span, output={
+        "fabricated": len(fabricated_indices),
+        "speculative": len(speculative_indices),
+        "confidence_adjusted": len(confidence_overrides),
+        "retained": len(filtered),
+        "removed": len(conditions) - len(filtered),
+        "iterations": result.get("iterations", 0),
+        "artifact_count": result.get("artifact_count", 0),
+    })
 
     return filtered, report
 

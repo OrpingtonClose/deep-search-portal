@@ -156,6 +156,83 @@ def create_callback_handler(
         return None
 
 
+# ---------------------------------------------------------------------------
+# Per-request trace registry — allows any module to create child spans
+# on the current request's Langfuse trace without plumbing the handler
+# through every function signature.
+# ---------------------------------------------------------------------------
+
+_trace_ids: dict[str, str] = {}  # req_id → trace_id
+
+
+def register_trace(req_id: str, trace_id: str) -> None:
+    """Associate a request ID with its Langfuse trace ID.
+
+    Called once when the pipeline starts so that downstream helpers
+    (``start_span``, ``end_span``) can attach spans to the correct trace.
+    """
+    _trace_ids[req_id] = trace_id
+
+
+def unregister_trace(req_id: str) -> None:
+    """Remove the trace association for a completed request."""
+    _trace_ids.pop(req_id, None)
+
+
+def start_span(
+    req_id: str,
+    name: str,
+    *,
+    input: Any = None,
+    metadata: Optional[dict] = None,
+) -> Optional[Any]:
+    """Create a new Langfuse span on the current request's trace.
+
+    Returns the span object (call ``.end()`` when done) or ``None`` if
+    Langfuse is not available.  Safe to call unconditionally.
+    """
+    client = _get_langfuse()
+    if client is None:
+        return None
+    trace_id = _trace_ids.get(req_id)
+    if not trace_id:
+        return None
+    try:
+        span = client.span(
+            trace_id=trace_id,
+            name=name,
+            input=input,
+            metadata=metadata or {},
+        )
+        return span
+    except Exception as exc:
+        log.debug("Failed to create Langfuse span %s: %s", name, exc)
+        return None
+
+
+def end_span(
+    span: Optional[Any],
+    *,
+    output: Any = None,
+    level: str = "DEFAULT",
+    status_message: str = "",
+) -> None:
+    """End a Langfuse span.  No-op if *span* is ``None``."""
+    if span is None:
+        return
+    try:
+        kwargs: dict[str, Any] = {}
+        if output is not None:
+            kwargs["output"] = output
+        if level != "DEFAULT":
+            kwargs["level"] = level
+        if status_message:
+            kwargs["status_message"] = status_message
+        span.end(**kwargs)
+    except Exception as exc:
+        log.debug("Failed to end Langfuse span: %s", exc)
+
+
 def flush() -> None:
     """Flush any pending Langfuse events.  Safe to call even when disabled."""
     client = _get_langfuse()

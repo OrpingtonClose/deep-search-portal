@@ -34,9 +34,13 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in swarm-proxy persistent-research deep-research thinking-proxy cftunnel owui searxng; do
+    for session in godmode-proxy swarm-proxy persistent-research deep-research thinking-proxy cftunnel searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
+    # Stop LibreChat Docker stack
+    if [ -f "${LIBRECHAT_COMPOSE:-}" ]; then
+        docker compose -f "$LIBRECHAT_COMPOSE" down 2>/dev/null || true
+    fi
     echo "All services stopped."
 }
 trap cleanup SIGTERM SIGINT
@@ -49,17 +53,18 @@ if ! pgrep -f "searx.webapp" > /dev/null; then
 fi
 wait_for_health "http://localhost:8888" "SearXNG" 30
 
-# --- Open WebUI ---
-if ! pgrep -f "open-webui serve" > /dev/null; then
-    screen -dmS owui bash /opt/start_openwebui.sh
-    echo "Open WebUI started"
-fi
-wait_for_health "http://localhost:3000" "Open WebUI" 60
-
-# --- Sync Models (YAML → DB) ---
-if [ -f /opt/sync_models.py ] && [ -f /opt/models.yaml ]; then
-    echo "Syncing models from models.yaml..."
-    python3 /opt/sync_models.py /opt/models.yaml --db-path /opt/openwebui-data/webui.db || echo "WARNING: sync_models.py failed (exit $?), continuing startup"
+# --- LibreChat (Docker Compose: API + MongoDB + Meilisearch) ---
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
+LIBRECHAT_COMPOSE="$REPO_ROOT/config/docker-compose.librechat.yml"
+if [ -f "$LIBRECHAT_COMPOSE" ]; then
+    if ! docker ps --format '{{.Names}}' | grep -q librechat-api; then
+        echo "Starting LibreChat stack..."
+        bash "$REPO_ROOT/scripts/start_librechat.sh" up
+    fi
+    echo "Waiting for LibreChat..."
+    wait_for_health "http://localhost:3000" "LibreChat" 90
+else
+    echo "WARNING: $LIBRECHAT_COMPOSE not found, skipping LibreChat"
 fi
 
 # --- Cloudflare Tunnel ---
@@ -97,4 +102,11 @@ if ! pgrep -f "swarm_proxy.py" > /dev/null; then
 fi
 wait_for_health "http://localhost:9500/health" "Swarm Deep Search Proxy" 15
 
-echo "All services started. Portal: ${WEBUI_URL:-https://deep-search.uk}"
+# --- G0DM0D3 Proxy (OpenRouter multi-model) ---
+if ! pgrep -f "godmode_proxy.py" > /dev/null; then
+    screen -dmS godmode-proxy bash -c "export OPENROUTER_API_KEY='${OPENROUTER_API_KEY:-}' && export GODMODE_PROXY_PORT='9600' && python3 /opt/godmode_proxy.py 2>&1 | tee /var/log/godmode_proxy.log"
+    echo "G0DM0D3 Proxy starting..."
+fi
+wait_for_health "http://localhost:9600/health" "G0DM0D3 Proxy" 15
+
+echo "All services started. Portal: ${DOMAIN_CLIENT:-https://deep-search.uk}"

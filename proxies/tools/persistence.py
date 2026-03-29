@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
 
 import knowledge_client
+import langfuse_config
 
 from shared import make_sse_chunk
 
@@ -123,6 +124,10 @@ async def _store_conditions_neo4j(
     """
     if not conditions:
         return 0, ""
+    span = langfuse_config.start_span(
+        session_id, "neo4j:store_conditions",
+        input={"count": len(conditions), "query": query[:120]},
+    )
     cond_dicts = [
         {
             "fact": c.fact or "",
@@ -147,9 +152,12 @@ async def _store_conditions_neo4j(
             conditions=cond_dicts,
             namespace=RESEARCH_NAMESPACE,
         )
-        return result.get("stored", 0), ""
+        stored = result.get("stored", 0)
+        langfuse_config.end_span(span, output={"stored": stored})
+        return stored, ""
     except Exception as e:
         log.error(f"Neo4j condition storage error: {e}")
+        langfuse_config.end_span(span, output={"error": str(e)}, level="ERROR")
         return 0, str(e)
 
 
@@ -162,6 +170,10 @@ async def _store_entities_neo4j(
 
     Returns (entities_stored, relationships_stored, error_message).
     """
+    span = langfuse_config.start_span(
+        session_id, "neo4j:store_entities",
+        input={"entities": len(entities), "relationships": len(relationships)},
+    )
     try:
         result = await knowledge_client.store_entities(
             session_id=session_id,
@@ -169,21 +181,29 @@ async def _store_entities_neo4j(
             relationships=relationships,
             namespace=RESEARCH_NAMESPACE,
         )
-        return result.get("entities_stored", 0), result.get("relationships_stored", 0), ""
+        e_stored = result.get("entities_stored", 0)
+        r_stored = result.get("relationships_stored", 0)
+        langfuse_config.end_span(span, output={"entities_stored": e_stored, "relationships_stored": r_stored})
+        return e_stored, r_stored, ""
     except Exception as e:
         log.error(f"Neo4j entity storage error: {e}")
+        langfuse_config.end_span(span, output={"error": str(e)}, level="ERROR")
         return 0, 0, str(e)
 
 
-async def _retrieve_related(query: str, limit: int = 20) -> list[dict]:
+async def _retrieve_related(query: str, limit: int = 20, req_id: str = "") -> list[dict]:
     """Retrieve prior conditions related to the query using Neo4j fulltext search."""
+    span = langfuse_config.start_span(
+        req_id, "neo4j:retrieve_related",
+        input={"query": query[:120], "limit": limit},
+    ) if req_id else None
     try:
         results = await knowledge_client.search_conditions(
             query=query,
             namespace=RESEARCH_NAMESPACE,
             limit=limit,
         )
-        return [
+        out = [
             {
                 "fact": r.get("fact", ""),
                 "source_url": r.get("source_url", ""),
@@ -197,17 +217,24 @@ async def _retrieve_related(query: str, limit: int = 20) -> list[dict]:
             }
             for r in results
         ]
+        langfuse_config.end_span(span, output={"results": len(out)})
+        return out
     except Exception as e:
         log.warning(f"Neo4j condition search error: {e}")
+        langfuse_config.end_span(span, output={"error": str(e)}, level="WARNING")
         return []
 
 
 async def _retrieve_graph_neighbors(
-    entity_names: list[str], max_hops: int = 2, limit: int = 20
+    entity_names: list[str], max_hops: int = 2, limit: int = 20, req_id: str = "",
 ) -> list[dict]:
     """Retrieve related conditions via knowledge graph traversal in Neo4j."""
     if not entity_names:
         return []
+    span = langfuse_config.start_span(
+        req_id, "neo4j:graph_neighbors",
+        input={"entities": entity_names[:5], "max_hops": max_hops, "limit": limit},
+    ) if req_id else None
     try:
         results = await knowledge_client.graph_neighbors(
             entity_names=entity_names,
@@ -215,7 +242,7 @@ async def _retrieve_graph_neighbors(
             max_hops=max_hops,
             limit=limit,
         )
-        return [
+        out = [
             {
                 "fact": r.get("fact", ""),
                 "source_url": r.get("source_url", ""),
@@ -226,8 +253,11 @@ async def _retrieve_graph_neighbors(
             }
             for r in results
         ]
+        langfuse_config.end_span(span, output={"results": len(out)})
+        return out
     except Exception as e:
         log.warning(f"Neo4j graph neighbor error: {e}")
+        langfuse_config.end_span(span, output={"error": str(e)}, level="WARNING")
         return []
 
 
@@ -279,14 +309,23 @@ async def run_document_ingestion(
             finish_reason=finish_reason,
         )
 
+    def reasoning_chunk(content: str) -> str:
+        """Emit a reasoning_content delta (collapsible Thinking block)."""
+        return make_sse_chunk(
+            "",
+            request_id=request_id,
+            created=created,
+            model_id=model_id,
+            reasoning_content=content,
+        )
+
     title = text[:80].replace("\n", " ").strip()
     namespace = RESEARCH_NAMESPACE
     doc_chars = len(text)
 
-    yield chunk("<think>\n")
-    yield chunk(f"**[Document Ingestion Mode]** Detected large document ({doc_chars:,} chars)\n")
-    yield chunk(f"Title: {title}...\n")
-    yield chunk(f"Namespace: {namespace}\n\n")
+    yield reasoning_chunk(f"**[Document Ingestion Mode]** Detected large document ({doc_chars:,} chars)\n")
+    yield reasoning_chunk(f"Title: {title}...\n")
+    yield reasoning_chunk(f"Namespace: {namespace}\n\n")
 
     # Archive the raw text to a JSONL file
     _append_jsonl(req_id, {
@@ -300,7 +339,7 @@ async def run_document_ingestion(
     ingestion_ok = False
     try:
         # Step 1: Submit to knowledge engine
-        yield chunk("**[Step 1: Submitting to Knowledge Engine]**\n")
+        yield reasoning_chunk("**[Step 1: Submitting to Knowledge Engine]**\n")
         ingest_result = await knowledge_client.ingest(
             namespace=namespace,
             title=title,
@@ -309,11 +348,11 @@ async def run_document_ingestion(
             rebuild=False,  # Append, don't clear existing data
         )
         job_id = ingest_result.get("job_id", "")
-        yield chunk(f"Ingest job started: {job_id}\n")
-        yield chunk(f"Total chars: {ingest_result.get('total_chars', doc_chars):,}\n\n")
+        yield reasoning_chunk(f"Ingest job started: {job_id}\n")
+        yield reasoning_chunk(f"Total chars: {ingest_result.get('total_chars', doc_chars):,}\n\n")
 
         # Step 2: Poll for completion
-        yield chunk("**[Step 2: Processing Document]**\n")
+        yield reasoning_chunk("**[Step 2: Processing Document]**\n")
         max_polls = 300  # up to ~10 minutes
         last_status = ""
         for _ in range(max_polls):
@@ -321,42 +360,40 @@ async def run_document_ingestion(
             try:
                 status = await knowledge_client.ingest_status(job_id)
             except Exception as e:
-                yield chunk(f"  Poll error: {e}\n")
+                yield reasoning_chunk(f"  Poll error: {e}\n")
                 continue
 
             current_status = status.get("status", "unknown")
             progress = status.get("progress", "")
 
             if current_status != last_status:
-                yield chunk(f"  Status: {current_status}")
+                yield reasoning_chunk(f"  Status: {current_status}")
                 if progress:
-                    yield chunk(f" — {progress}")
-                yield chunk("\n")
+                    yield reasoning_chunk(f" — {progress}")
+                yield reasoning_chunk("\n")
                 last_status = current_status
 
             if current_status == "completed":
                 ingestion_ok = True
                 stats = status.get("stats", {})
-                yield chunk("\n**[Step 3: Ingestion Complete]**\n")
+                yield reasoning_chunk("\n**[Step 3: Ingestion Complete]**\n")
                 if stats:
-                    yield chunk(f"  Chunks: {stats.get('total_chunks', '?')}\n")
-                    yield chunk(f"  Entities extracted: {stats.get('entities_created', '?')}\n")
-                    yield chunk(f"  Relationships: {stats.get('relationships_created', '?')}\n")
-                    yield chunk(f"  Claims: {stats.get('claims_created', '?')}\n")
+                    yield reasoning_chunk(f"  Chunks: {stats.get('total_chunks', '?')}\n")
+                    yield reasoning_chunk(f"  Entities extracted: {stats.get('entities_created', '?')}\n")
+                    yield reasoning_chunk(f"  Relationships: {stats.get('relationships_created', '?')}\n")
+                    yield reasoning_chunk(f"  Claims: {stats.get('claims_created', '?')}\n")
                 break
             elif current_status == "failed":
                 error = status.get("error", "Unknown error")
-                yield chunk(f"\n**Ingestion failed:** {error}\n")
+                yield reasoning_chunk(f"\n**Ingestion failed:** {error}\n")
                 break
         else:
-            yield chunk("\n**Warning:** Ingestion is still running (timed out waiting).\n")
-            yield chunk("You can check status later via the knowledge engine API.\n")
+            yield reasoning_chunk("\n**Warning:** Ingestion is still running (timed out waiting).\n")
+            yield reasoning_chunk("You can check status later via the knowledge engine API.\n")
 
     except Exception as e:
         log.error(f"[{req_id}] Document ingestion error: {e}")
-        yield chunk(f"\n**Error during ingestion:** {e}\n")
-
-    yield chunk("\n</think>\n\n")
+        yield reasoning_chunk(f"\n**Error during ingestion:** {e}\n")
 
     # Produce a user-facing summary based on actual outcome
     if ingestion_ok:

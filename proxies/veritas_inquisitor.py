@@ -1606,15 +1606,24 @@ async def stream_verification(
             finish_reason=finish_reason,
         )
 
+    def reasoning_chunk(content: str) -> str:
+        """Emit a reasoning_content delta (collapsible Thinking block)."""
+        return make_sse_chunk(
+            "",
+            request_id=request_id,
+            created=created,
+            model_id=model_id,
+            reasoning_content=content,
+        )
+
     progress_messages: asyncio.Queue = asyncio.Queue()
 
     async def progress_callback(msg: str) -> None:
         await progress_messages.put(msg)
 
-    yield chunk("<think>\n")
-    yield chunk("**[Veritas Inquisitor: Starting Verification]**\n\n")
-    yield chunk(f"Target text: {len(target_text):,} chars\n")
-    yield chunk(f"Original query: {original_query[:100]}...\n\n")
+    yield reasoning_chunk("**[Veritas Inquisitor: Starting Verification]**\n\n")
+    yield reasoning_chunk(f"Target text: {len(target_text):,} chars\n")
+    yield reasoning_chunk(f"Original query: {original_query[:100]}...\n\n")
 
     # Run the reactor in a task so we can stream progress
     reactor_task = asyncio.create_task(
@@ -1626,16 +1635,14 @@ async def stream_verification(
         while not reactor_task.done():
             try:
                 msg = await asyncio.wait_for(progress_messages.get(), timeout=1.0)
-                yield chunk(f"  {msg}\n")
+                yield reasoning_chunk(f"  {msg}\n")
             except asyncio.TimeoutError:
                 continue
 
         # Drain any remaining messages
         while not progress_messages.empty():
             msg = await progress_messages.get()
-            yield chunk(f"  {msg}\n")
-
-        yield chunk("\n</think>\n\n")
+            yield reasoning_chunk(f"  {msg}\n")
 
         # Get the result
         try:

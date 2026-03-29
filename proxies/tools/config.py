@@ -35,7 +35,10 @@ SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "mistral-small-latest")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
 LISTEN_PORT = env_int("PERSISTENT_RESEARCH_PORT", 9300, minimum=1)
 PORTAL_PUBLIC_URL = os.getenv("PORTAL_PUBLIC_URL", "").rstrip("/")
-OWUI_INTERNAL_URL = os.getenv("OWUI_INTERNAL_URL", "http://localhost:3000")
+GATEWAY_INTERNAL_URL = os.getenv(
+    "GATEWAY_INTERNAL_URL",
+    os.getenv("OWUI_INTERNAL_URL", "http://localhost:3000"),
+)
 
 
 # --- LangChain Model Factories ---

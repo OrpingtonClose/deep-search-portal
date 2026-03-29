@@ -3,7 +3,7 @@
 #
 # Runs Langfuse v3 alongside the existing stack.  Requires:
 #   - LANGFUSE_ENCRYPTION_KEY (generate with: openssl rand -hex 32)
-#   - GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET  (reuse from Open WebUI)
+#   - GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET  (reuse from LibreChat)
 #
 # Start:  docker compose -f docker-compose.langfuse.yml up -d
 # UI:     http://localhost:3001

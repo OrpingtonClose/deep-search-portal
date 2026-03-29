@@ -12,11 +12,13 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import sqlite3
 import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
 
@@ -41,7 +43,7 @@ UTILITY_PATTERNS = [
 
 
 def is_utility_request(messages: list[dict]) -> bool:
-    """Detect automated utility requests from Open WebUI (title/tag gen, etc.)."""
+    """Detect automated utility requests from LibreChat (title/tag gen, etc.)."""
     for msg in messages:
         content = msg.get("content", "")
         if isinstance(content, str):
@@ -50,6 +52,278 @@ def is_utility_request(messages: list[dict]) -> bool:
                 if pattern in content_lower:
                     return True
     return False
+
+
+# ============================================================================
+# LibreChat file-attachment parsing
+# ============================================================================
+
+@dataclass
+class AttachedDocument:
+    """A single file extracted from a LibreChat "Upload as Text" message."""
+    filename: str
+    content: str
+
+
+@dataclass
+class ParsedMessage:
+    """Result of separating LibreChat file attachments from the user prompt.
+
+    *documents* — zero or more attached files (from "Upload as Text").
+    *prompt*    — the user's actual text after removing the attachment block.
+    *raw*       — the original, unparsed message text.
+    """
+    documents: list[AttachedDocument] = field(default_factory=list)
+    prompt: str = ""
+    raw: str = ""
+
+    @property
+    def has_attachments(self) -> bool:
+        return len(self.documents) > 0
+
+    @property
+    def all_document_text(self) -> str:
+        """Concatenate all attached document content into a single string."""
+        return "\n\n---\n\n".join(
+            f"# {doc.filename}\n{doc.content}" for doc in self.documents
+        )
+
+
+# Regex to detect the opening marker of a LibreChat "Attached document(s):" block.
+# The actual closing marker is found via nesting-aware scanning (see
+# ``_find_attachment_block`` below) so that code fences inside documents
+# AND code fences in the user's prompt are both handled correctly.
+#
+# LibreChat v0.8.x may or may not emit a newline between the opening
+# fence (` ```md`) and the first file header (`# "file.txt"`), so the
+# pattern uses `\n?` to accept both variants.
+_ATTACHMENT_OPEN_RE = re.compile(
+    r"^Attached document\(s\):\s*```md\n?",
+    re.MULTILINE,
+)
+
+
+def _find_attachment_block(text: str) -> tuple[str, str] | None:
+    """Locate the LibreChat attachment block using nesting-aware fence matching.
+
+    Returns ``(block_content, after_block)`` or *None* if no block is found.
+
+    Strategy:
+    1. Find the opening ``Attached document(s): ```md`` marker.
+    2. Scan line-by-line tracking *only* language-tagged fence nesting
+       (e.g. ` ```python ` … ` ``` `).
+    3. The **first** bare ` ``` ` encountered at depth 0 is the closing
+       marker of the attachment block.
+
+    This deliberately does NOT attempt to handle bare (un-tagged) code
+    fences *inside* the uploaded document — doing so requires an
+    unbounded look-ahead that inevitably scans into the user's prompt
+    text (which may itself contain code fences), causing misparsing.
+    Language-tagged fences (` ```python `, ` ```bash `, etc.) inside
+    documents are handled correctly via depth tracking.
+    """
+    m = _ATTACHMENT_OPEN_RE.search(text)
+    if m is None:
+        return None
+
+    body_start = m.end()          # first char after the opening ```md\n
+    lines = text[body_start:].split("\n")
+    depth = 0                     # nesting depth for language-tagged fences
+    closing_idx: int | None = None
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        is_fence = (
+            stripped.startswith("```")
+            and not stripped.startswith("````")
+        )
+        if not is_fence:
+            continue
+
+        has_lang = len(stripped) > 3 and stripped[3:].strip() != ""
+        if has_lang:
+            if depth == 0:
+                # Opening a language-tagged inner code block
+                depth += 1
+            else:
+                # Could be another nested opener OR a language-tagged
+                # closer (rare but valid, e.g. ```python closing as
+                # ```python).  Treat as additional nesting for safety.
+                depth += 1
+        else:
+            # Bare ``` line
+            if depth > 0:
+                # Close a language-tagged inner code block
+                depth -= 1
+            else:
+                # depth == 0 — this is the attachment-closing marker.
+                closing_idx = i
+                break
+
+    if closing_idx is None:
+        return None
+
+    block_content = "\n".join(lines[:closing_idx])
+    after_block = "\n".join(lines[closing_idx + 1:])
+    return block_content, after_block
+
+# Within the block, each file starts with # "filename"
+_FILE_HEADER_RE = re.compile(
+    r'^# "([^"]+)"',
+    re.MULTILINE,
+)
+
+
+def parse_attachments(text: str) -> ParsedMessage:
+    """Parse a LibreChat user message that may contain "Upload as Text" files.
+
+    LibreChat's ``extractFileContext`` produces a format like::
+
+        Attached document(s):
+        ```md
+        # "report.pdf"
+        <extracted text>
+
+        ---
+
+        # "notes.txt"
+        <more text>
+        ```
+        <user's actual prompt here>
+
+    .. note::
+
+       In LibreChat v0.8.x the attachment block is delivered as a
+       **system** message while the user's typed prompt is a separate
+       *user* message.  Use ``extract_user_text_with_attachments()``
+       to reassemble them into the single-string format this function
+       expects.  The opening fence may or may not have a newline
+       between ` ```md` and the first ``# "filename"`` header.
+
+    This function separates the attachment block from the prompt and returns
+    a ``ParsedMessage`` with structured documents and the clean prompt.
+
+    If no attachment block is detected the full text is returned as the prompt.
+    """
+    if not text:
+        return ParsedMessage(raw=text, prompt=text)
+
+    result = _find_attachment_block(text)
+    if result is None:
+        return ParsedMessage(raw=text, prompt=text.strip())
+
+    block_content, after_block = result
+    after_block = after_block.strip()
+
+    # Split block into individual documents by the --- separator
+    documents: list[AttachedDocument] = []
+
+    # Find all file headers and their positions
+    headers = list(_FILE_HEADER_RE.finditer(block_content))
+
+    if headers:
+        for i, header_match in enumerate(headers):
+            filename = header_match.group(1)
+            # Content starts after the header line
+            content_start = header_match.end()
+            # Content ends at the next file's --- separator or end of block
+            if i + 1 < len(headers):
+                # Find the --- separator between this file and the next
+                next_header_pos = headers[i + 1].start()
+                # Look backwards from next header for ---
+                chunk = block_content[content_start:next_header_pos]
+                # Strip trailing separator
+                chunk = re.sub(r"\n\n---\s*\n\n?$", "", chunk)
+            else:
+                chunk = block_content[content_start:]
+
+            content = chunk.strip()
+            if content:
+                documents.append(AttachedDocument(
+                    filename=filename,
+                    content=content,
+                ))
+    elif block_content.strip():
+        # No file headers found but there's content — treat as single unnamed doc
+        documents.append(AttachedDocument(
+            filename="document",
+            content=block_content.strip(),
+        ))
+
+    return ParsedMessage(
+        documents=documents,
+        prompt=after_block,
+        raw=text,
+    )
+
+
+def _msg_text(msg: dict) -> str:
+    """Return the text content of a single message dict."""
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            p.get("text", "") for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return ""
+
+
+def extract_user_text(messages: list[dict]) -> str:
+    """Extract the last user message text from a messages array.
+
+    Handles both string content and OpenAI multipart content arrays.
+    """
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            return _msg_text(msg)
+    return ""
+
+
+def extract_user_text_with_attachments(messages: list[dict]) -> str:
+    """Build a combined text that includes any LibreChat attachment context.
+
+    LibreChat v0.8.x sends "Upload as Text" file content in a **system**
+    message whose text starts with ``Attached document(s):`` while the
+    user's typed prompt is in a separate *user* message.  To let
+    ``parse_attachments()`` work on a single string that mirrors the
+    original LibreChat wire format, this helper locates the attachment
+    system message (if any) and concatenates it with the user prompt.
+
+    If no attachment system message exists the result is identical to
+    ``extract_user_text()``.
+    """
+    # 1) Find the last user message text.
+    user_text = extract_user_text(messages)
+
+    # 2) Look for a system message whose content starts with the
+    #    LibreChat attachment marker — but ONLY in the *current turn*.
+    #    In multi-turn conversations the full history is sent with each
+    #    request, so an attachment system message from turn 1 would still
+    #    be present in turns 2, 3, etc.  Scoping to messages after the
+    #    last assistant reply prevents stale attachments from being
+    #    re-injected on every follow-up.
+    attachment_prefix = "Attached document(s):"
+    last_asst_idx = -1
+    for idx in range(len(messages) - 1, -1, -1):
+        if messages[idx].get("role") == "assistant":
+            last_asst_idx = idx
+            break
+    current_turn = messages[last_asst_idx + 1:]
+    for msg in reversed(current_turn):
+        if msg.get("role") != "system":
+            continue
+        text = _msg_text(msg)
+        if text.startswith(attachment_prefix):
+            # Re-assemble into the single-string format that
+            # ``parse_attachments`` expects:
+            #   <attachment block>\n<user prompt>
+            if user_text:
+                return text + "\n" + user_text
+            return text
+
+    return user_text
 
 
 # ============================================================================
@@ -155,9 +429,18 @@ def make_sse_chunk(
     created: int,
     model_id: str,
     finish_reason: Optional[str] = None,
+    reasoning_content: Optional[str] = None,
 ) -> str:
-    """Build a single SSE ``data:`` line in OpenAI chat-completion chunk format."""
+    """Build a single SSE ``data:`` line in OpenAI chat-completion chunk format.
+
+    When *reasoning_content* is provided the chunk carries a
+    ``reasoning_content`` delta field (the standard OpenAI format used by
+    o1/o3/DeepSeek reasoning models).  LibreChat's ``SplitStreamHandler``
+    consumes this field natively to render a collapsible "Thinking" block.
+    """
     delta: dict = {}
+    if reasoning_content is not None:
+        delta["reasoning_content"] = reasoning_content
     if content:
         delta["content"] = content
 

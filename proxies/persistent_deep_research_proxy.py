@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Persistent Deep Research Proxy for Open WebUI.
+Persistent Deep Research Proxy for LibreChat.
 
 Thin orchestration layer — all research logic lives in the ``tools/``
 sub-package.  This file provides:
@@ -37,10 +37,13 @@ from shared import (
     all_throttler_stats,
     create_app,
     env_int,  # noqa: F401
+    extract_user_text,
+    extract_user_text_with_attachments,
     get_throttler,  # noqa: F401
     http_client,  # noqa: F401
     is_utility_request,
     make_sse_chunk,
+    parse_attachments,
     register_standard_routes,
     require_env,  # noqa: F401
     setup_logging,  # noqa: F401
@@ -62,7 +65,7 @@ from tools.config import (  # noqa: F401
     SEARXNG_URL,
     LISTEN_PORT,
     PORTAL_PUBLIC_URL,
-    OWUI_INTERNAL_URL,
+    GATEWAY_INTERNAL_URL,
     _get_llm,
     _get_synthesis_llm,
     _get_subagent_llm,
@@ -254,6 +257,12 @@ from tools.tree_reactor import (  # noqa: F401
 # Backward-compat alias used in synthesis.py
 run_tree_research_reactor = tree_research_reactor
 
+from tools.conversation import (  # noqa: F401
+    derive_conversation_id,
+    get_conversation_store,
+    merge_research_focus,
+)
+
 from tools.synthesis import (  # noqa: F401
     LiveFindingsCollector,
     PersistentResearchState,
@@ -284,24 +293,29 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# OWUI token validation — protects dashboard/report endpoints
+# Gateway token validation — protects dashboard/report endpoints
+# Supports both LibreChat (JWT via /api/user) and legacy LibreChat tokens.
 # ---------------------------------------------------------------------------
 
-_owui_auth_cache: dict[str, float] = {}  # token -> expiry timestamp
-_OWUI_CACHE_TTL = 300  # cache valid tokens for 5 minutes
-_OWUI_CACHE_MAX_SIZE = 1000  # max entries before forced cleanup
+_gateway_auth_cache: dict[str, float] = {}  # token -> expiry timestamp
+_GATEWAY_CACHE_TTL = 300  # cache valid tokens for 5 minutes
+_GATEWAY_CACHE_MAX_SIZE = 1000  # max entries before forced cleanup
 
 
 def _evict_expired_tokens() -> None:
     """Remove expired entries from the auth cache to prevent unbounded growth."""
     now = time.monotonic()
-    expired = [k for k, v in _owui_auth_cache.items() if v <= now]
+    expired = [k for k, v in _gateway_auth_cache.items() if v <= now]
     for k in expired:
-        del _owui_auth_cache[k]
+        del _gateway_auth_cache[k]
 
 
-async def _validate_owui_token(request: Request) -> bool:
-    """Validate that the request carries a valid Open WebUI session token."""
+async def _validate_gateway_token(request: Request) -> bool:
+    """Validate that the request carries a valid gateway session token.
+
+    Tries LibreChat's /api/user endpoint first, then falls back to the
+    legacy LibreChat /api/v1/auths/ endpoint for backwards compatibility.
+    """
     token = None
     auth_header = request.headers.get("authorization", "")
     if auth_header.startswith("Bearer "):
@@ -311,21 +325,28 @@ async def _validate_owui_token(request: Request) -> bool:
     if not token:
         return False
 
-    if len(_owui_auth_cache) > _OWUI_CACHE_MAX_SIZE:
+    if len(_gateway_auth_cache) > _GATEWAY_CACHE_MAX_SIZE:
         _evict_expired_tokens()
 
     now = time.monotonic()
-    if token in _owui_auth_cache and _owui_auth_cache[token] > now:
+    if token in _gateway_auth_cache and _gateway_auth_cache[token] > now:
         return True
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
+            # Try LibreChat endpoint first
             resp = await client.get(
-                f"{OWUI_INTERNAL_URL}/api/v1/auths/",
+                f"{GATEWAY_INTERNAL_URL}/api/user",
                 headers={"Authorization": f"Bearer {token}"},
             )
+            if resp.status_code != 200:
+                # Fallback to legacy LibreChat endpoint
+                resp = await client.get(
+                    f"{GATEWAY_INTERNAL_URL}/api/v1/auths/",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
         if resp.status_code == 200:
-            _owui_auth_cache[token] = now + _OWUI_CACHE_TTL
+            _gateway_auth_cache[token] = now + _GATEWAY_CACHE_TTL
             return True
         return False
     except Exception:
@@ -410,7 +431,7 @@ async def tool_issues():
 @app.post("/v1/tool-issues/{issue_id}/resolve")
 async def resolve_tool_issue(issue_id: int, request: Request):
     """Mark a tool issue as resolved."""
-    if not await _validate_owui_token(request):
+    if not await _validate_gateway_token(request):
         return _auth_denied()
     from tools.tool_health import get_monitor
     monitor = get_monitor()
@@ -433,7 +454,7 @@ async def cache_statistics():
 @app.post("/v1/cache/clear")
 async def clear_cache(request: Request):
     """Clear all cached search results."""
-    if not await _validate_owui_token(request):
+    if not await _validate_gateway_token(request):
         return _auth_denied()
     from tools.search_cache import cache_clear
     deleted = cache_clear()
@@ -484,7 +505,7 @@ async def knowledge_stats():
 @app.get("/research/reports")
 async def get_research_reports(request: Request):
     """List all available research reports with metadata."""
-    if not await _validate_owui_token(request):
+    if not await _validate_gateway_token(request):
         return _auth_denied()
     try:
         reports = list_available_reports()
@@ -578,7 +599,7 @@ async def get_research_report(session_id: str, request: Request):
     clean HTML page for browser viewing.  Pass `?raw=1` to get the
     raw Markdown text instead.
     """
-    if not await _validate_owui_token(request):
+    if not await _validate_gateway_token(request):
         return _auth_denied()
     if not _SAFE_SESSION_ID_RE.match(session_id):
         return JSONResponse({"error": "Invalid session_id"}, status_code=400)
@@ -622,7 +643,7 @@ async def graph_view(request: Request):
     Renders the LangGraph StateGraph as a Mermaid node-and-edge diagram
     with real-time active node highlighting by polling for running spans.
     """
-    if not await _validate_owui_token(request):
+    if not await _validate_gateway_token(request):
         return _auth_denied()
 
     from fastapi.responses import HTMLResponse
@@ -815,7 +836,7 @@ pollActiveNodes();
 @app.get("/graph/active")
 async def graph_active_nodes(request: Request):
     """Return currently active and completed pipeline nodes for graph highlighting."""
-    if not await _validate_owui_token(request):
+    if not await _validate_gateway_token(request):
         return _auth_denied()
 
     node_status: dict[str, dict[str, set[str]]] = {}
@@ -846,7 +867,7 @@ async def get_research_metrics(session_id: str, request: Request):
 
     Designed for LLM consumption — structured data for performance analysis.
     """
-    if not await _validate_owui_token(request):
+    if not await _validate_gateway_token(request):
         return _auth_denied()
     if not _SAFE_SESSION_ID_RE.match(session_id):
         return JSONResponse({"error": "Invalid session_id"}, status_code=400)
@@ -873,7 +894,7 @@ async def research_dashboard(request: Request):
     """
     from fastapi.responses import HTMLResponse
 
-    if not await _validate_owui_token(request):
+    if not await _validate_gateway_token(request):
         return _auth_denied()
     days = 7
     try:
@@ -903,7 +924,7 @@ async def research_dashboard_data(request: Request):
     Query params:
       ?days=N  — lookback window (default: 7)
     """
-    if not await _validate_owui_token(request):
+    if not await _validate_gateway_token(request):
         return _auth_denied()
     days = 7
     try:
@@ -1078,24 +1099,160 @@ async def chat_completions(request: Request):
             log=log,
         )
     else:
-        # Check if the last user message is a large document for ingestion
-        user_text = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    user_text = content
-                elif isinstance(content, list):
-                    user_text = " ".join(
-                        p.get("text", "") for p in content
-                        if isinstance(p, dict) and p.get("type") == "text"
-                    )
-                break
+        # Extract the last user message and check for file attachments.
+        # Use extract_user_text_with_attachments() which also checks system
+        # messages for the LibreChat attachment block (LibreChat v0.8.x
+        # sends file content as a system message, not in the user message).
+        user_text = extract_user_text_with_attachments(messages)
+        parsed = parse_attachments(user_text)
 
-        if _is_large_document(user_text):
+        # ------------------------------------------------------------------
+        # Prompt inheritance: merge new prompt with prior research focus
+        # (PMFB-FU-01 through PMFB-FU-06 in docs/persistent-miroflow-behaviors.md)
+        #
+        # Rules:
+        #   - New prompt takes precedence on conflict (PMFB-FU-02)
+        #   - Non-contradicting terms inherited from prior (PMFB-FU-03)
+        #   - Unstated aspects carried forward unchanged (PMFB-FU-04)
+        #   - File attachments always get first-priority decomposition (PMFB-FU-06)
+        #   - Sending a new prompt restarts research with new focus (PMFB-FU-01)
+        # ------------------------------------------------------------------
+        prior_focus = ""
+        conversation_id = ""
+        try:
+            conversation_id = derive_conversation_id(
+                messages, chat_id=body.get("chat_id"),
+            )
+            store = get_conversation_store()
+            latest = store.get_latest_turn(conversation_id)
+            if latest is not None:
+                prior_focus = latest.user_query
+                log.info(
+                    f"[{req_id}] Prior research focus found "
+                    f"(conv={conversation_id}): {prior_focus[:80]!r}"
+                )
+        except Exception as e:
+            log.warning(
+                f"[{req_id}] Could not load prior focus (non-fatal): {e}"
+            )
+
+        if parsed.has_attachments:
+            # --- File attachments detected (PMFB-ATT-01: first priority) ---
+            # Attachments are first-class research inputs: decompose them
+            # into atomic conditions, cross-reference, and fact-check.
+            # The prompt (if any) provides research direction/focus.
+            doc_summary = ", ".join(
+                f"{d.filename} ({len(d.content):,} chars)"
+                for d in parsed.documents
+            )
+            log.info(
+                f"[{req_id}] ATTACHMENT DETECTED: {len(parsed.documents)} "
+                f"doc(s) [{doc_summary}], prompt={parsed.prompt[:80]!r}"
+            )
+
+            # Determine the effective research direction via prompt merge
+            # (PMFB-PM-04: merge applies to text prompt only, not doc content)
+            raw_prompt = parsed.prompt
+            if raw_prompt and prior_focus:
+                effective_prompt = await merge_research_focus(
+                    prior_focus, raw_prompt, req_id,
+                )
+            elif raw_prompt:
+                effective_prompt = raw_prompt
+            elif prior_focus:
+                # No explicit prompt but prior focus exists — inherit it
+                # (PMFB-FU-04: unstated aspects carried forward unchanged)
+                effective_prompt = prior_focus
+                log.info(
+                    f"[{req_id}] No typed prompt with attachment; "
+                    f"inheriting prior focus: {prior_focus[:80]!r}"
+                )
+            else:
+                # No explicit prompt and no prior focus — use default
+                # (PMFB-ATT-05)
+                effective_prompt = (
+                    "Analyse the attached document(s) thoroughly. "
+                    "Decompose all claims into atomic conditions, "
+                    "cross-reference facts, identify "
+                    "contradictions, and fact-check key "
+                    "assertions against external sources."
+                )
+
+            # Inject the document content as a research-source system message
+            # so the pipeline treats it as material to decompose and verify.
+            # (PMFB-ATT-03: system message before user message)
+            #
+            # Remove the original LibreChat attachment system message to avoid
+            # sending document content to the LLM twice (v0.8.x sends it as
+            # a separate system message with "Attached document(s):" prefix).
+            augmented_messages = [
+                msg for msg in messages
+                if not (
+                    msg.get("role") == "system"
+                    and isinstance(msg.get("content", ""), str)
+                    and msg["content"].lstrip().startswith("Attached document(s):")
+                )
+            ]
+            for i in range(len(augmented_messages) - 1, -1, -1):
+                if augmented_messages[i].get("role") == "user":
+                    doc_system_msg = {
+                        "role": "system",
+                        "content": (
+                            "The user has attached the following document(s) "
+                            "for research analysis. Treat these as PRIMARY "
+                            "research sources — decompose every claim into "
+                            "atomic conditions, cross-reference facts across "
+                            "paragraphs, and fact-check all assertions. "
+                            "The user's prompt provides the research "
+                            "direction and focus.\n\n"
+                            "=== ATTACHED DOCUMENTS ===\n\n"
+                            + parsed.all_document_text
+                            + "\n\n=== END DOCUMENTS ==="
+                        ),
+                    }
+                    augmented_messages.insert(i, doc_system_msg)
+                    # Update the user message to the effective (merged) prompt
+                    augmented_messages[i + 1] = {
+                        **augmented_messages[i + 1],
+                        "content": effective_prompt,
+                    }
+                    break
+
+            if not limiter.available():
+                tracker.finish(req_id)
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": {
+                            "message": (
+                                f"Too many concurrent persistent research "
+                                f"sessions ({limiter.max_concurrent}). "
+                                f"Try again shortly."
+                            ),
+                            "type": "rate_limit",
+                        }
+                    },
+                )
+
+            log.info(
+                f"[{req_id}] Routing to PERSISTENT DEEP RESEARCH "
+                f"(with {len(parsed.documents)} attached doc(s))"
+            )
+
+            async def _guarded_research_with_docs():
+                async with limiter.hold():
+                    async for event in run_persistent_research(
+                        augmented_messages, body, req_id,
+                        conversation_id_override=conversation_id,
+                    ):
+                        yield event
+
+            generator = _guarded_research_with_docs()
+
+        elif _is_large_document(parsed.prompt or user_text):
             log.info(
                 f"[{req_id}] Routing to DOCUMENT INGESTION "
-                f"({len(user_text):,} chars)"
+                f"({len(parsed.prompt or user_text):,} chars)"
             )
 
             async def _guarded_ingest():
@@ -1110,6 +1267,28 @@ async def chat_completions(request: Request):
 
             generator = _guarded_ingest()
         else:
+            # --- Normal research prompt ---
+            # Apply prompt-inheritance merge if this is a follow-up
+            # (PMFB-FU-01: restarts research with new merged focus)
+            if prior_focus:
+                effective_prompt = await merge_research_focus(
+                    prior_focus, user_text, req_id,
+                )
+                if effective_prompt != user_text:
+                    # Replace the last user message with the merged prompt
+                    messages = list(messages)
+                    for i in range(len(messages) - 1, -1, -1):
+                        if messages[i].get("role") == "user":
+                            messages[i] = {
+                                **messages[i],
+                                "content": effective_prompt,
+                            }
+                            break
+                    log.info(
+                        f"[{req_id}] Merged follow-up prompt: "
+                        f"{user_text[:60]!r} -> {effective_prompt[:80]!r}"
+                    )
+
             if not limiter.available():
                 tracker.finish(req_id)
                 return JSONResponse(
@@ -1129,7 +1308,10 @@ async def chat_completions(request: Request):
 
             async def _guarded_research():
                 async with limiter.hold():
-                    async for event in run_persistent_research(messages, body, req_id):
+                    async for event in run_persistent_research(
+                        messages, body, req_id,
+                        conversation_id_override=conversation_id,
+                    ):
                         yield event
 
             generator = _guarded_research()
@@ -1186,7 +1368,7 @@ _NAME_TO_TOOLS_MODULES: dict[str, list[str]] = {
     "MODERATION_MODEL": ["tools.config", "tools.moderation"],
     "NOVELTY_EXPAND_THRESHOLD": ["tools.config", "tools.tree_reactor"],
     "NOVELTY_STOP_THRESHOLD": ["tools.config", "tools.tree_reactor"],
-    "OWUI_INTERNAL_URL": ["tools.config"],
+    "GATEWAY_INTERNAL_URL": ["tools.config"],
     "OXYLABS_PASSWORD": ["tools.config", "tools.moderation", "tools.search_tools2", "tools.web_fetch"],
     "OXYLABS_USERNAME": ["tools.config", "tools.moderation", "tools.search_tools2", "tools.web_fetch"],
     "PORTAL_PUBLIC_URL": ["tools.config"],

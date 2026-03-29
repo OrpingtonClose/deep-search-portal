@@ -1763,11 +1763,12 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
     # Relevance gate now runs inside synthesize_with_revision() on the
     # draft (before critic/revision), so we no longer need it here.
 
-    if _use_gossip:
-        progress.append("Gossip synthesis + queen merge complete.\n")
-    else:
-        progress.append("Critic review complete.\n")
-        progress.append("Final revision complete.\n")
+    if not synthesis_failed:
+        if _use_gossip:
+            progress.append("Gossip synthesis + queen merge complete.\n")
+        else:
+            progress.append("Critic review complete.\n")
+            progress.append("Final revision complete.\n")
 
     # --- Incompleteness detection (synthesis → reresearch feedback) ---
     iterations = state.get("research_iterations", 0)
@@ -1895,14 +1896,16 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
             progress.append(f"**Metrics published:** {metrics_url}\n")
 
     # Persist synthesis output — the final (or intermediate) answer
-    log_stage_output(req_id, "synthesize", {
-        "answer_length": len(final_answer),
-        "conditions_count": len(all_conditions),
-        "nodes_explored": nodes_explored,
-        "elapsed_seconds": round(elapsed, 1),
-        "targeted_questions": targeted,
-        "report_url": report_url,
-    })
+    # (skip if we already logged an error record in the except block)
+    if not synthesis_failed:
+        log_stage_output(req_id, "synthesize", {
+            "answer_length": len(final_answer),
+            "conditions_count": len(all_conditions),
+            "nodes_explored": nodes_explored,
+            "elapsed_seconds": round(elapsed, 1),
+            "targeted_questions": targeted,
+            "report_url": report_url,
+        })
 
     return {
         "final_answer": final_answer,

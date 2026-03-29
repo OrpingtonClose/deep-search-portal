@@ -28,10 +28,12 @@ LOG_DIR = os.getenv("PERSISTENT_RESEARCH_LOG_DIR", "/opt/persistent_research_log
 log = setup_logging("persistent-research", LOG_DIR)
 
 # --- Configuration ---
-UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://openrouter.ai/api/v1")
+# Default to xAI direct API for Grok (bypasses OpenRouter safety layer).
+# See docs/model-evaluation-march-2026.md for the full evaluation.
+UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://api.x.ai/v1")
 UPSTREAM_KEY = require_env("UPSTREAM_KEY")
-UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "x-ai/grok-4.20-beta")
-SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "x-ai/grok-4.1-fast")
+UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "grok-3-fast")
+SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "grok-3-fast")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
 LISTEN_PORT = env_int("PERSISTENT_RESEARCH_PORT", 9300, minimum=1)
 PORTAL_PUBLIC_URL = os.getenv("PORTAL_PUBLIC_URL", "").rstrip("/")

@@ -15,6 +15,11 @@ fi
 MISTRAL_API_KEY="${MISTRAL_API_KEY:?MISTRAL_API_KEY not set}"
 CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN not set}"
 
+# Model API keys — Venice AI for uncensored swarm, xAI for Grok research
+VENICE_API_KEY="${VENICE_API_KEY:-}"
+XAI_API_KEY="${XAI_API_KEY:-}"
+OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
+
 # --- Helper: wait for an HTTP endpoint to become healthy ---
 wait_for_health() {
     local url="$1"
@@ -81,30 +86,30 @@ if ! pgrep -f "thinking_proxy.py" > /dev/null; then
 fi
 wait_for_health "http://localhost:9100/health" "Thinking Proxy" 15
 
-# --- Deep Research Proxy (MiroFlow) ---
+# --- Deep Research Proxy (MiroFlow) — Grok via xAI direct API ---
 if ! pgrep -f "deep_research_proxy.py" > /dev/null; then
-    screen -dmS deep-research bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export UPSTREAM_MODEL='mistral-large-latest' && export SEARXNG_URL='http://localhost:8888' && export MOJEEK_API_KEY='${MOJEEK_API_KEY:-}' && export BRAVE_SEARCH_API_KEY='${BRAVE_SEARCH_API_KEY:-}' && export DEEP_RESEARCH_PORT='9200' && python3 /opt/deep_research_proxy.py 2>&1 | tee /var/log/deep_research_proxy.log"
+    screen -dmS deep-research bash -c "export UPSTREAM_BASE='https://api.x.ai/v1' && export UPSTREAM_KEY='${XAI_API_KEY:-${MISTRAL_API_KEY}}' && export UPSTREAM_MODEL='grok-3-fast' && export SEARXNG_URL='http://localhost:8888' && export MOJEEK_API_KEY='${MOJEEK_API_KEY:-}' && export BRAVE_SEARCH_API_KEY='${BRAVE_SEARCH_API_KEY:-}' && export DEEP_RESEARCH_PORT='9200' && python3 /opt/deep_research_proxy.py 2>&1 | tee /var/log/deep_research_proxy.log"
     echo "Deep Research Proxy starting..."
 fi
 wait_for_health "http://localhost:9200/health" "Deep Research Proxy" 15
 
-# --- Persistent Deep Research Proxy (Subagent Map-Reduce + AoT) ---
+# --- Persistent Deep Research Proxy (Subagent Map-Reduce + AoT) — Grok via xAI direct API ---
 if ! pgrep -f "persistent_deep_research_proxy.py" > /dev/null; then
-    screen -dmS persistent-research bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export UPSTREAM_MODEL='mistral-large-latest' && export SUBAGENT_MODEL='mistral-small-latest' && export SEARXNG_URL='http://localhost:8888' && export MOJEEK_API_KEY='${MOJEEK_API_KEY:-}' && export BRAVE_SEARCH_API_KEY='${BRAVE_SEARCH_API_KEY:-}' && export PERSISTENT_RESEARCH_PORT='9300' && python3 /opt/persistent_deep_research_proxy.py 2>&1 | tee /var/log/persistent_research_proxy.log"
+    screen -dmS persistent-research bash -c "export UPSTREAM_BASE='https://api.x.ai/v1' && export UPSTREAM_KEY='${XAI_API_KEY:-${MISTRAL_API_KEY}}' && export UPSTREAM_MODEL='grok-3-fast' && export SUBAGENT_MODEL='grok-3-fast' && export SEARXNG_URL='http://localhost:8888' && export MOJEEK_API_KEY='${MOJEEK_API_KEY:-}' && export BRAVE_SEARCH_API_KEY='${BRAVE_SEARCH_API_KEY:-}' && export PERSISTENT_RESEARCH_PORT='9300' && python3 /opt/persistent_deep_research_proxy.py 2>&1 | tee /var/log/persistent_research_proxy.log"
     echo "Persistent Deep Research Proxy starting..."
 fi
 wait_for_health "http://localhost:9300/health" "Persistent Deep Research Proxy" 15
 
-# --- MiroFlow Sprint Proxy (quick 2-round variant) ---
+# --- MiroFlow Sprint Proxy (quick 2-round variant) — Grok via xAI direct API ---
 if ! pgrep -f "miroflow_sprint_proxy.py" > /dev/null; then
-    screen -dmS miroflow-sprint bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export UPSTREAM_MODEL='mistral-large-latest' && export SUBAGENT_MODEL='mistral-small-latest' && export SEARXNG_URL='http://localhost:8888' && export MOJEEK_API_KEY='${MOJEEK_API_KEY:-}' && export BRAVE_SEARCH_API_KEY='${BRAVE_SEARCH_API_KEY:-}' && export MIROFLOW_SPRINT_PORT='9400' && python3 /opt/miroflow_sprint_proxy.py 2>&1 | tee /var/log/miroflow_sprint_proxy.log"
+    screen -dmS miroflow-sprint bash -c "export UPSTREAM_BASE='https://api.x.ai/v1' && export UPSTREAM_KEY='${XAI_API_KEY:-${MISTRAL_API_KEY}}' && export UPSTREAM_MODEL='grok-3-fast' && export SUBAGENT_MODEL='grok-3-fast' && export SEARXNG_URL='http://localhost:8888' && export MOJEEK_API_KEY='${MOJEEK_API_KEY:-}' && export BRAVE_SEARCH_API_KEY='${BRAVE_SEARCH_API_KEY:-}' && export MIROFLOW_SPRINT_PORT='9400' && python3 /opt/miroflow_sprint_proxy.py 2>&1 | tee /var/log/miroflow_sprint_proxy.log"
     echo "MiroFlow Sprint Proxy starting..."
 fi
 wait_for_health "http://localhost:9400/health" "MiroFlow Sprint Proxy" 15
 
-# --- Swarm Deep Search Proxy ---
+# --- Swarm Deep Search Proxy — Venice AI (uncensored) ---
 if ! pgrep -f "swarm_proxy.py" > /dev/null; then
-    screen -dmS swarm-proxy bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export SWARM_SYNTHESIS_MODEL='mistral-large-latest' && export SWARM_WORKER_MODEL='mistral-small-latest' && export SWARM_PROXY_PORT='9500' && python3 /opt/swarm_proxy.py 2>&1 | tee /var/log/swarm_proxy.log"
+    screen -dmS swarm-proxy bash -c "export UPSTREAM_BASE='https://api.venice.ai/api/v1' && export UPSTREAM_KEY='${VENICE_API_KEY:-${MISTRAL_API_KEY}}' && export SWARM_SYNTHESIS_MODEL='venice-uncensored' && export SWARM_WORKER_MODEL='venice-uncensored' && export SWARM_PROXY_PORT='9500' && python3 /opt/swarm_proxy.py 2>&1 | tee /var/log/swarm_proxy.log"
     echo "Swarm Deep Search Proxy starting..."
 fi
 wait_for_health "http://localhost:9500/health" "Swarm Deep Search Proxy" 15

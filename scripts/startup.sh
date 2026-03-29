@@ -117,7 +117,7 @@ wait_for_health "http://localhost:9400/health" "MiroFlow Sprint Proxy" 15
 
 # --- Swarm Deep Search Proxy — Venice AI (uncensored) ---
 if ! pgrep -f "swarm_proxy.py" > /dev/null; then
-    screen -dmS swarm-proxy bash -c "export UPSTREAM_BASE='https://api.venice.ai/api/v1' && export UPSTREAM_KEY='${VENICE_API_KEY:-${MISTRAL_API_KEY}}' && export SWARM_SYNTHESIS_MODEL='venice-uncensored' && export SWARM_WORKER_MODEL='venice-uncensored' && export SWARM_PROXY_PORT='9500' && python3 /opt/swarm_proxy.py 2>&1 | tee /var/log/swarm_proxy.log"
+    screen -dmS swarm-proxy bash -c "export UPSTREAM_BASE='https://api.venice.ai/api/v1' && export UPSTREAM_KEY='${VENICE_API_KEY:-${MISTRAL_API_KEY}}' && export UPSTREAM_MODEL='venice-uncensored' && export SWARM_SYNTHESIS_MODEL='venice-uncensored' && export SWARM_WORKER_MODEL='venice-uncensored' && export SWARM_PROXY_PORT='9500' && python3 /opt/swarm_proxy.py 2>&1 | tee /var/log/swarm_proxy.log"
     echo "Swarm Deep Search Proxy starting..."
 fi
 wait_for_health "http://localhost:9500/health" "Swarm Deep Search Proxy" 15

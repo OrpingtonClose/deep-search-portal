@@ -34,7 +34,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in godmode-proxy swarm-proxy persistent-research deep-research thinking-proxy cftunnel searxng; do
+    for session in godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy cftunnel searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -94,6 +94,13 @@ if ! pgrep -f "persistent_deep_research_proxy.py" > /dev/null; then
     echo "Persistent Deep Research Proxy starting..."
 fi
 wait_for_health "http://localhost:9300/health" "Persistent Deep Research Proxy" 15
+
+# --- MiroFlow Sprint Proxy (quick 2-round variant) ---
+if ! pgrep -f "miroflow_sprint_proxy.py" > /dev/null; then
+    screen -dmS miroflow-sprint bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export UPSTREAM_MODEL='mistral-large-latest' && export SUBAGENT_MODEL='mistral-small-latest' && export SEARXNG_URL='http://localhost:8888' && export MOJEEK_API_KEY='${MOJEEK_API_KEY:-}' && export BRAVE_SEARCH_API_KEY='${BRAVE_SEARCH_API_KEY:-}' && export MIROFLOW_SPRINT_PORT='9400' && python3 /opt/miroflow_sprint_proxy.py 2>&1 | tee /var/log/miroflow_sprint_proxy.log"
+    echo "MiroFlow Sprint Proxy starting..."
+fi
+wait_for_health "http://localhost:9400/health" "MiroFlow Sprint Proxy" 15
 
 # --- Swarm Deep Search Proxy ---
 if ! pgrep -f "swarm_proxy.py" > /dev/null; then

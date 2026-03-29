@@ -41,7 +41,7 @@ UTILITY_PATTERNS = [
 
 
 def is_utility_request(messages: list[dict]) -> bool:
-    """Detect automated utility requests from Open WebUI (title/tag gen, etc.)."""
+    """Detect automated utility requests from LibreChat (title/tag gen, etc.)."""
     for msg in messages:
         content = msg.get("content", "")
         if isinstance(content, str):
@@ -155,9 +155,18 @@ def make_sse_chunk(
     created: int,
     model_id: str,
     finish_reason: Optional[str] = None,
+    reasoning_content: Optional[str] = None,
 ) -> str:
-    """Build a single SSE ``data:`` line in OpenAI chat-completion chunk format."""
+    """Build a single SSE ``data:`` line in OpenAI chat-completion chunk format.
+
+    When *reasoning_content* is provided the chunk carries a
+    ``reasoning_content`` delta field (the standard OpenAI format used by
+    o1/o3/DeepSeek reasoning models).  LibreChat's ``SplitStreamHandler``
+    consumes this field natively to render a collapsible "Thinking" block.
+    """
     delta: dict = {}
+    if reasoning_content is not None:
+        delta["reasoning_content"] = reasoning_content
     if content:
         delta["content"] = content
 

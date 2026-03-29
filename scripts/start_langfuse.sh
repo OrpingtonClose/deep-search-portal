@@ -4,7 +4,7 @@
 #
 # Starts the Langfuse stack (Postgres, ClickHouse, Redis, Langfuse Web)
 # using Docker Compose.  Reuses the same Google OAuth credentials as
-# Open WebUI so users get single sign-on across both dashboards.
+# LibreChat so users get single sign-on across both dashboards.
 #
 # Prerequisites:
 #   - Docker and Docker Compose installed

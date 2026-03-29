@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Deep Research Proxy (MiroFlow) for Open WebUI.
+Deep Research Proxy (MiroFlow) for LibreChat.
 
 An OpenAI-compatible proxy that implements a MiroFlow-inspired agentic deep research
 loop using Mistral's native function calling. When a user asks a question, the proxy
 orchestrates multi-turn reasoning with tool use (SearXNG search, web page reading,
-Python execution) and streams the entire research process as <think> tags to Open WebUI,
+Python execution) and streams the entire research process as <think> tags to LibreChat,
 followed by a polished final answer.
 
 Architecture:
-  - Receives OpenAI-compatible chat/completions requests from Open WebUI
+  - Receives OpenAI-compatible chat/completions requests from LibreChat
   - Sends requests to Mistral API with native `tools` parameter
   - Parses tool_calls from the response, executes tools, feeds results back
   - All reasoning and tool interactions streamed as <think> content
@@ -808,6 +808,13 @@ async def node_process_result(state: ResearchState) -> dict:
     agent_messages = list(state["agent_messages"])
     progress: list[str] = []
 
+    log.info(
+        f"[{req_id}] process_result: turn={turn}, has_error={'error' in result}, "
+        f"content_len={len(result.get('content', ''))}, "
+        f"has_tool_calls={bool(result.get('tool_calls'))}, "
+        f"consecutive_no_tool={consecutive_no_tool_turns}, turns_with_tools={turns_with_tools}"
+    )
+
     # --- Error handling ---
     if "error" in result:
         consecutive_errors += 1
@@ -872,6 +879,10 @@ async def node_process_result(state: ResearchState) -> dict:
             }
 
         # Model is done
+        log.info(
+            f"[{req_id}] Research stopping: can_stop=True, content_len={len(content)}, "
+            f"content_preview={content[:200]!r}"
+        )
         progress.append(
             f"\nResearch complete ({turns_with_tools} rounds, "
             f"{total_tool_calls} tool calls). Generating answer...\n"
@@ -1013,6 +1024,9 @@ async def node_force_answer(state: ResearchState) -> dict:
 def route_research(state: ResearchState) -> str:
     """Conditional edge router for the research graph."""
     phase = state.get("phase", "done")
+    req_id = state.get("req_id", "?")
+    turn = state.get("turn", 0)
+    log.info(f"[{req_id}] route_research: phase={phase}, turn={turn}")
     if phase == "call_llm":
         return "call_llm"
     if phase == "execute_tools":
@@ -1084,6 +1098,16 @@ async def run_deep_research(
             finish_reason=finish_reason,
         )
 
+    def reasoning_chunk(content: str) -> str:
+        """Emit a reasoning_content delta (rendered as collapsible Thinking block)."""
+        return make_sse_chunk(
+            "",
+            request_id=request_id,
+            created=created,
+            model_id=model_id,
+            reasoning_content=content,
+        )
+
     # Filter system messages from user input (system prompt is built in init node)
     filtered_messages = [m for m in user_messages if m.get("role") != "system"]
 
@@ -1117,8 +1141,6 @@ async def run_deep_research(
     if langfuse_trace_url:
         yield chunk(f"[Langfuse trace]({langfuse_trace_url})\n\n")
 
-    yield chunk("<think>\n")
-
     # Wire LangChain callbacks so metrics fire for every LLM/tool call
     metrics_collector = MetricsCollector(session_id=req_id, query=str(user_messages[-1].get("content", "") if user_messages else ""))
     metrics_callback = ResearchMetricsCallback(metrics_collector)
@@ -1128,43 +1150,72 @@ async def run_deep_research(
     config = {
         "configurable": {"thread_id": req_id},
         "callbacks": callbacks,
+        "recursion_limit": MAX_AGENT_TURNS * 5 + 10,  # ~4 nodes per turn + headroom
     }
     _deep_request_configs[req_id] = config
     last_progress_idx = 0
     final_state = initial_state
+    consumer_task = None
 
     try:
         # Wrap astream iteration with keepalive: emit a dot every 8s when
         # no state update arrives (e.g. during long LLM calls) to prevent
         # reverse proxies and HTTP clients from timing out the SSE stream.
+        #
+        # IMPORTANT: We must NOT use asyncio.wait_for() on __anext__()
+        # because cancelling the coroutine corrupts the async generator's
+        # internal state, causing a spurious StopAsyncIteration on the
+        # next call.  Instead we consume the stream in a background task
+        # that pushes items into a queue, and read from the queue with a
+        # timeout for keepalive.
         KEEPALIVE_INTERVAL = 8  # seconds
-        astream_iter = _research_graph.astream(
-            initial_state, config=config, stream_mode="values",
-        ).__aiter__()
-        done = False
-        while not done:
+        _SENTINEL = object()
+        state_queue: asyncio.Queue = asyncio.Queue()
+
+        async def _consume_astream():
             try:
-                state_update = await asyncio.wait_for(
-                    astream_iter.__anext__(), timeout=KEEPALIVE_INTERVAL,
+                async for state_update in _research_graph.astream(
+                    initial_state, config=config, stream_mode="values",
+                ):
+                    await state_queue.put(state_update)
+            except Exception as exc:
+                await state_queue.put(exc)
+            finally:
+                await state_queue.put(_SENTINEL)
+
+        consumer_task = asyncio.create_task(_consume_astream())
+
+        while True:
+            try:
+                item = await asyncio.wait_for(
+                    state_queue.get(), timeout=KEEPALIVE_INTERVAL,
                 )
             except asyncio.TimeoutError:
-                yield chunk(".")
+                yield reasoning_chunk(".")
                 continue
-            except StopAsyncIteration:
-                done = True
-                break
 
+            if item is _SENTINEL:
+                log.info(f"[{req_id}] astream completed")
+                break
+            if isinstance(item, Exception):
+                raise item
+
+            state_update = item
             final_state = state_update
             tracker.update(req_id, current_turn=state_update.get("turn", 0))
             # Emit new progress messages
             progress_list = state_update.get("progress_log", [])
             for msg in progress_list[last_progress_idx:]:
-                yield chunk(msg)
+                yield reasoning_chunk(msg)
             last_progress_idx = len(progress_list)
 
         # Emit final answer
-        yield chunk("\n</think>\n\n")
-        final_answer = final_state.get("final_answer", "(No answer generated)")
+        log.info(
+            f"[{req_id}] Graph done. final_answer len={len(final_state.get('final_answer', ''))}, "
+            f"phase={final_state.get('phase')}, finish_reason={final_state.get('finish_reason')}, "
+            f"turn={final_state.get('turn')}, turns_with_tools={final_state.get('turns_with_tools')}"
+        )
+        final_answer = final_state.get("final_answer") or "(No answer generated)"
         for i in range(0, len(final_answer), 200):
             yield chunk(final_answer[i:i + 200])
         yield chunk("", finish_reason="stop")
@@ -1174,13 +1225,20 @@ async def run_deep_research(
         elapsed = time.monotonic() - initial_state["start_time"]
         tb = traceback.format_exc()
         log.error(f"[{req_id}] Agent loop error after {elapsed:.2f}s: {e}\n{tb}")
-        yield chunk(f"\n\u26a0\ufe0f Error: {str(e)}\n")
-        yield chunk("\n</think>\n\n")
+        yield reasoning_chunk(f"\n\u26a0\ufe0f Error: {str(e)}\n")
         yield chunk(f"**Deep Research Error**\n\nAn error occurred during research: {str(e)}")
         yield chunk("", finish_reason="stop")
         yield "data: [DONE]\n\n"
 
     finally:
+        # Cancel the background consumer task to stop expensive LLM calls
+        # if the client disconnected or an error occurred.
+        if consumer_task is not None and not consumer_task.done():
+            consumer_task.cancel()
+            try:
+                await consumer_task
+            except asyncio.CancelledError:
+                pass
         _deep_request_configs.pop(req_id, None)
         langfuse_config.flush()
         tracker.finish(req_id)

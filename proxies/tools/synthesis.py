@@ -53,6 +53,7 @@ from .persistence import (
     _retrieve_related,
     _store_conditions_neo4j,
     _store_entities_neo4j,
+    log_stage_output,
 )
 from .llm import call_llm, _request_configs
 from .planning import (
@@ -1043,6 +1044,12 @@ async def pdr_node_comprehend(state: PersistentResearchState) -> dict:
     if mc:
         mc.end_node("comprehend")
 
+    # Persist comprehension output so it survives downstream failures
+    log_stage_output(req_id, "comprehend", {
+        "comprehension_data": comp_dict,
+        "user_query": user_query,
+    })
+
     return {
         "comprehension_data": comp_dict,
         "progress_log": progress,
@@ -1111,6 +1118,16 @@ async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
     mc = _metrics_collectors.get(req_id)
     if mc:
         mc.end_node("retrieve")
+
+    # Persist retrieval output so it survives downstream failures
+    log_stage_output(req_id, "retrieve", {
+        "prior_conditions_count": len(prior_conditions),
+        "graph_neighbors_count": len(graph_neighbors),
+        "prior_conditions": [
+            {"fact": pc.get("fact", "")[:200], "source": pc.get("source_url", "")}
+            for pc in prior_conditions[:50]
+        ],
+    })
 
     return {
         "prior_conditions": prior_conditions,
@@ -1254,6 +1271,20 @@ async def _tree_sub_explore(state: PersistentResearchState) -> dict:
             ))
         mc.end_node("tree_research")
 
+    # Persist tree research output — the most expensive stage to re-run
+    log_stage_output(req_id, "tree_research", {
+        "iteration": iterations + 1,
+        "nodes_explored": len(result["subagent_results"]),
+        "conditions_found": len(new_conditions),
+        "total_conditions_after_merge": len(merged_conditions),
+        "total_turns": result["total_turns"],
+        "total_tools": result["total_tools"],
+        "conditions_summary": [
+            {"fact": c.fact[:200], "angle": c.angle, "confidence": c.confidence}
+            for c in new_conditions[:100]
+        ],
+    })
+
     return {
         "subagent_results": list(state.get("subagent_results", [])) + result["subagent_results"],
         "all_conditions": merged_conditions,
@@ -1343,6 +1374,13 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
     updated_hashes = already_extracted | {
         hashlib.sha256(c.fact.encode()).hexdigest()[:16] for c in all_conditions
     }
+
+    # Persist entity extraction output
+    log_stage_output(req_id, "entities", {
+        "new_conditions_processed": len(new_conditions),
+        "total_fact_hashes": len(updated_hashes),
+    })
+
     return {
         "progress_log": progress,
         "phase": "verify",
@@ -1425,6 +1463,16 @@ async def pdr_node_verify(state: PersistentResearchState) -> dict:
     if mc:
         mc.end_node("verify")
 
+    # Persist verification output
+    log_stage_output(req_id, "verify", {
+        "conditions_before": pre_count,
+        "conditions_after": len(all_conditions),
+        "removed": pre_count - len(all_conditions),
+        "high_confidence": sum(1 for c in all_conditions if c.confidence >= 0.7),
+        "low_confidence": sum(1 for c in all_conditions if c.confidence < 0.4),
+        "speculative": sum(1 for c in all_conditions if c.verification_status == "speculative"),
+    })
+
     return {"all_conditions": all_conditions, "progress_log": progress, "phase": "reflect"}
 
 
@@ -1493,6 +1541,14 @@ async def pdr_node_reflect(state: PersistentResearchState) -> dict:
         mc.set_reflection(reflection)
         mc.end_node("reflect")
 
+    # Persist reflection output
+    log_stage_output(req_id, "reflect", {
+        "quality_score": quality,
+        "issues_count": len(reflection.get("issues", [])),
+        "targeted_questions": targeted,
+        "conditions_count": len(all_conditions),
+    })
+
     return {
         "all_conditions": all_conditions,
         "reflection": reflection,
@@ -1518,6 +1574,7 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
     already_persisted = set(state.get("persisted_fact_hashes") or [])
     new_conditions = [c for c in all_conditions if hashlib.sha256(c.fact.encode()).hexdigest()[:16] not in already_persisted]
     progress: list[str] = []
+    err = None  # initialise before the conditional block so it's always defined
 
     if new_conditions:
         progress.append("\n**[Phase 7: Persisting Knowledge]**\n")
@@ -1541,6 +1598,14 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
     updated_hashes = already_persisted | {
         hashlib.sha256(c.fact.encode()).hexdigest()[:16] for c in all_conditions
     }
+
+    # Persist the persist-stage output itself
+    log_stage_output(req_id, "persist", {
+        "new_conditions_persisted": len(new_conditions),
+        "total_persisted_hashes": len(updated_hashes),
+        "neo4j_error": err if new_conditions else None,
+    })
+
     return {
         "progress_log": progress,
         "phase": "synthesize",
@@ -1658,26 +1723,68 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         progress.append("Generating draft synthesis...\n")
 
     prior_conv_summary = state.get("prior_conversation_summary", "")
-    final_answer = await synthesize_with_revision(
-        state["user_query"], state["subagent_results"], state["prior_conditions"], req_id,
-        prior_conversation_summary=prior_conv_summary,
-    )
+    synthesis_failed = False
+    try:
+        final_answer = await synthesize_with_revision(
+            state["user_query"], state["subagent_results"], state["prior_conditions"], req_id,
+            prior_conversation_summary=prior_conv_summary,
+        )
+    except Exception as synth_err:
+        synthesis_failed = True
+        log.error(f"[{req_id}] Synthesis failed: {synth_err}")
+        # Persist what we have so the user can retry synthesis without
+        # re-running the entire 30+ minute research pipeline.
+        log_stage_output(req_id, "synthesize", {
+            "error": str(synth_err),
+            "conditions_count": len(state["all_conditions"]),
+            "subagent_results_count": len(state["subagent_results"]),
+        })
+        # Check whether pdr_node_persist actually ran by looking at
+        # persisted_fact_hashes — if empty, persist was likely skipped
+        # (e.g. hard pipeline timeout).
+        was_persisted = bool(state.get("persisted_fact_hashes"))
+        if was_persisted:
+            persist_msg = (
+                f"All {len(state['all_conditions'])} research findings have been "
+                f"persisted to JSONL and Neo4j.  You can retry synthesis by "
+                f"sending a follow-up prompt in this conversation."
+            )
+        else:
+            persist_msg = (
+                f"Research findings ({len(state['all_conditions'])} conditions) "
+                f"have NOT yet been persisted (persist stage was skipped).  "
+                f"Stage-level summaries were saved to JSONL for diagnostics."
+            )
+        final_answer = (
+            f"Synthesis encountered an error: {synth_err}\n\n"
+            f"{persist_msg}"
+        )
 
     # Relevance gate now runs inside synthesize_with_revision() on the
     # draft (before critic/revision), so we no longer need it here.
 
-    if _use_gossip:
-        progress.append("Gossip synthesis + queen merge complete.\n")
-    else:
-        progress.append("Critic review complete.\n")
-        progress.append("Final revision complete.\n")
+    if not synthesis_failed:
+        if _use_gossip:
+            progress.append("Gossip synthesis + queen merge complete.\n")
+        else:
+            progress.append("Critic review complete.\n")
+            progress.append("Final revision complete.\n")
 
     # --- Incompleteness detection (synthesis → reresearch feedback) ---
     iterations = state.get("research_iterations", 0)
     all_conditions = state["all_conditions"]
     targeted: list[str] = []
 
-    if iterations < MAX_RESEARCH_ITERATIONS:
+    # Skip incompleteness detection when synthesis itself failed — the
+    # error message would be judged "critically incomplete" and trigger
+    # an expensive re-research loop, wasting the user's time and money.
+    if synthesis_failed:
+        progress.append(
+            "\n⚠ Synthesis failed — skipping incompleteness check. "
+            "Send a follow-up prompt to retry synthesis with the "
+            "already-persisted findings.\n"
+        )
+    elif iterations < MAX_RESEARCH_ITERATIONS:
         is_complete, gap_queries = await _detect_incompleteness(
             final_answer, state["user_query"],
             n_conditions=len(all_conditions),
@@ -1787,6 +1894,18 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
             progress.append(f"\n**Report published:** {report_url}\n")
         if metrics_url:
             progress.append(f"**Metrics published:** {metrics_url}\n")
+
+    # Persist synthesis output — the final (or intermediate) answer
+    # (skip if we already logged an error record in the except block)
+    if not synthesis_failed:
+        log_stage_output(req_id, "synthesize", {
+            "answer_length": len(final_answer),
+            "conditions_count": len(all_conditions),
+            "nodes_explored": nodes_explored,
+            "elapsed_seconds": round(elapsed, 1),
+            "targeted_questions": targeted,
+            "report_url": report_url,
+        })
 
     return {
         "final_answer": final_answer,

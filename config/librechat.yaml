@@ -58,6 +58,24 @@ endpoints:
         - "presence_penalty"
       modelDisplayLabel: "Persistent MiroFlow"
 
+    - name: "MiroFlow Sprint"
+      apiKey: "not-needed"
+      baseURL: "http://host.docker.internal:9400/v1"
+      models:
+        default:
+          - "miroflow-sprint"
+        fetch: true
+      titleConvo: true
+      titleModel: "miroflow-sprint"
+      summarize: false
+      maxContextTokens: 1000000
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+      modelDisplayLabel: "MiroFlow Sprint"
+
     - name: "Deep Research"
       apiKey: "not-needed"
       baseURL: "http://host.docker.internal:9200/v1"

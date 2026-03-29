@@ -691,16 +691,20 @@ async def synthesize_with_revision(
     """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    conditions_by_angle: dict[str, list[str]] = {}
-    total_conditions = 0
-    for sr in subagent_results:
-        if sr.conditions:
-            angle_conditions = [c.to_text() for c in sr.conditions]
-            conditions_by_angle[sr.angle] = angle_conditions
-            total_conditions += len(angle_conditions)
+    # --- Pre-synthesis condition categorization ---
+    # Categorize conditions so actionable findings (vendors, URLs, prices)
+    # are placed FIRST in the synthesis prompt, preventing the LLM from
+    # concluding "nothing found" when 700 errors drown out 7 real leads.
+    from .condition_filter import categorize_and_prioritize
+    categorized = categorize_and_prioritize(subagent_results)
+    total_conditions = categorized.total
 
-    if not conditions_by_angle:
+    if total_conditions == 0:
         return "No research findings were gathered. The subagents could not find relevant information."
+
+    log.info(
+        f"[{req_id}] Pre-synthesis categorization: {categorized.summary_line()}"
+    )
 
     # --- Ruflo gossip synthesis for large finding sets ---
     # When findings exceed the LLM context window, route through ruflo's
@@ -732,10 +736,8 @@ async def synthesize_with_revision(
         # to single-shot synthesis.
         log.info(f"[{req_id}] Ruflo gossip returned empty — falling back to single-shot")
 
-    conditions_text = ""
-    for angle, conds in conditions_by_angle.items():
-        conditions_text += f"\n### {angle}\n"
-        conditions_text += "\n".join(conds) + "\n"
+    # Use categorized conditions text — actionable findings first
+    conditions_text = categorized.to_synthesis_text()
 
     prior_text = ""
     if prior_conditions:

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -401,6 +402,7 @@ async def run_subagent(
     is_bridge = angle.get("is_bridge", False)
     sa_id = f"{req_id}-sa{subagent_index}" + (f"-d{depth}" if depth > 0 else "")
 
+    start_time = time.monotonic()
     log.info(f"[{sa_id}] Starting subagent: {angle_title} (depth={depth})")
     sa_span = langfuse_config.start_span(
         req_id, f"subagent:{sa_id}",
@@ -812,16 +814,20 @@ async def run_subagent(
         "conditions_count": len(result.conditions),
     })
 
+    duration_secs = time.monotonic() - start_time
+    result.duration_secs = duration_secs
+
     log.info(
         f"[{sa_id}] Subagent complete: {len(result.conditions)} conditions, "
         f"{result.turns_used} turns, {result.tool_calls_made} tool calls, "
-        f"{result.spawned_children} children spawned"
+        f"{result.spawned_children} children spawned, {duration_secs:.1f}s"
     )
     langfuse_config.end_span(sa_span, output={
         "conditions": len(result.conditions),
         "turns": result.turns_used,
         "tool_calls": result.tool_calls_made,
         "children": result.spawned_children,
+        "duration_secs": round(duration_secs, 1),
         "error": result.error or None,
     })
     return result

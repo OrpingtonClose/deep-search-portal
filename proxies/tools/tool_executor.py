@@ -24,7 +24,7 @@ from .config import (
 from .llm import _request_configs
 from .rate_governor import governed_request
 from .search_cache import cache_get, cache_put
-from .tool_health import record_outcome
+from .tool_health import get_monitor, record_outcome
 from .search_tools import (
     tool_news_search,
 )
@@ -482,6 +482,24 @@ async def execute_tool(
             cb.on_tool_start(serialized, input_str, run_id=run_id)
         except Exception:
             pass
+
+    # --- Step 0: Circuit breaker — skip tools that are consistently failing ---
+    monitor = get_monitor()
+    tool_status = monitor.get_tool_status(tool_name)
+    if tool_status.get("status") == "degraded":
+        streak = tool_status.get("consecutive_failures", 0)
+        blocked_msg = (
+            f"[TOOL_BLOCKED] {tool_name} is currently degraded "
+            f"({streak} consecutive failures). Skipping to avoid waste. "
+            f"Last error: {(tool_status.get('last_error') or 'unknown')[:200]}"
+        )
+        log.warning(f"[{req_id}] Circuit breaker blocked {tool_name}: {streak} consecutive failures")
+        for cb in callbacks:
+            try:
+                cb.on_tool_end(blocked_msg, run_id=run_id)
+            except Exception:
+                pass
+        return blocked_msg
 
     # --- Step 1: Check cache for search tools ---
     tool_span = langfuse_config.start_span(

@@ -251,7 +251,9 @@ class ConditionStore:
     """
 
     # Jaccard threshold above which a new condition is considered a duplicate
-    DUPLICATE_THRESHOLD = 0.55
+    # Lowered from 0.55 to catch more near-duplicates (conditions phrased
+    # differently but saying the same thing)
+    DUPLICATE_THRESHOLD = 0.48
     # Number of conditions on a topic before it's considered saturated
     SATURATION_THRESHOLD = 10
 
@@ -713,13 +715,14 @@ class QuestionRegistry:
     """
 
     # Jaccard threshold above which a new question is considered a near-duplicate.
-    # Lower than condition DUPLICATE_THRESHOLD (0.55) because rephrased questions
-    # share more structural words but are semantically the same.
-    QUESTION_DUPLICATE_THRESHOLD = 0.45
+    # Lowered from 0.45 to catch more semantic duplicates (e.g. 7 variants of
+    # "Telegram invites for Polish bodybuilders" that all hit the same dead tools).
+    QUESTION_DUPLICATE_THRESHOLD = 0.35
 
     # Minimum word overlap required for a match to be meaningful.
-    # Prevents false positives from very short questions.
-    MIN_OVERLAP_WORDS = 3
+    # Raised from 3 to 4 to reduce false positives on very generic short questions
+    # while still catching rephrased duplicates.
+    MIN_OVERLAP_WORDS = 4
 
     def __init__(self) -> None:
         self._questions: list[str] = []

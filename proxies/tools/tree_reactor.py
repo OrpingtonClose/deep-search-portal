@@ -543,10 +543,9 @@ async def _research_single_node(
             req_id, refusal_count, node.id,
         )
 
-    # Feed only non-refusal conditions to the collector for heartbeat
+    # Feed non-refusal conditions to collector and emit curated update
     if non_refusal_conditions:
         await collector.add_conditions(non_refusal_conditions)
-    if non_refusal_conditions:
         top_finding = max(non_refusal_conditions, key=lambda c: c.confidence)
         await curated_queue.put({
             "type": "finding",
@@ -562,6 +561,9 @@ async def _research_single_node(
             "[%s] All %d conditions from node %s were LLM refusals — suppressed from thoughts",
             req_id, len(sa_result.conditions), node.id,
         )
+
+    # Patch sa_result so downstream synthesis doesn't see refusals
+    sa_result.conditions = non_refusal_conditions
 
     langfuse_config.end_span(span, output={
         "conditions": len(non_refusal_conditions),

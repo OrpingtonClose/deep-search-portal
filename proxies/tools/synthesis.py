@@ -1768,6 +1768,17 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
                 metrics_json = json.dumps(metrics_dict, indent=2, default=str)
                 research_report.save_metrics_json(metrics_json, req_id)
 
+                # Generate and save Infrastructure Status report (separate from user report)
+                try:
+                    infra_report = research_report.generate_infra_report(
+                        metrics=metrics_dict,
+                        conditions=condition_dicts,
+                        session_id=req_id,
+                    )
+                    research_report.save_infra_report(infra_report, req_id)
+                except Exception as ie:
+                    log.error(f"[{req_id}] Failed to generate infra report: {ie}")
+
                 # Build portal URLs for the report and metrics
                 base = PORTAL_PUBLIC_URL
                 if not base:

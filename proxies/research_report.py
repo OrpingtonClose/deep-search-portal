@@ -27,6 +27,285 @@ REPORTS_DIR = os.getenv(
 )
 
 
+# ---------------------------------------------------------------------------
+# Infrastructure Status Report (separate from user-facing report)
+# ---------------------------------------------------------------------------
+
+def generate_infra_report(
+    metrics: dict[str, Any],
+    conditions: list[dict],
+    session_id: str = "",
+) -> str:
+    """Generate a separate Infrastructure Status report in Markdown.
+
+    This report is NOT shown to the end user.  It clearly lists every
+    tool failure, missing API key, HTTP error, rate limit, and access
+    barrier encountered during the research run so that operators can
+    diagnose and fix infrastructure problems.
+
+    Returns:
+        Markdown string.
+    """
+    query = metrics.get("query", "Unknown query")
+    started_at = metrics.get("started_at", "")
+    total_duration = metrics.get("total_duration_secs", 0)
+
+    tool_data = metrics.get("tool_calls", {})
+    tool_summary = tool_data.get("by_tool", {})
+    total_tool_calls = tool_data.get("total_calls", 0)
+
+    recommendations = metrics.get("recommendations", [])
+
+    lines: list[str] = []
+
+    lines.append("# Infrastructure Status Report\n")
+    lines.append(f"**Session:** `{session_id}`  ")
+    lines.append(f"**Query:** {query}  ")
+    lines.append(f"**Date:** {started_at[:10] if started_at else 'N/A'}  ")
+    lines.append(f"**Duration:** {_format_duration(total_duration)}  ")
+    lines.append(f"**Total tool calls:** {total_tool_calls}\n")
+    lines.append("---\n")
+
+    # --- Tool Failure Summary ---
+    lines.append("## Tool Failure Summary\n")
+
+    failed_tools: list[tuple[str, dict]] = []
+    healthy_tools: list[tuple[str, dict]] = []
+
+    for tool_name, stats in sorted(tool_summary.items()):
+        errors = stats.get("errors", 0)
+        calls = stats.get("calls", 0)
+        if errors > 0:
+            failed_tools.append((tool_name, stats))
+        else:
+            healthy_tools.append((tool_name, stats))
+
+    if failed_tools:
+        lines.append("| Tool | Calls | Errors | Error Rate | Avg Duration | Status |")
+        lines.append("|------|-------|--------|------------|--------------|--------|")
+        for tool_name, stats in sorted(failed_tools, key=lambda x: x[1].get("errors", 0), reverse=True):
+            calls = stats.get("calls", 0)
+            errors = stats.get("errors", 0)
+            avg_dur = stats.get("avg_duration", 0)
+            rate = (errors / calls * 100) if calls > 0 else 0
+            status = "CRITICAL" if rate > 80 else ("DEGRADED" if rate > 30 else "UNSTABLE")
+            lines.append(
+                f"| `{tool_name}` | {calls} | {errors} | {rate:.0f}% | {avg_dur:.1f}s | {status} |"
+            )
+        lines.append("")
+    else:
+        lines.append("*No tool failures detected.*\n")
+
+    # --- Healthy Tools ---
+    if healthy_tools:
+        lines.append("### Healthy Tools\n")
+        lines.append("| Tool | Calls | Avg Duration |")
+        lines.append("|------|-------|--------------|")
+        for tool_name, stats in sorted(healthy_tools):
+            calls = stats.get("calls", 0)
+            avg_dur = stats.get("avg_duration", 0)
+            lines.append(f"| `{tool_name}` | {calls} | {avg_dur:.1f}s |")
+        lines.append("")
+
+    lines.append("---\n")
+
+    # --- Missing/Broken API Keys ---
+    lines.append("## API Key & Credential Issues\n")
+    credential_issues = _detect_credential_issues(conditions, tool_summary)
+    if credential_issues:
+        for issue in credential_issues:
+            lines.append(f"- **{issue['tool']}**: {issue['description']}")
+        lines.append("")
+    else:
+        lines.append("*No credential issues detected.*\n")
+
+    lines.append("---\n")
+
+    # --- Rate Limiting ---
+    lines.append("## Rate Limiting & Access Blocks\n")
+    rate_issues = _detect_rate_limit_issues(conditions, tool_summary)
+    if rate_issues:
+        for issue in rate_issues:
+            lines.append(f"- **{issue['tool']}**: {issue['description']}")
+        lines.append("")
+    else:
+        lines.append("*No rate limiting issues detected.*\n")
+
+    lines.append("---\n")
+
+    # --- Access Barriers from Conditions ---
+    lines.append("## Access Barriers Encountered During Research\n")
+    barriers = _extract_access_barriers(conditions)
+    if barriers:
+        for barrier in barriers:
+            lines.append(f"- {barrier}")
+        lines.append("")
+    else:
+        lines.append("*No access barriers reported by subagents.*\n")
+
+    lines.append("---\n")
+
+    # --- Recommendations ---
+    lines.append("## Automated Recommendations\n")
+    if recommendations:
+        for rec in recommendations:
+            severity = rec.get("severity", "info").upper()
+            category = rec.get("category", "general")
+            message = rec.get("message", "")
+            evidence = rec.get("evidence", "")
+            lines.append(f"- **[{severity}]** ({category}) {message}")
+            if evidence:
+                lines.append(f"  - Evidence: `{evidence}`")
+        lines.append("")
+    else:
+        lines.append("*No recommendations.*\n")
+
+    # --- Tool Health Monitor Issues ---
+    lines.append("---\n")
+    lines.append("## Tool Health Monitor (Open Issues)\n")
+    try:
+        from tools.tool_health import get_monitor
+        monitor = get_monitor()
+        open_issues = monitor.get_open_issues()
+        if open_issues:
+            for issue in open_issues:
+                lines.append(
+                    f"- **{issue['tool_name']}** (streak: {issue['failure_streak']}, "
+                    f"rate: {issue['failure_rate_pct']}%): "
+                    f"{issue.get('llm_diagnosis', 'Analysis pending...')}"
+                )
+            lines.append("")
+        else:
+            lines.append("*No open tool health issues.*\n")
+    except Exception:
+        lines.append("*Tool health monitor unavailable.*\n")
+
+    return "\n".join(lines)
+
+
+def save_infra_report(content: str, session_id: str) -> str:
+    """Save infrastructure status report to disk. Returns the file path."""
+    try:
+        Path(REPORTS_DIR).mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        log.warning(f"Failed to create reports dir {REPORTS_DIR}: {e}")
+
+    path = os.path.join(REPORTS_DIR, f"{session_id}_infra.md")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        log.info(f"Saved infra report to {path}")
+    except Exception as e:
+        log.error(f"Failed to save infra report: {e}")
+    return path
+
+
+def _detect_credential_issues(
+    conditions: list[dict], tool_summary: dict[str, Any]
+) -> list[dict]:
+    """Detect tools that failed due to missing or invalid credentials."""
+    issues: list[dict] = []
+    credential_patterns = [
+        "api key", "api_key", "credential", "authentication",
+        "unauthorized", "403", "not configured", "missing key",
+        "no credentials", "APIFY_API_TOKEN", "BRIGHT_DATA_API_KEY",
+        "OXYLABS_USERNAME",
+    ]
+    seen_tools: set[str] = set()
+
+    # Check tool errors for credential-related patterns
+    for tool_name, stats in tool_summary.items():
+        errors = stats.get("errors", 0)
+        if errors == 0:
+            continue
+        # Check conditions for credential-related error messages
+        for c in conditions:
+            fact = c.get("fact", "").lower()
+            source = c.get("source_url", "").lower()
+            if tool_name.lower() in fact or tool_name.lower() in source:
+                for pattern in credential_patterns:
+                    if pattern.lower() in fact:
+                        if tool_name not in seen_tools:
+                            issues.append({
+                                "tool": tool_name,
+                                "description": f"Possible credential issue — error contains '{pattern}'",
+                            })
+                            seen_tools.add(tool_name)
+                        break
+
+    # Check for tools with 100% failure rate (often credential issues)
+    for tool_name, stats in tool_summary.items():
+        calls = stats.get("calls", 0)
+        errors = stats.get("errors", 0)
+        if calls > 0 and errors == calls and tool_name not in seen_tools:
+            issues.append({
+                "tool": tool_name,
+                "description": f"100% failure rate ({calls} calls, all failed) — likely missing credentials or misconfiguration",
+            })
+            seen_tools.add(tool_name)
+
+    return issues
+
+
+def _detect_rate_limit_issues(
+    conditions: list[dict], tool_summary: dict[str, Any]
+) -> list[dict]:
+    """Detect tools hitting rate limits or access blocks."""
+    issues: list[dict] = []
+    rate_patterns = [
+        "429", "rate limit", "too many requests", "throttl",
+        "cloudflare", "captcha", "blocked", "access denied",
+    ]
+    seen_tools: set[str] = set()
+
+    for tool_name, stats in tool_summary.items():
+        errors = stats.get("errors", 0)
+        if errors == 0:
+            continue
+        for c in conditions:
+            fact = c.get("fact", "").lower()
+            if tool_name.lower() in fact:
+                for pattern in rate_patterns:
+                    if pattern.lower() in fact:
+                        if tool_name not in seen_tools:
+                            issues.append({
+                                "tool": tool_name,
+                                "description": f"Rate limiting or access block detected — '{pattern}' in error",
+                            })
+                            seen_tools.add(tool_name)
+                        break
+
+    return issues
+
+
+def _extract_access_barriers(conditions: list[dict]) -> list[str]:
+    """Extract access barrier reports from conditions (CENSORSHIP DETECTED, ACCESS BLOCKED, TOOL_ERROR)."""
+    barriers: list[str] = []
+    barrier_prefixes = ["[CENSORSHIP DETECTED]", "[ACCESS BLOCKED]", "[TOOL_ERROR]"]
+
+    for c in conditions:
+        fact = c.get("fact", "")
+        for prefix in barrier_prefixes:
+            if prefix in fact:
+                # Truncate long barrier messages
+                msg = fact[:300]
+                if len(fact) > 300:
+                    msg += "..."
+                barriers.append(msg)
+                break
+
+    # Deduplicate similar barriers
+    seen: set[str] = set()
+    unique: list[str] = []
+    for b in barriers:
+        key = b[:80].lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(b)
+
+    return unique[:50]  # Cap at 50 to avoid huge reports
+
+
 def generate_report(
     metrics: dict[str, Any],
     conditions: list[dict],

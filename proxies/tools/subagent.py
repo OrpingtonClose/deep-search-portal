@@ -857,11 +857,7 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
     if not content:
         return []
 
-    # Reject entire output if it's an LLM safety refusal
-    if _is_llm_refusal(content):
-        log.warning("Rejected LLM refusal from condition parser: %s", content[:120])
-        return []
-
+    # --- Attempt 1: full JSON parse ---
     try:
         cleaned = content.strip()
         if cleaned.startswith("```"):
@@ -869,6 +865,7 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
             cleaned = re.sub(r'\s*```$', '', cleaned)
         data = json.loads(cleaned)
         conditions_data = data.get("conditions", [])
+        # JSON parsed successfully — filter refusals per-condition, not whole batch
         return [
             AtomicCondition(
                 fact=c.get("fact", ""),
@@ -878,11 +875,12 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
                 is_serendipitous=is_bridge,
             )
             for c in conditions_data
-            if c.get("fact")
+            if c.get("fact") and not _is_llm_refusal(c.get("fact", ""))
         ]
     except (json.JSONDecodeError, ValueError, AttributeError):
         pass
 
+    # --- Attempt 2: extract embedded JSON ---
     json_match = re.search(r'\{[^{}]*"conditions"\s*:\s*\[.*?\]\s*\}', content, re.DOTALL)
     if json_match:
         try:
@@ -896,10 +894,17 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
                     is_serendipitous=is_bridge,
                 )
                 for c in data.get("conditions", [])
-                if c.get("fact")
+                if c.get("fact") and not _is_llm_refusal(c.get("fact", ""))
             ]
         except (json.JSONDecodeError, ValueError):
             pass
+
+    # --- Attempt 3: plaintext fallback ---
+    # Only here do we check the entire content for refusal, because the
+    # content IS the fact text (not JSON wrapping multiple facts).
+    if _is_llm_refusal(content):
+        log.warning("Rejected LLM refusal from plaintext fallback: %s", content[:120])
+        return []
 
     if len(content.strip()) > 20:
         return [

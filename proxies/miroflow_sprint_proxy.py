@@ -45,19 +45,15 @@ os.environ.setdefault(
 
 # ── Now safe to import everything from the tools/ package ─────────────────
 
-import asyncio  # noqa: E402
 import uuid  # noqa: E402
 
-import httpx  # noqa: E402
 from fastapi import Request  # noqa: E402
 from fastapi.responses import StreamingResponse, JSONResponse  # noqa: E402
 
 from shared import (  # noqa: E402
     create_app,
-    extract_user_text,
     extract_user_text_with_attachments,
     is_utility_request,
-    make_sse_chunk,
     parse_attachments,
     register_standard_routes,
     stream_passthrough,
@@ -70,23 +66,18 @@ from tools.config import (  # noqa: E402
     UPSTREAM_MODEL,
     SUBAGENT_MODEL,
     SEARXNG_URL,
-    LISTEN_PORT,
     MAX_SUBAGENT_TURNS,
-    MAX_CONCURRENT,
     TREE_MAX_CONCURRENT,
     TREE_MAX_DEPTH,
     TREE_MAX_NODES,
     RESEARCH_NAMESPACE,
     JSONL_LOG_DIR,
-    NATIVE_TOOLS,
     tracker,
     limiter,
     log,
 )
 
-# Cannot use the name NATIVE_TOOLS directly — it's in tools.config but
-# actually defined in tools.tool_defs.  Import via the re-export.
-from tools.tool_defs import NATIVE_TOOLS  # noqa: E402, F811
+from tools.tool_defs import NATIVE_TOOLS  # noqa: E402
 
 from tools.persistence import (  # noqa: E402
     _is_large_document,
@@ -103,7 +94,7 @@ from tools.synthesis import (  # noqa: E402
     run_persistent_research,
 )
 
-import langfuse_config  # noqa: E402
+import langfuse_config  # noqa: E402, F401  # imported for side-effects (trace registration)
 
 # ── FastAPI Application ───────────────────────────────────────────────────
 

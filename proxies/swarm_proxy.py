@@ -1769,6 +1769,7 @@ async def chat_completions(request: Request):
                             doc.content,
                             title=doc.filename,
                             source="attachment",
+                            req_id=req_id,
                         )
                         submitted_ids.append(record.id)
                         yield reasoning_sse(
@@ -1924,6 +1925,8 @@ async def chat_completions(request: Request):
                     yield "data: [DONE]\n\n"
 
                 finally:
+                    lf.unregister_trace(req_id)
+                    lf.flush()
                     tracker.finish(req_id)
 
             generator = _handle_attachment_submission()

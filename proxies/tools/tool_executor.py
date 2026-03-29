@@ -484,11 +484,31 @@ async def execute_tool(
         except Exception:
             pass
 
-    # --- Step 0: Circuit breaker — skip tools that are consistently failing ---
+    # --- Step 0: Open trace span ---
+    tool_span = langfuse_config.start_span(
+        req_id, f"tool:{tool_name}",
+        input={"arguments": input_str},
+    )
+
+    # --- Step 1: Check cache FIRST — cached results bypass circuit breaker ---
+    if tool_name in _CACHEABLE_TOOLS:
+        query_str = _extract_query_for_cache(tool_name, arguments)
+        cached = cache_get(tool_name, query_str)
+        if cached is not None:
+            log.debug(f"[{req_id}] Cache hit for {tool_name}: {query_str[:60]}")
+            langfuse_config.end_span(tool_span, output={"cache": "hit", "result_len": len(cached)})
+            for cb in callbacks:
+                try:
+                    cb.on_tool_end(f"[CACHED] {cached[:1000]}", run_id=run_id)
+                except Exception:
+                    pass
+            return cached
+
+    # --- Step 2: Circuit breaker — skip tools that are consistently failing ---
+    # Runs AFTER cache check so cached results are still served for degraded tools.
     # Uses a half-open probe: after TOOL_HEALTH_RECOVERY_SECS of being blocked,
     # one call is allowed through.  If it succeeds, record_outcome(success=True)
-    # resets consecutive_failures and the tool returns to healthy.  If it fails,
-    # the cooldown restarts from the new last_error_time.
+    # resets consecutive_failures and the tool returns to healthy.
     _RECOVERY_SECS = int(os.environ.get("TOOL_HEALTH_RECOVERY_SECS", "120"))
     monitor = get_monitor()
     tool_status = monitor.get_tool_status(tool_name)
@@ -505,6 +525,7 @@ async def execute_tool(
                 f"Last error: {(tool_status.get('last_error') or 'unknown')[:200]}"
             )
             log.warning(f"[{req_id}] Circuit breaker blocked {tool_name}: {streak} failures, {int(elapsed)}s/{_RECOVERY_SECS}s cooldown")
+            langfuse_config.end_span(tool_span, output={"circuit_breaker": "blocked", "streak": streak}, level="WARNING")
             for cb in callbacks:
                 try:
                     cb.on_tool_end(blocked_msg, run_id=run_id)
@@ -515,25 +536,7 @@ async def execute_tool(
             # Cooldown expired — allow one probe call through
             log.info(f"[{req_id}] Circuit breaker half-open probe for {tool_name} after {int(elapsed)}s cooldown")
 
-    # --- Step 1: Check cache for search tools ---
-    tool_span = langfuse_config.start_span(
-        req_id, f"tool:{tool_name}",
-        input={"arguments": input_str},
-    )
-    if tool_name in _CACHEABLE_TOOLS:
-        query_str = _extract_query_for_cache(tool_name, arguments)
-        cached = cache_get(tool_name, query_str)
-        if cached is not None:
-            log.debug(f"[{req_id}] Cache hit for {tool_name}: {query_str[:60]}")
-            langfuse_config.end_span(tool_span, output={"cache": "hit", "result_len": len(cached)})
-            for cb in callbacks:
-                try:
-                    cb.on_tool_end(f"[CACHED] {cached[:1000]}", run_id=run_id)
-                except Exception:
-                    pass
-            return cached
-
-    # --- Step 2: Execute with rate governor ---
+    # --- Step 3: Execute with rate governor ---
     try:
         if tool_name in _GOVERNED_TOOLS:
             async with governed_request(tool_name):
@@ -551,7 +554,7 @@ async def execute_tool(
                 pass
         return f"Tool error ({tool_name}): {error_str}"
 
-    # --- Step 3: Record health outcome ---
+    # --- Step 4: Record health outcome ---
     result_prefix = result[:80]
     is_error = (
         result_prefix.lower().startswith("error")
@@ -567,7 +570,7 @@ async def execute_tool(
     else:
         record_outcome(tool_name, success=True)
 
-    # --- Step 4: Store in cache ---
+    # --- Step 5: Store in cache ---
     if tool_name in _CACHEABLE_TOOLS and not is_error:
         query_str = _extract_query_for_cache(tool_name, arguments)
         cache_put(tool_name, query_str, result)

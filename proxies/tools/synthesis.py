@@ -1739,11 +1739,25 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
             "conditions_count": len(state["all_conditions"]),
             "subagent_results_count": len(state["subagent_results"]),
         })
+        # Check whether pdr_node_persist actually ran by looking at
+        # persisted_fact_hashes — if empty, persist was likely skipped
+        # (e.g. hard pipeline timeout).
+        was_persisted = bool(state.get("persisted_fact_hashes"))
+        if was_persisted:
+            persist_msg = (
+                f"All {len(state['all_conditions'])} research findings have been "
+                f"persisted to JSONL and Neo4j.  You can retry synthesis by "
+                f"sending a follow-up prompt in this conversation."
+            )
+        else:
+            persist_msg = (
+                f"Research findings ({len(state['all_conditions'])} conditions) "
+                f"have NOT yet been persisted (persist stage was skipped).  "
+                f"Stage-level summaries were saved to JSONL for diagnostics."
+            )
         final_answer = (
             f"Synthesis encountered an error: {synth_err}\n\n"
-            f"All {len(state['all_conditions'])} research findings have been "
-            f"persisted to JSONL and Neo4j.  You can retry synthesis by "
-            f"sending a follow-up prompt in this conversation."
+            f"{persist_msg}"
         )
 
     # Relevance gate now runs inside synthesize_with_revision() on the

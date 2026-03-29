@@ -1,102 +1,18 @@
-# =============================================================================
-# Deep Search Portal — LibreChat Custom Endpoints
+# LibreChat endpoint configuration for G0DM0D3 models.
+# Merge this into your main librechat.yaml under the `endpoints` key,
+# or use it as a standalone config.
 #
-# Configures LibreChat to use the Deep Search proxy services as custom
-# OpenAI-compatible endpoints.  Each proxy exposes /v1/chat/completions
-# and /v1/models on its respective port.
-#
-# Proxy services run on the same VM (or reachable via HTTP):
-#   - Thinking Proxy:              port 9100
-#   - Deep Research Proxy:         port 9200
-#   - Persistent Deep Research:    port 9300
-#   - Swarm Deep Search:           port 9500
-#   - G0DM0D3 Proxy:               port 9600
-#
-# Environment variables (MISTRAL_API_KEY, etc.) are read from /opt/.env
-# and referenced here with ${VAR_NAME} syntax.
-# =============================================================================
+# The G0DM0D3 proxy runs on port 9600 and exposes all models under
+# a single "G0DM0D3" category in the LibreChat model dropdown.
 
-version: 1.3.5
+version: 1.2.1
 cache: true
 
 endpoints:
   custom:
-    - name: "Mistral Thinking"
-      apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9100/v1"
-      models:
-        default:
-          - "mistral-large-thinking"
-        fetch: true
-      titleConvo: true
-      titleModel: "mistral-large-thinking"
-      summarize: false
-      maxContextTokens: 1000000
-      dropParams:
-        - "stop"
-        - "user"
-        - "frequency_penalty"
-        - "presence_penalty"
-      modelDisplayLabel: "Mistral Thinking"
-      iconURL: "https://mistral.ai/favicon.ico"
-
-    - name: "Persistent MiroFlow"
-      apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9300/v1"
-      models:
-        default:
-          - "persistent-miroflow"
-        fetch: true
-      titleConvo: true
-      titleModel: "persistent-miroflow"
-      summarize: false
-      maxContextTokens: 1000000
-      dropParams:
-        - "stop"
-        - "user"
-        - "frequency_penalty"
-        - "presence_penalty"
-      modelDisplayLabel: "Persistent MiroFlow"
-
-    - name: "Deep Research"
-      apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9200/v1"
-      models:
-        default:
-          - "miroflow"
-        fetch: true
-      titleConvo: true
-      titleModel: "miroflow"
-      summarize: false
-      maxContextTokens: 1000000
-      dropParams:
-        - "stop"
-        - "user"
-        - "frequency_penalty"
-        - "presence_penalty"
-      modelDisplayLabel: "Deep Research"
-
-    - name: "Swarm Deep Search"
-      apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9500/v1"
-      models:
-        default:
-          - "swarm-miroflow"
-        fetch: true
-      titleConvo: true
-      titleModel: "swarm-miroflow"
-      summarize: false
-      maxContextTokens: 1000000
-      dropParams:
-        - "stop"
-        - "user"
-        - "frequency_penalty"
-        - "presence_penalty"
-      modelDisplayLabel: "Swarm Deep Search"
-
     - name: "G0DM0D3"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9600/v1"
+      baseURL: "http://localhost:9600/v1"
       models:
         default:
           - "godmode-classic"
@@ -105,6 +21,7 @@ endpoints:
           - "ultraplinian-smart"
           - "ultraplinian-power"
           - "ultraplinian-ultra"
+          # Individual models (direct access with DEPTH_DIRECTIVE)
           - "g0dm0d3-google/gemini-2.5-flash"
           - "g0dm0d3-deepseek/deepseek-chat"
           - "g0dm0d3-perplexity/sonar"
@@ -166,9 +83,4 @@ endpoints:
       summarize: false
       forcePrompt: false
       modelDisplayLabel: "G0DM0D3"
-      maxContextTokens: 1000000
-      dropParams:
-        - "stop"
-        - "user"
-        - "frequency_penalty"
-        - "presence_penalty"
+      iconURL: "https://raw.githubusercontent.com/elder-plinius/G0DM0D3/main/godmode.png"

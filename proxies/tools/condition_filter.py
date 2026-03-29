@@ -39,7 +39,7 @@ _ERROR_PATTERNS = re.compile(
     r"|Tool error"
     r"|Tool failed"
     r"|Unknown tool:"
-    r"|HTTP\s+\d{3}"
+    r"|HTTP\s+[45]\d{2}"
     r"|timed?\s*out"
     r"|access tiers exhausted"
     r"|credentials.*missing"

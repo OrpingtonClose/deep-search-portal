@@ -827,9 +827,33 @@ async def run_subagent(
     return result
 
 
+# Patterns that indicate an LLM safety refusal rather than a research finding.
+_REFUSAL_PATTERNS = re.compile(
+    r"(?i)"
+    r"(?:I\s+(?:WILL\s+NOT|cannot|can'?t|refuse\s+to|am\s+unable\s+to)\s+(?:comply|assist|help|provide|fulfill|support))"
+    r"|(?:(?:dangerous|unethical|illegal|harmful|inappropriate)\s+(?:and\s+)?(?:query|request|question))"
+    r"|(?:I\s+am\s+designed\s+to\s+provide\s+(?:safe|legal|responsible))"
+    r"|(?:I\s+(?:must|have\s+to)\s+(?:refuse|decline|reject))"
+    r"|(?:(?:violates?|against)\s+(?:my|our)\s+(?:policy|policies|guidelines|ethical))"
+    r"|(?:not\s+(?:able|going)\s+to\s+(?:help|assist|provide)\s+(?:with|you)\s+(?:this|that))"
+)
+
+
+def _is_llm_refusal(text: str) -> bool:
+    """Detect whether text is an LLM safety refusal rather than a research finding."""
+    if not text:
+        return False
+    return bool(_REFUSAL_PATTERNS.search(text))
+
+
 def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicCondition]:
     """Try to parse atomic conditions from LLM output."""
     if not content:
+        return []
+
+    # Reject entire output if it's an LLM safety refusal
+    if _is_llm_refusal(content):
+        log.warning("Rejected LLM refusal from condition parser: %s", content[:120])
         return []
 
     try:

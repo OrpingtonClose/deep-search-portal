@@ -1574,6 +1574,7 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
     already_persisted = set(state.get("persisted_fact_hashes") or [])
     new_conditions = [c for c in all_conditions if hashlib.sha256(c.fact.encode()).hexdigest()[:16] not in already_persisted]
     progress: list[str] = []
+    err = None  # initialise before the conditional block so it's always defined
 
     if new_conditions:
         progress.append("\n**[Phase 7: Persisting Knowledge]**\n")
@@ -1722,12 +1723,14 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         progress.append("Generating draft synthesis...\n")
 
     prior_conv_summary = state.get("prior_conversation_summary", "")
+    synthesis_failed = False
     try:
         final_answer = await synthesize_with_revision(
             state["user_query"], state["subagent_results"], state["prior_conditions"], req_id,
             prior_conversation_summary=prior_conv_summary,
         )
     except Exception as synth_err:
+        synthesis_failed = True
         log.error(f"[{req_id}] Synthesis failed: {synth_err}")
         # Persist what we have so the user can retry synthesis without
         # re-running the entire 30+ minute research pipeline.
@@ -1757,7 +1760,16 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
     all_conditions = state["all_conditions"]
     targeted: list[str] = []
 
-    if iterations < MAX_RESEARCH_ITERATIONS:
+    # Skip incompleteness detection when synthesis itself failed — the
+    # error message would be judged "critically incomplete" and trigger
+    # an expensive re-research loop, wasting the user's time and money.
+    if synthesis_failed:
+        progress.append(
+            "\n⚠ Synthesis failed — skipping incompleteness check. "
+            "Send a follow-up prompt to retry synthesis with the "
+            "already-persisted findings.\n"
+        )
+    elif iterations < MAX_RESEARCH_ITERATIONS:
         is_complete, gap_queries = await _detect_incompleteness(
             final_answer, state["user_query"],
             n_conditions=len(all_conditions),

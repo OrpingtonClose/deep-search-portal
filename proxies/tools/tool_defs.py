@@ -944,9 +944,9 @@ NATIVE_TOOLS = [
                     },
                     "search_type": {
                         "type": "string",
-                        "enum": ["web", "x_search", "both"],
+                        "enum": ["web", "x", "both"],
                         "description": (
-                            "Type of search: 'web' for web only, 'x_search' for "
+                            "Type of search: 'web' for web only, 'x' for "
                             "X/Twitter only, 'both' for both (default: both)"
                         ),
                     },
@@ -993,7 +993,7 @@ NATIVE_TOOLS = [
                     },
                     "search_type": {
                         "type": "string",
-                        "enum": ["web", "x_search", "both"],
+                        "enum": ["web", "x", "both"],
                         "description": "Search type for Grok backend (default: both)",
                     },
                     "max_results_per_source": {

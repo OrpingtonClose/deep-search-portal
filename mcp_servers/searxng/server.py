@@ -15,19 +15,21 @@ async def searxng_search(
     query: str, categories: str = "general", max_results: int = 10
 ) -> str:
     """Search via local SearXNG instance."""
-    from search_providers import _search_searxng, results_to_text
+    from search_providers import _search_searxng, results_to_raw_dicts
+    from tools.search_tools import _format_search_results
 
     results = await _search_searxng(query, categories=categories, max_results=max_results)
-    return results_to_text(results, source_label="searxng")
+    return _format_search_results(results_to_raw_dicts(results), source_label="searxng") or "No results found."
 
 
 @mcp.tool()
 async def searxng_news(query: str, max_results: int = 10) -> str:
     """Search news via local SearXNG instance."""
-    from search_providers import _search_searxng, results_to_text
+    from search_providers import _search_searxng, results_to_raw_dicts
+    from tools.search_tools import _format_search_results
 
     results = await _search_searxng(query, categories="news", max_results=max_results)
-    return results_to_text(results, source_label="searxng-news")
+    return _format_search_results(results_to_raw_dicts(results), source_label="searxng-news") or "No news results found."
 
 
 if __name__ == "__main__":

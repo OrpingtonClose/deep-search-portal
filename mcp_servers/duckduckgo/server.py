@@ -13,19 +13,21 @@ mcp = FastMCP("duckduckgo-search")
 @mcp.tool()
 async def duckduckgo_search(query: str, max_results: int = 10) -> str:
     """Search the web via DuckDuckGo."""
-    from search_providers import _search_duckduckgo, results_to_text
+    from search_providers import _search_duckduckgo, results_to_raw_dicts
+    from tools.search_tools import _format_search_results
 
     results = await _search_duckduckgo(query, max_results)
-    return results_to_text(results, source_label="duckduckgo")
+    return _format_search_results(results_to_raw_dicts(results), source_label="duckduckgo") or "No results found."
 
 
 @mcp.tool()
 async def duckduckgo_news(query: str, max_results: int = 10) -> str:
     """Search news via DuckDuckGo."""
-    from search_providers import _search_duckduckgo_news, results_to_text
+    from search_providers import _search_duckduckgo_news, results_to_raw_dicts
+    from tools.search_tools import _format_search_results
 
     results = await _search_duckduckgo_news(query, max_results)
-    return results_to_text(results, source_label="duckduckgo-news")
+    return _format_search_results(results_to_raw_dicts(results), source_label="duckduckgo-news") or "No news results found."
 
 
 if __name__ == "__main__":

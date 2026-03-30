@@ -35,7 +35,7 @@ def is_server_healthy(server_name: str) -> bool:
     try:
         monitor = _get_monitor()
         status = monitor.get_tool_status(server_name)
-        return status.get("is_healthy", True)
+        return status.get("status") in ("healthy", "unknown")
     except Exception:
         # If we can't read health status, assume healthy (fail open)
         return True

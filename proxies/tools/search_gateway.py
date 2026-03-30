@@ -374,12 +374,14 @@ def _dedup_result(text: str, seen_urls: set[str]) -> str:
         # Extract URLs from the line
         urls_in_line = re.findall(r'https?://[^\s\)\"\'<>]+', line)
         is_dup = False
+        new_norms = []
         for url in urls_in_line:
             norm = _normalize_url(url)
             if norm in seen_urls:
                 is_dup = True
                 break
-            seen_urls.add(norm)
+            new_norms.append(norm)
         if not is_dup:
+            seen_urls.update(new_norms)
             output_lines.append(line)
     return "\n".join(output_lines)

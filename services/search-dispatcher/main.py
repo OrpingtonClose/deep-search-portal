@@ -138,7 +138,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "services.search-dispatcher.main:app",
+        app,
         host="0.0.0.0",
         port=MCP_DISPATCHER_PORT,
         log_level="info",

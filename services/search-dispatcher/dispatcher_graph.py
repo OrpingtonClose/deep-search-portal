@@ -187,6 +187,13 @@ def route_entry(state: DispatcherState) -> str:
     return "resolve_candidates"
 
 
+def after_resolve(state: DispatcherState) -> str:
+    """Route after resolve_candidates: skip to END if no candidates found."""
+    if state.error or not state.candidates:
+        return END
+    return "try_next_server"
+
+
 # ---------------------------------------------------------------------------
 # Graph construction
 # ---------------------------------------------------------------------------
@@ -204,8 +211,8 @@ def build_dispatcher_graph() -> StateGraph:
     # Entry routing
     graph.set_conditional_entry_point(route_entry)
 
-    # Edges from resolve_candidates
-    graph.add_edge("resolve_candidates", "try_next_server")
+    # Conditional edges from resolve_candidates (skip to END on error)
+    graph.add_conditional_edges("resolve_candidates", after_resolve)
 
     # Conditional edges from try_next_server
     graph.add_conditional_edges("try_next_server", should_continue)

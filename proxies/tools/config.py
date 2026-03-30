@@ -28,11 +28,18 @@ LOG_DIR = os.getenv("PERSISTENT_RESEARCH_LOG_DIR", "/opt/persistent_research_log
 log = setup_logging("persistent-research", LOG_DIR)
 
 # --- Configuration ---
-UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://openrouter.ai/api/v1")
+# Default to xAI direct API for Grok (bypasses OpenRouter safety layer).
+# See docs/model-evaluation-march-2026.md for the full evaluation.
+UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://api.x.ai/v1")
 UPSTREAM_KEY = require_env("UPSTREAM_KEY")
-UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "x-ai/grok-4.20-beta")
-SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "x-ai/grok-4.1-fast")
+UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "grok-3-fast")
+SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "grok-3-fast")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
+
+# Grok Responses API (dedicated search data source — separate from synthesis)
+GROK_RESPONSES_API_BASE = os.getenv("GROK_RESPONSES_API_BASE", "https://api.x.ai")
+XAI_API_KEY = os.getenv("XAI_API_KEY", os.getenv("UPSTREAM_KEY", ""))
+GROK_SEARCH_MODEL = os.getenv("GROK_SEARCH_MODEL", "grok-4.20-0309-reasoning")
 LISTEN_PORT = env_int("PERSISTENT_RESEARCH_PORT", 9300, minimum=1)
 PORTAL_PUBLIC_URL = os.getenv("PORTAL_PUBLIC_URL", "").rstrip("/")
 GATEWAY_INTERNAL_URL = os.getenv(
@@ -140,7 +147,7 @@ VERITAS_HALLUCINATION_THRESHOLD = float(os.getenv("VERITAS_HALLUCINATION_THRESHO
 # Commercial search APIs
 COMMERCIAL_SEARCH_ENABLED = os.getenv("COMMERCIAL_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes")
 BRIGHT_DATA_SERP_ZONE = os.getenv("BRIGHT_DATA_SERP_ZONE", "mcp_unlocker")
-MODERATION_MODEL = os.getenv("MODERATION_MODEL", "x-ai/grok-4.1-fast")
+MODERATION_MODEL = os.getenv("MODERATION_MODEL", "grok-3-fast")
 
 log.info(
     f"Config: synthesis_model={UPSTREAM_MODEL}, subagent_model={SUBAGENT_MODEL}, "

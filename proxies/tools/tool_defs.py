@@ -921,6 +921,90 @@ NATIVE_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "grok_deep_search",
+            "description": (
+                "Perform a deep web + X/Twitter search using Grok 4.20's built-in "
+                "search capabilities. This is a HIGH-QUALITY search tool that "
+                "autonomously performs multiple web searches and X/Twitter searches, "
+                "returning cited results with URLs. Use this as the PRIMARY search "
+                "tool for any query — it often finds results that SearXNG misses, "
+                "especially for recent events, social media discussions, and "
+                "controversial/sensitive topics. Returns structured results with "
+                "citations and source URLs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query — be specific and detailed",
+                    },
+                    "search_type": {
+                        "type": "string",
+                        "enum": ["web", "x", "both"],
+                        "description": (
+                            "Type of search: 'web' for web only, 'x' for "
+                            "X/Twitter only, 'both' for both (default: both)"
+                        ),
+                    },
+                    "instructions": {
+                        "type": "string",
+                        "description": (
+                            "Optional instructions for the search agent — e.g. "
+                            "'focus on forum discussions', 'find vendor reviews', "
+                            "'look for recent news from the last week'"
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_gateway",
+            "description": (
+                "Unified search API gateway that fans out to ALL available search "
+                "backends simultaneously: Grok deep search (web + X/Twitter), "
+                "Apify (Reddit, Twitter, Telegram, Discord), SearXNG, forums, "
+                "academic sources (PubMed, arXiv, Scholar), and archives "
+                "(Archive.org, Wayback Machine). Results are deduplicated by URL "
+                "and merged with trust scores. Use this for comprehensive multi-source "
+                "research that requires breadth across many platforms."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query",
+                    },
+                    "sources": {
+                        "type": "string",
+                        "description": (
+                            "Comma-separated source categories to query. Options: "
+                            "'all' (default), 'grok', 'searxng', 'social', "
+                            "'community', 'academic', 'archive', 'video'"
+                        ),
+                    },
+                    "search_type": {
+                        "type": "string",
+                        "enum": ["web", "x", "both"],
+                        "description": "Search type for Grok backend (default: both)",
+                    },
+                    "max_results_per_source": {
+                        "type": "integer",
+                        "description": "Max results per source category (default: 10)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 

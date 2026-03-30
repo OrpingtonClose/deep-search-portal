@@ -84,6 +84,10 @@ _SELF_THROTTLED_TOOLS: set[str] = {
     "chan_4plebs_search", "chan_b4k_search", "chan_warosu_search",
     # Wayback fetch throttles via get_throttler("wayback")
     "wayback_fetch",
+    # Grok deep search throttles via get_throttler("xai") internally
+    "grok_deep_search",
+    # Search gateway delegates to sub-tools that all self-throttle
+    "search_gateway",
 }
 
 # Maps tool names to provider keys for throttler lookup.
@@ -130,6 +134,10 @@ TOOL_PROVIDER_MAP: dict[str, str] = {
     "chan_4plebs_search": "imageboard",
     "chan_b4k_search": "imageboard",
     "chan_warosu_search": "imageboard",
+    # Grok deep search (xAI Responses API)
+    "grok_deep_search": "xai",
+    # Search gateway (composite — delegates to sub-tools)
+    "search_gateway": "gateway",
     # Web fetch
     "fetch_webpage": "web_fetch",
     # Knowledge engine (local, but still throttled)

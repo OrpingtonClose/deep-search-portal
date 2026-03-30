@@ -74,6 +74,7 @@ from .conversation import (
     get_conversation_store,
 )
 from .ruflo_synthesis import needs_gossip_synthesis, ruflo_gossip_synthesize
+from .grok_search import grok_synthesis_search
 
 # SQLite checkpoint DB path (configurable via env)
 _CHECKPOINT_DB_PATH = os.getenv(
@@ -680,6 +681,7 @@ async def synthesize_with_revision(
     prior_conditions: list[dict],
     req_id: str,
     prior_conversation_summary: str = "",
+    extended_reasoning_context: str = "",
 ) -> str:
     """Full Draft-Synthesis-Revision loop.
 
@@ -688,6 +690,10 @@ async def synthesize_with_revision(
             final answer from the most recent prior turn.  Injected into
             the synthesis prompt so the model can build on prior research
             rather than repeating it.
+        extended_reasoning_context: Optional enrichment from Grok
+            Responses API web/X search — used as additional context
+            during synthesis (extended reasoning, never a data source
+            exposed to subagents).
     """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -726,6 +732,11 @@ async def synthesize_with_revision(
                 "\n**PREVIOUS RESEARCH IN THIS CONVERSATION:**\n"
                 f"{prior_conversation_summary[:2000]}\n"
             )
+        if extended_reasoning_context:
+            prior_text += (
+                "\n**EXTENDED REASONING (live web/X search enrichment):**\n"
+                f"{extended_reasoning_context[:4000]}\n"
+            )
         gossip_answer = await ruflo_gossip_synthesize(
             user_query, subagent_results, req_id,
             prior_text=prior_text,
@@ -759,12 +770,24 @@ async def synthesize_with_revision(
             "already covered. Focus on what is NEW in this follow-up query.\n"
         )
 
+    # Add extended reasoning context from Grok Responses API (web/X search)
+    extended_text = ""
+    if extended_reasoning_context:
+        extended_text = (
+            "\n**EXTENDED REASONING (live web/X search enrichment):**\n"
+            "The following was gathered via real-time web and X/Twitter search "
+            "to supplement the research findings above. Use it to verify, "
+            "enrich, or add context — but the research conditions are the "
+            "primary source of truth.\n\n"
+            f"{extended_reasoning_context[:4000]}\n"
+        )
+
     # --- Phase 1: Draft Synthesis (single-shot path) ---
     draft_prompt = DRAFT_SYNTHESIS_PROMPT.format(
         date=today,
         n_subagents=len(subagent_results),
         conditions_text=conditions_text,
-        prior_knowledge_text=prior_text + conv_context_text,
+        prior_knowledge_text=prior_text + conv_context_text + extended_text,
     )
 
     draft_messages = [
@@ -1725,11 +1748,40 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         progress.append("Generating draft synthesis...\n")
 
     prior_conv_summary = state.get("prior_conversation_summary", "")
+
+    # --- Extended reasoning via Grok Responses API (internal to synthesis) ---
+    # The synthesis model CAN search web/X as extended reasoning to enrich
+    # its answer — but this is never exposed as a tool to subagents.
+    # This adds real-time context that the tree research may have missed.
+    grok_extended_context = ""
+    try:
+        from .config import XAI_API_KEY
+        if XAI_API_KEY:
+            progress.append("Enriching synthesis with extended web/X reasoning...\n")
+            grok_extended_context = await grok_synthesis_search(
+                state["user_query"],
+                context=(
+                    f"Research gathered {len(state['all_conditions'])} findings from "
+                    f"{len(state['subagent_results'])} angles. Key gaps or areas that "
+                    f"need real-time verification or additional context."
+                ),
+            )
+            if grok_extended_context and not grok_extended_context.startswith("[TOOL_ERROR]"):
+                progress.append(
+                    f"Extended reasoning added {len(grok_extended_context)} chars of live context.\n"
+                )
+            else:
+                grok_extended_context = ""
+    except Exception as ext_err:
+        log.warning(f"[{req_id}] Grok extended reasoning failed (non-fatal): {ext_err}")
+        grok_extended_context = ""
+
     synthesis_failed = False
     try:
         final_answer = await synthesize_with_revision(
             state["user_query"], state["subagent_results"], state["prior_conditions"], req_id,
             prior_conversation_summary=prior_conv_summary,
+            extended_reasoning_context=grok_extended_context,
         )
     except Exception as synth_err:
         synthesis_failed = True

@@ -64,6 +64,8 @@ from .search_tools2 import (
     tool_youtube_video_metadata,
     tool_youtube_video_analyze,
 )
+from .grok_search import tool_grok_deep_search
+from .search_gateway import gateway_search
 
 
 # ============================================================================
@@ -404,6 +406,20 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
             arguments.get("url", ""),
             arguments.get("question", ""),
         )
+    elif tool_name == "grok_deep_search":
+        return await tool_grok_deep_search(
+            arguments.get("query", ""),
+            search_type=arguments.get("search_type", "both"),
+            instructions=arguments.get("instructions", ""),
+        )
+    elif tool_name == "search_gateway":
+        return await gateway_search(
+            arguments.get("query", ""),
+            sources=arguments.get("sources", "all"),
+            search_type=arguments.get("search_type", "both"),
+            max_results_per_source=arguments.get("max_results_per_source", 10),
+            req_id="",
+        )
     else:
         return f"[TOOL_ERROR] Unknown tool: {tool_name}. This tool does not exist in the system."
 
@@ -422,6 +438,7 @@ _CACHEABLE_TOOLS = {
     "social_media_search", "reddit_search", "instagram_search",
     "tiktok_search", "linkedin_search",
     "chan_4plebs_search", "chan_b4k_search", "chan_warosu_search",
+    "grok_deep_search", "search_gateway",
 }
 
 # Tools that involve long-running local computation (e.g. WhisperX GPU

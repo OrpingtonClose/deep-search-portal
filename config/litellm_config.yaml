@@ -24,17 +24,21 @@ model_list:
       model: "mistral/mistral-large-latest"
       api_key: "os.environ/MISTRAL_API_KEY"
 
-  # Fallback chain: xAI -> Mistral -> OpenRouter
+  # Default model (primary in the fallback chain)
   - model_name: "default"
     litellm_params:
       model: "openai/grok-3-fast"
       api_base: "https://api.x.ai/v1"
       api_key: "os.environ/XAI_API_KEY"
-      fallbacks:
-        - model: "mistral/mistral-large-latest"
-          api_key: "os.environ/MISTRAL_API_KEY"
-        - model: "openrouter/auto"
-          api_key: "os.environ/OPENROUTER_API_KEY"
+
+  - model_name: "openrouter-auto"
+    litellm_params:
+      model: "openrouter/auto"
+      api_key: "os.environ/OPENROUTER_API_KEY"
+
+# Fallback chain: xAI (default) -> Mistral -> OpenRouter
+router_settings:
+  fallbacks: [{"default": ["mistral-large-latest", "openrouter-auto"]}]
 
 litellm_settings:
   num_retries: 3

@@ -119,7 +119,7 @@ if ! pgrep -f "godmode_proxy.py" > /dev/null; then
         && export XAI_API_KEY='${XAI_API_KEY:-}' \
         && export DEEPSEEK_API_KEY='${DEEPSEEK_API_KEY:-}' \
         && export PERPLEXITY_API_KEY='${PERPLEXITY_API_KEY:-}' \
-        && export MISTRAL_API_KEY='${MISTRAL_API_KEY:-}' \
+        && export MISTRAL_NATIVE_API_KEY='${MISTRAL_NATIVE_API_KEY:-}' \
         && export MOONSHOT_API_KEY='${MOONSHOT_API_KEY:-}' \
         && export COHERE_API_KEY='${COHERE_API_KEY:-}' \
         && export MINIMAX_API_KEY='${MINIMAX_API_KEY:-}' \

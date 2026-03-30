@@ -178,6 +178,9 @@ endpoints:
           - "g0dm0d3-qwen/qwen-2.5-coder-32b-instruct"
           - "g0dm0d3-qwen/qwq-32b"
           - "g0dm0d3-mistralai/codestral-2508"
+          # Deep Research & Reasoning (native provider routing)
+          - "g0dm0d3-x-ai/grok-4.20-0309-reasoning"
+          - "ultraplinian-research"
         fetch: false
       titleConvo: true
       titleModel: "godmode-classic"

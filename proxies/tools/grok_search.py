@@ -291,7 +291,11 @@ async def grok_synthesis_search(
 
         data = resp.json()
         result = _format_responses_api_output(data, query, 0.0)
-        return result if result and len(result) > 50 else None
+        if not result or len(result) <= 50:
+            return None
+        if result.startswith("Grok deep search returned no output") or result.startswith("Grok deep search produced no text"):
+            return None
+        return result
 
     except Exception as e:
         log.debug(f"Grok synthesis search error: {e}")

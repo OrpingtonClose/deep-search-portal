@@ -190,7 +190,9 @@ async def gateway_search(
             # Dedup URLs across sources
             deduped = _dedup_result(result, seen_urls)
             if deduped and len(deduped.strip()) > 30:
-                results.append(f"--- Source: {source_name} ---\n{deduped}")
+                # Apply max_results_per_source: truncate to N result blocks
+                truncated = _truncate_results(deduped, max_results_per_source)
+                results.append(f"--- Source: {source_name} ---\n{truncated}")
         except Exception as e:
             errors.append(f"[{source_name}] exception: {e}")
 
@@ -345,6 +347,23 @@ def _normalize_url(url: str) -> str:
         return f"{host}{path}"
     except Exception:
         return url.lower().strip()
+
+
+def _truncate_results(text: str, max_results: int) -> str:
+    """Truncate a result block to at most *max_results* entries.
+
+    Heuristic: each "result" is separated by a blank line or starts with
+    a numbered/bulleted prefix.  We keep the first *max_results* blocks.
+    """
+    if max_results <= 0:
+        return text
+    # Split on double-newlines (common separator between search results)
+    blocks = re.split(r'\n\n+', text.strip())
+    if len(blocks) <= max_results:
+        return text
+    truncated = "\n\n".join(blocks[:max_results])
+    truncated += f"\n\n[... {len(blocks) - max_results} more results truncated ...]"
+    return truncated
 
 
 def _dedup_result(text: str, seen_urls: set[str]) -> str:

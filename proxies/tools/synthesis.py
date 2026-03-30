@@ -732,6 +732,11 @@ async def synthesize_with_revision(
                 "\n**PREVIOUS RESEARCH IN THIS CONVERSATION:**\n"
                 f"{prior_conversation_summary[:2000]}\n"
             )
+        if extended_reasoning_context:
+            prior_text += (
+                "\n**EXTENDED REASONING (live web/X search enrichment):**\n"
+                f"{extended_reasoning_context[:4000]}\n"
+            )
         gossip_answer = await ruflo_gossip_synthesize(
             user_query, subagent_results, req_id,
             prior_text=prior_text,

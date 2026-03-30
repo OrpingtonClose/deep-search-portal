@@ -118,10 +118,10 @@ if [ "${SEARCH_BACKEND:-legacy}" = "mcp" ]; then
     wait_for_health "http://localhost:${MCP_DISPATCHER_PORT:-9801}/health" "Search Dispatcher" 15
 fi
 
-# --- Thinking Proxy ---
+# --- Thinking Proxy (stays on Mistral — override global xAI defaults) ---
 pip3 install fastapi uvicorn httpx -q
 if ! pgrep -f "thinking_proxy.py" > /dev/null; then
-    screen -dmS thinking-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && THINKING_PROXY_PORT=9100 python3 thinking_proxy.py 2>&1 | tee /var/log/thinking_proxy.log"
+    screen -dmS thinking-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && UPSTREAM_BASE='https://api.mistral.ai/v1' UPSTREAM_KEY=\"${MISTRAL_API_KEY}\" UPSTREAM_MODEL='mistral-large-latest' THINKING_PROXY_PORT=9100 python3 thinking_proxy.py 2>&1 | tee /var/log/thinking_proxy.log"
     echo "Thinking Proxy starting..."
 fi
 wait_for_health "http://localhost:9100/health" "Thinking Proxy" 15
@@ -147,9 +147,9 @@ if ! pgrep -f "miroflow_sprint_proxy.py" > /dev/null; then
 fi
 wait_for_health "http://localhost:9400/health" "MiroFlow Sprint Proxy" 15
 
-# --- Swarm Deep Search Proxy — Venice AI (uncensored) ---
+# --- Swarm Deep Search Proxy — Venice AI (uncensored, override global xAI defaults) ---
 if ! pgrep -f "swarm_proxy.py" > /dev/null; then
-    screen -dmS swarm-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && SWARM_PROXY_PORT=9500 python3 swarm_proxy.py 2>&1 | tee /var/log/swarm_proxy.log"
+    screen -dmS swarm-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && UPSTREAM_BASE='https://api.venice.ai/api/v1' UPSTREAM_KEY=\"${VENICE_API_KEY:-${MISTRAL_API_KEY}}\" UPSTREAM_MODEL='venice-uncensored' SWARM_SYNTHESIS_MODEL='venice-uncensored' SWARM_WORKER_MODEL='venice-uncensored' SWARM_PROXY_PORT=9500 python3 swarm_proxy.py 2>&1 | tee /var/log/swarm_proxy.log"
     echo "Swarm Deep Search Proxy starting..."
 fi
 wait_for_health "http://localhost:9500/health" "Swarm Deep Search Proxy" 15

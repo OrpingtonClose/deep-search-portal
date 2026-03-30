@@ -34,7 +34,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy cftunnel searxng; do
+    for session in godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy litellm cftunnel searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -71,6 +71,15 @@ fi
 if ! pgrep -f "cloudflared tunnel" > /dev/null; then
     screen -dmS cftunnel cloudflared tunnel run --token "$CLOUDFLARE_TUNNEL_TOKEN"
     echo "Cloudflare tunnel started"
+fi
+
+# --- LiteLLM Proxy (LLM routing + cost tracking) ---
+if [ "${SEARCH_BACKEND:-legacy}" = "mcp" ]; then
+    if ! pgrep -f "litellm" > /dev/null; then
+        screen -dmS litellm bash -c "litellm --config /opt/deep-search-portal/config/litellm_config.yaml --port ${LITELLM_PORT:-4000} 2>&1 | tee /var/log/litellm.log"
+        echo "LiteLLM Proxy starting..."
+    fi
+    wait_for_health "http://localhost:${LITELLM_PORT:-4000}/health" "LiteLLM Proxy" 30
 fi
 
 # --- Thinking Proxy (Mistral Direct API) ---

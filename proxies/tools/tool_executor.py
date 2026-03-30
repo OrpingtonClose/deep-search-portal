@@ -418,7 +418,7 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
             sources=arguments.get("sources", "all"),
             search_type=arguments.get("search_type", "both"),
             max_results_per_source=arguments.get("max_results_per_source", 10),
-            req_id=req_id,
+            req_id="",
         )
     else:
         return f"[TOOL_ERROR] Unknown tool: {tool_name}. This tool does not exist in the system."

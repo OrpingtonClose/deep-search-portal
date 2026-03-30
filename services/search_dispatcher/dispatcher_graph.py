@@ -21,9 +21,12 @@ from typing import Any, Optional
 
 from langgraph.graph import StateGraph, END
 
-from .capability_matrix import CAPABILITY_MATRIX, DOMAIN_CATEGORIES
-from .config import DISPATCHER_TIMEOUT, MAX_FANOUT_CONCURRENCY, get_mcp_server_url
-from .health_aware_router import (
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+
+from capability_matrix import CAPABILITY_MATRIX, DOMAIN_CATEGORIES
+from config import DISPATCHER_TIMEOUT, MAX_FANOUT_CONCURRENCY, get_mcp_server_url
+from health_aware_router import (
     filter_healthy_servers,
     record_server_outcome,
 )

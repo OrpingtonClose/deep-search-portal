@@ -44,7 +44,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy litellm cftunnel searxng; do
+    for session in godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy search-dispatcher mcp-searxng litellm cftunnel searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -98,7 +98,7 @@ if [ "${SEARCH_BACKEND:-legacy}" = "mcp" ]; then
 
     # Start MCP SearXNG server
     if ! pgrep -f "mcp_searxng" > /dev/null; then
-        screen -dmS mcp-searxng bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd ${REPO_DIR}/services/mcp-servers && python3 mcp_searxng.py 2>&1 | tee /var/log/mcp_searxng.log"
+        screen -dmS mcp-searxng bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd ${REPO_DIR}/mcp_servers/searxng && python3 server.py 2>&1 | tee /var/log/mcp_searxng.log"
         echo "MCP SearXNG server starting on port 9814..."
     fi
     sleep 2

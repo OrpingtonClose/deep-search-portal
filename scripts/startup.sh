@@ -109,9 +109,27 @@ if ! pgrep -f "swarm_proxy.py" > /dev/null; then
 fi
 wait_for_health "http://localhost:9500/health" "Swarm Deep Search Proxy" 15
 
-# --- G0DM0D3 Proxy (OpenRouter multi-model) ---
+# --- G0DM0D3 Proxy (multi-provider native routing) ---
 if ! pgrep -f "godmode_proxy.py" > /dev/null; then
-    screen -dmS godmode-proxy bash -c "export OPENROUTER_API_KEY='${OPENROUTER_API_KEY:-}' && export GODMODE_PROXY_PORT='9600' && python3 /opt/godmode_proxy.py 2>&1 | tee /var/log/godmode_proxy.log"
+    screen -dmS godmode-proxy bash -c "\
+        export OPENROUTER_API_KEY='${OPENROUTER_API_KEY:-}' \
+        && export OPENAI_API_KEY='${OPENAI_API_KEY:-}' \
+        && export ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}' \
+        && export GEMINI_API_KEY='${GEMINI_API_KEY:-}' \
+        && export XAI_API_KEY='${XAI_API_KEY:-}' \
+        && export DEEPSEEK_API_KEY='${DEEPSEEK_API_KEY:-}' \
+        && export PERPLEXITY_API_KEY='${PERPLEXITY_API_KEY:-}' \
+        && export MISTRAL_NATIVE_API_KEY='${MISTRAL_NATIVE_API_KEY:-}' \
+        && export MOONSHOT_API_KEY='${MOONSHOT_API_KEY:-}' \
+        && export COHERE_API_KEY='${COHERE_API_KEY:-}' \
+        && export MINIMAX_API_KEY='${MINIMAX_API_KEY:-}' \
+        && export GROQ_API_KEY='${GROQ_API_KEY:-}' \
+        && export DASHSCOPE_API_KEY='${DASHSCOPE_API_KEY:-}' \
+        && export STEPFUN_API_KEY='${STEPFUN_API_KEY:-}' \
+        && export ZHIPU_API_KEY='${ZHIPU_API_KEY:-}' \
+        && export NVIDIA_API_KEY='${NVIDIA_API_KEY:-}' \
+        && export GODMODE_PROXY_PORT='9600' \
+        && python3 /opt/godmode_proxy.py 2>&1 | tee /var/log/godmode_proxy.log"
     echo "G0DM0D3 Proxy starting..."
 fi
 wait_for_health "http://localhost:9600/health" "G0DM0D3 Proxy" 15

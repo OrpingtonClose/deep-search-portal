@@ -178,6 +178,7 @@ endpoints:
           - "g0dm0d3-qwen/qwen-2.5-coder-32b-instruct"
           - "g0dm0d3-qwen/qwq-32b"
           - "g0dm0d3-mistralai/codestral-2508"
+          - "ultraplinian-research"
         fetch: false
       titleConvo: true
       titleModel: "godmode-classic"
@@ -185,6 +186,25 @@ endpoints:
       forcePrompt: false
       modelDisplayLabel: "G0DM0D3"
       maxContextTokens: 1000000
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+
+    - name: "Singular"
+      apiKey: "not-needed"
+      baseURL: "http://host.docker.internal:9600/v1"
+      models:
+        default:
+          - "g0dm0d3-x-ai/grok-4.20-0309-reasoning"
+        fetch: false
+      titleConvo: true
+      titleModel: "g0dm0d3-x-ai/grok-4.20-0309-reasoning"
+      summarize: false
+      forcePrompt: false
+      modelDisplayLabel: "Singular"
+      maxContextTokens: 2000000
       dropParams:
         - "stop"
         - "user"

@@ -35,6 +35,16 @@ UPSTREAM_KEY = require_env("UPSTREAM_KEY")
 UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "grok-3-fast")
 SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "grok-3-fast")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
+
+# --- LiteLLM / MCP Framework Config ---
+LITELLM_PROXY_URL = os.getenv("LITELLM_PROXY_URL", "http://localhost:4000")
+LITELLM_MASTER_KEY = os.getenv("LITELLM_MASTER_KEY", "")
+SEARCH_BACKEND = os.getenv("SEARCH_BACKEND", "legacy")  # "legacy" or "mcp"
+
+# Grok Responses API (dedicated search data source — separate from synthesis)
+GROK_RESPONSES_API_BASE = os.getenv("GROK_RESPONSES_API_BASE", "https://api.x.ai")
+XAI_API_KEY = os.getenv("XAI_API_KEY", os.getenv("UPSTREAM_KEY", ""))
+GROK_SEARCH_MODEL = os.getenv("GROK_SEARCH_MODEL", "grok-4.20-0309-reasoning")
 LISTEN_PORT = env_int("PERSISTENT_RESEARCH_PORT", 9300, minimum=1)
 PORTAL_PUBLIC_URL = os.getenv("PORTAL_PUBLIC_URL", "").rstrip("/")
 GATEWAY_INTERNAL_URL = os.getenv(
@@ -62,6 +72,28 @@ def _get_llm(
         model=model or UPSTREAM_MODEL,
         api_key=UPSTREAM_KEY,
         base_url=UPSTREAM_BASE,
+        temperature=temperature,
+        timeout=timeout,
+        extra_body={"max_tokens": max_tokens},
+    )
+
+
+def _get_llm_via_litellm(
+    model: str = "",
+    *,
+    max_tokens: int = 4096,
+    temperature: float = 0.3,
+    timeout: float = 300.0,
+) -> ChatOpenAI:
+    """Create a ChatOpenAI instance pointing at the LiteLLM proxy.
+
+    Used when SEARCH_BACKEND=mcp.  LiteLLM handles retries, fallbacks,
+    cost tracking, and Cloudflare challenge detection.
+    """
+    return ChatOpenAI(
+        model=model or UPSTREAM_MODEL,
+        api_key=LITELLM_MASTER_KEY,
+        base_url=LITELLM_PROXY_URL,
         temperature=temperature,
         timeout=timeout,
         extra_body={"max_tokens": max_tokens},

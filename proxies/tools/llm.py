@@ -15,8 +15,10 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from shared import get_throttler
 
 from .config import (
+    SEARCH_BACKEND,
     UPSTREAM_MODEL,
     _get_llm,
+    _get_llm_via_litellm,
     log,
 )
 from .tool_defs import LANGCHAIN_TOOLS
@@ -98,6 +100,55 @@ async def call_llm(
     or  {"error": str}
     """
     resolved_model = model or UPSTREAM_MODEL
+
+    if SEARCH_BACKEND == "mcp":
+        # --- MCP path: LiteLLM handles retries, fallbacks, cost tracking ---
+        llm = _get_llm_via_litellm(
+            model=resolved_model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+        if include_tools:
+            llm = llm.bind_tools(LANGCHAIN_TOOLS)
+
+        lc_messages = _dicts_to_langchain_messages(messages)
+        config = _request_configs.get(req_id, {})
+
+        try:
+            ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
+            content = ai_msg.content or ""
+
+            tool_calls_out = None
+            if ai_msg.tool_calls:
+                tool_calls_out = [
+                    {
+                        "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc.get("args", {})),
+                        },
+                    }
+                    for tc in ai_msg.tool_calls
+                ]
+
+            message_dict: dict[str, Any] = {"content": content}
+            if tool_calls_out:
+                message_dict["tool_calls"] = tool_calls_out
+
+            return {
+                "message": message_dict,
+                "content": content,
+                "tool_calls": tool_calls_out,
+                "finish_reason": ai_msg.response_metadata.get(
+                    "finish_reason", "stop"
+                ),
+            }
+        except Exception as e:
+            return {"error": f"[LLM Error: {str(e)[:500]}]"}
+
+    # --- Legacy path: manual retries with Cloudflare detection ---
     llm = _get_llm(
         model=resolved_model,
         max_tokens=max_tokens,
@@ -118,7 +169,7 @@ async def call_llm(
     for attempt in range(MAX_LLM_RETRIES + 1):
         try:
             async with _mistral_throttle.throttle():
-                ai_msg: AIMessage = await llm.ainvoke(lc_messages, config=config)
+                ai_msg = await llm.ainvoke(lc_messages, config=config)
 
                 content = ai_msg.content or ""
 

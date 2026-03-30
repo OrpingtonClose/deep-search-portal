@@ -21,6 +21,8 @@ Module map:
     subagent        — planning agent, AoT reflection, run_subagent
     tree_reactor    — tree research reactor
     ruflo_synthesis — ruflo gossip protocol for chunked synthesis of large finding sets
+    grok_search     — Grok 4.20 Responses API as dedicated search/data source tool
+    search_gateway  — unified search API gateway fanning out to Grok + Apify + SearXNG + more
     synthesis       — live findings, heartbeat, draft-synthesis-revision, LangGraph pipeline
     conversation    — conversation state persistence, follow-up detection, snapshot store
 """

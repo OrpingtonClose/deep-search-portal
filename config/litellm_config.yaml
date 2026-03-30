@@ -1,0 +1,55 @@
+# =============================================================================
+# LiteLLM Proxy Configuration
+# Replaces manual retry logic in proxies/tools/llm.py and the _get_llm()
+# factory in proxies/tools/config.py when SEARCH_BACKEND=mcp.
+# =============================================================================
+
+model_list:
+  - model_name: "grok-3-fast"
+    litellm_params:
+      model: "openai/grok-3-fast"
+      api_base: "https://api.x.ai/v1"
+      api_key: "os.environ/XAI_API_KEY"
+    model_info:
+      max_tokens: 131072
+
+  - model_name: "grok-4.20-0309-reasoning"
+    litellm_params:
+      model: "openai/grok-4.20-0309-reasoning"
+      api_base: "https://api.x.ai/v1"
+      api_key: "os.environ/XAI_API_KEY"
+
+  - model_name: "mistral-large-latest"
+    litellm_params:
+      model: "mistral/mistral-large-latest"
+      api_key: "os.environ/MISTRAL_API_KEY"
+
+  # Default model (primary in the fallback chain)
+  - model_name: "default"
+    litellm_params:
+      model: "openai/grok-3-fast"
+      api_base: "https://api.x.ai/v1"
+      api_key: "os.environ/XAI_API_KEY"
+
+  - model_name: "openrouter-auto"
+    litellm_params:
+      model: "openrouter/auto"
+      api_key: "os.environ/OPENROUTER_API_KEY"
+
+# Fallback chain: xAI (default) -> Mistral -> OpenRouter
+router_settings:
+  fallbacks: [{"default": ["mistral-large-latest", "openrouter-auto"]}]
+
+litellm_settings:
+  num_retries: 3
+  retry_after: 5
+  request_timeout: 300
+  set_verbose: false
+  cache: true
+  cache_params:
+    type: "local"
+    ttl: 3600
+
+general_settings:
+  master_key: "os.environ/LITELLM_MASTER_KEY"
+  alerting: ["log"]

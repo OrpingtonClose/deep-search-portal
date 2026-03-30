@@ -14,10 +14,13 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from .config import MCP_DISPATCHER_PORT
-from .dispatcher_graph import DispatcherState, get_dispatcher
-from .health_aware_router import get_server_health_summary
-from .capability_matrix import CAPABILITY_MATRIX, DOMAIN_CATEGORIES
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+
+from config import MCP_DISPATCHER_PORT
+from dispatcher_graph import DispatcherState, get_dispatcher
+from health_aware_router import get_server_health_summary
+from capability_matrix import CAPABILITY_MATRIX, DOMAIN_CATEGORIES
 
 log = logging.getLogger("search-dispatcher")
 

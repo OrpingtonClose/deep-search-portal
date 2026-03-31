@@ -25,12 +25,22 @@ XAI_API_KEY="${XAI_API_KEY:-}"
 OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
 SEARCH_BACKEND="${SEARCH_BACKEND:-legacy}"
 
-# Warn if new API keys are missing (services will fail to authenticate)
+# Warn if API keys are missing (services will fail to authenticate)
 if [ -z "$XAI_API_KEY" ]; then
     echo "WARNING: XAI_API_KEY not set — deep-research, persistent-research, and miroflow-sprint will fail"
 fi
 if [ -z "$VENICE_API_KEY" ]; then
     echo "WARNING: VENICE_API_KEY not set — swarm proxy will fail"
+fi
+
+# Data-source credential warnings
+BRIGHT_DATA_API_KEY="${BRIGHT_DATA_API_KEY:-}"
+APIFY_API_TOKEN="${APIFY_API_TOKEN:-}"
+if [ -z "$BRIGHT_DATA_API_KEY" ]; then
+    echo "WARNING: BRIGHT_DATA_API_KEY not set — Reddit, Twitter, and commercial SERP search will be unavailable"
+fi
+if [ -z "$APIFY_API_TOKEN" ]; then
+    echo "WARNING: APIFY_API_TOKEN not set — Reddit/Instagram/TikTok/LinkedIn Apify fallback will be unavailable"
 fi
 # --- Helper: wait for an HTTP endpoint to become healthy ---
 wait_for_health() {
@@ -51,7 +61,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy search-dispatcher mcp-searxng litellm cftunnel searxng; do
+    for session in xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -61,6 +71,40 @@ cleanup() {
     echo "All services stopped."
 }
 trap cleanup SIGTERM SIGINT
+
+# --- Neo4j (knowledge graph database — MUST start before Knowledge Engine and proxies) ---
+NEO4J_BOLT_PORT="${NEO4J_BOLT_PORT:-7687}"
+NEO4J_HTTP_PORT="${NEO4J_HTTP_PORT:-7474}"
+if ! pgrep -f "org.neo4j.server" > /dev/null; then
+    if command -v neo4j > /dev/null 2>&1; then
+        neo4j start 2>&1 || echo "WARNING: neo4j start failed"
+        echo "Neo4j starting..."
+    else
+        echo "ERROR: Neo4j is NOT installed. Install it with:"
+        echo "  apt-get install -y openjdk-21-jre-headless && apt-get install -y neo4j"
+        echo "  → Prior knowledge retrieval will return empty"
+        echo "  → Condition persistence will fail"
+        echo "  → Cross-session knowledge accumulation is disabled"
+    fi
+fi
+wait_for_health "http://localhost:${NEO4J_HTTP_PORT}" "Neo4j" 30 || true
+
+# --- Knowledge Engine (Neo4j API layer — MUST start before proxies) ---
+KE_PORT="${KE_PORT:-9850}"  # Note: 9400 is taken by MiroFlow Sprint
+if ! pgrep -f "knowledge_engine.main" > /dev/null; then
+    REPO_DIR="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)}"
+    if [ -d "$REPO_DIR/services/knowledge-engine" ]; then
+        screen -dmS knowledge-engine bash -c "set -a; source /opt/.env 2>/dev/null; set +a; export KE_PORT=${KE_PORT}; cd $REPO_DIR/services/knowledge-engine && python3 -c \"
+import uvicorn
+from knowledge_engine.main import app
+uvicorn.run(app, host='0.0.0.0', port=${KE_PORT})
+\" 2>&1 | tee /var/log/knowledge-engine.log"
+        echo "Knowledge Engine starting on port ${KE_PORT}..."
+    else
+        echo "WARNING: Knowledge Engine not found at $REPO_DIR/services/knowledge-engine"
+    fi
+fi
+wait_for_health "http://localhost:${KE_PORT}/health" "Knowledge Engine" 30 || true
 
 # --- SearXNG ---
 if ! pgrep -f "searx.webapp" > /dev/null; then

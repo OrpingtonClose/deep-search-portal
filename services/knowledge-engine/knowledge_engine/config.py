@@ -16,7 +16,7 @@ EXTRACTION_MODEL = os.getenv("EXTRACTION_MODEL", "mistral-small-latest")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "mistral-embed")
 
 # --- Service ---
-LISTEN_PORT = int(os.getenv("KNOWLEDGE_ENGINE_PORT", "9400"))
+LISTEN_PORT = int(os.getenv("KNOWLEDGE_ENGINE_PORT", "9850"))
 RAW_FILES_DIR = os.getenv("RAW_FILES_DIR", "/opt/knowledge_engine/raw")
 LOG_DIR = os.getenv("LOG_DIR", "/opt/knowledge_engine/logs")
 

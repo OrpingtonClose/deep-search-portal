@@ -51,6 +51,7 @@ from .search_tools2 import (
     tool_scholar_search,
     tool_substack_search,
     tool_telegram_search,
+    tool_onion_fetch,
     tool_darknet_market_search,
     tool_facebook_search,
     tool_discord_search,
@@ -371,6 +372,8 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
             arguments.get("query", ""),
             arguments.get("platform", ""),
         )
+    elif tool_name == "onion_fetch":
+        return await tool_onion_fetch(arguments.get("url", ""))
     elif tool_name == "darknet_market_search":
         return await tool_darknet_market_search(arguments.get("query", ""))
     elif tool_name == "facebook_search":
@@ -431,7 +434,7 @@ _CACHEABLE_TOOLS = {
     "pubmed_search", "wikipedia_search", "archiveorg_search",
     "forum_search", "scholar_search", "substack_search",
     "youtube_search", "youtube_transcript", "youtube_video_metadata",
-    "twitter_search", "telegram_search", "darknet_market_search",
+    "twitter_search", "telegram_search", "onion_fetch", "darknet_market_search",
     "facebook_search", "discord_search", "signal_search",
     "whatsapp_search", "crunchbase_search", "trustpilot_search",
     "whois_lookup", "wayback_fetch",

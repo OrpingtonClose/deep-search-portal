@@ -924,6 +924,35 @@ NATIVE_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "onion_fetch",
+            "description": (
+                "Fetch a .onion page or any webpage through the Tor network. "
+                "Routes through a local Tor SOCKS proxy for anonymous access. "
+                "Use this for: (1) accessing .onion darknet sites directly, "
+                "(2) accessing clearnet sites that block datacenter IPs, "
+                "(3) accessing geo-restricted content. Tor connections are "
+                "slow (10-30s) — use sparingly and only when other fetch "
+                "methods fail or when .onion access is needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": (
+                            "The URL to fetch. Can be a .onion address "
+                            "(e.g. http://example.onion/path) or a regular "
+                            "clearnet URL (e.g. https://blocked-site.com)"
+                        ),
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "grok_deep_search",
             "description": (
                 "Perform a deep web + X/Twitter search using Grok 4.20's built-in "

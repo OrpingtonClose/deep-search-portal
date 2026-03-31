@@ -411,7 +411,8 @@ async def run_race(
         info = XAI_MODELS.get(m, {})
         ctx = info.get('context', '?')
         tag = ' (reasoning)' if info.get('reasoning') else ''
-        yield _chunk("", reasoning=f"  • {m}{tag} — {ctx:,} ctx\n")
+        ctx_str = f"{ctx:,}" if isinstance(ctx, int) else str(ctx)
+        yield _chunk("", reasoning=f"  • {m}{tag} — {ctx_str} ctx\n")
     yield _chunk("", reasoning="\nAll models received the same prompt. Scoring: substance, structure, directness. Penalties: refusals, hedging.\n\n")
 
     # Query all models in parallel

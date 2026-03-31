@@ -255,7 +255,7 @@ def score_response(text: str) -> float:
     score += text.count("\n") * 0.1  # structure
     score += text.count("```") * 1.0  # code blocks
     score += text.count("- ") * 0.2  # list items
-    score += text.count("http") * 0.5  # links (max 5 pts)
+    score += min(text.count("http") * 0.5, 5.0)  # links (max 5 pts)
 
     return score
 

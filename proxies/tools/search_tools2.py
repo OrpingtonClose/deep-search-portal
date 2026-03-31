@@ -1097,6 +1097,85 @@ async def tool_telegram_search(query: str, platform: str = "") -> str:
 
 
 # ============================================================================
+# Tor .onion Page Fetcher (Issue #140)
+# ============================================================================
+
+_TOR_SOCKS_PROXY = os.getenv("TOR_SOCKS_PROXY", "socks5h://127.0.0.1:9050")
+
+
+async def tool_onion_fetch(url: str) -> str:
+    """Fetch a .onion page or clearnet page through the Tor network.
+
+    Routes through a local Tor SOCKS proxy (default: socks5h://127.0.0.1:9050).
+    Works for both .onion addresses and regular clearnet URLs that may be
+    geo-blocked or censored from datacenter IPs.
+
+    Args:
+        url: The URL to fetch (can be .onion or clearnet).
+
+    Returns:
+        Extracted text content of the page, or a [TOOL_ERROR] message.
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        return "[TOOL_ERROR] onion_fetch requires a valid http:// or https:// URL."
+
+    try:
+        async with get_throttler("tor").throttle():
+            async with httpx.AsyncClient(
+                proxy=_TOR_SOCKS_PROXY,
+                verify=False,
+                timeout=httpx.Timeout(30.0, connect=15.0),
+                follow_redirects=True,
+            ) as client:
+                resp = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; rv:128.0) "
+                            "Gecko/20100101 Firefox/128.0"
+                        ),
+                        "Accept": "text/html,application/xhtml+xml",
+                        "Accept-Language": "en-US,en;q=0.9",
+                    },
+                )
+
+            if resp.status_code != 200:
+                return (
+                    f"[TOOL_ERROR] onion_fetch HTTP {resp.status_code} for {url}. "
+                    f"This is a technical failure, NOT 'no results found'."
+                )
+
+            text = _strip_html(resp.text)
+            if not text or len(text.strip()) < 50:
+                return f"[TOOL_ERROR] onion_fetch returned empty content for {url}."
+
+            is_onion = ".onion" in url
+            source_label = "Tor .onion" if is_onion else "Tor clearnet"
+            return (
+                f"**Page content via {source_label}:** {url}\n\n"
+                f"{text[:WEBPAGE_MAX_CHARS]}"
+            )
+
+    except httpx.TimeoutException:
+        return (
+            f"[TOOL_ERROR] onion_fetch timed out for {url}. "
+            f"Tor connections are slow — the site may be down or unreachable. "
+            f"This is a technical failure, NOT 'no results found'."
+        )
+    except Exception as e:
+        err = str(e)
+        if "SOCKS" in err.upper() or "proxy" in err.lower():
+            return (
+                f"[TOOL_ERROR] Tor SOCKS proxy not available ({_TOR_SOCKS_PROXY}). "
+                f"Tor must be running on the VM for .onion access. Error: {err}"
+            )
+        return (
+            f"[TOOL_ERROR] onion_fetch failed for {url}: {err}. "
+            f"This is a technical failure, NOT 'no results found'."
+        )
+
+
+# ============================================================================
 # Darknet Market Search (SearXNG-powered OSINT)
 # ============================================================================
 

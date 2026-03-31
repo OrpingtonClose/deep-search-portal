@@ -1098,12 +1098,26 @@ async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
 
     query_entities = [w for w in user_query.split() if len(w) > 3][:5]
 
-    prior_conditions, graph_neighbors = await asyncio.gather(
-        _retrieve_related(user_query, MAX_PRIOR_CONDITIONS, req_id=req_id),
-        _retrieve_graph_neighbors(query_entities, max_hops=2, limit=10, req_id=req_id),
-    )
+    neo4j_error = False
+    try:
+        prior_conditions, graph_neighbors = await asyncio.gather(
+            _retrieve_related(user_query, MAX_PRIOR_CONDITIONS, req_id=req_id),
+            _retrieve_graph_neighbors(query_entities, max_hops=2, limit=10, req_id=req_id),
+        )
+    except Exception as e:
+        log.warning(f"[{req_id}] Neo4j retrieval failed: {e}")
+        prior_conditions = []
+        graph_neighbors = []
+        neo4j_error = True
 
-    if prior_conditions:
+    if neo4j_error:
+        progress.append(
+            "\u26a0 **Neo4j knowledge graph is unavailable.** "
+            "Prior research findings cannot be retrieved. "
+            "Research will proceed without historical context. "
+            "Knowledge persistence will also be skipped this session.\n"
+        )
+    elif prior_conditions:
         progress.append(f"Found {len(prior_conditions)} relevant prior findings:\n")
         for pc in prior_conditions[:5]:
             progress.append(f"  - {pc['fact'][:100]}...\n")
@@ -1112,11 +1126,11 @@ async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
     else:
         progress.append("No prior knowledge found via text search.\n")
 
-    if graph_neighbors:
+    if not neo4j_error and graph_neighbors:
         progress.append(f"Found {len(graph_neighbors)} related findings via knowledge graph:\n")
         for gn in graph_neighbors[:3]:
             progress.append(f"  - {gn['fact'][:80]}... (via entity: {gn.get('via_entity', '?')})\n")
-    else:
+    elif not neo4j_error:
         progress.append("No graph neighbors found.\n")
 
     # --- Inject conversation context facts from prior turns ---

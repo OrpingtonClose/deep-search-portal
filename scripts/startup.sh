@@ -25,12 +25,22 @@ XAI_API_KEY="${XAI_API_KEY:-}"
 OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
 SEARCH_BACKEND="${SEARCH_BACKEND:-legacy}"
 
-# Warn if new API keys are missing (services will fail to authenticate)
+# Warn if API keys are missing (services will fail to authenticate)
 if [ -z "$XAI_API_KEY" ]; then
     echo "WARNING: XAI_API_KEY not set — deep-research, persistent-research, and miroflow-sprint will fail"
 fi
 if [ -z "$VENICE_API_KEY" ]; then
     echo "WARNING: VENICE_API_KEY not set — swarm proxy will fail"
+fi
+
+# Data-source credential warnings (Issue #139)
+BRIGHT_DATA_API_KEY="${BRIGHT_DATA_API_KEY:-}"
+APIFY_API_TOKEN="${APIFY_API_TOKEN:-}"
+if [ -z "$BRIGHT_DATA_API_KEY" ]; then
+    echo "WARNING: BRIGHT_DATA_API_KEY not set — Reddit, Twitter, and commercial SERP search will be unavailable"
+fi
+if [ -z "$APIFY_API_TOKEN" ]; then
+    echo "WARNING: APIFY_API_TOKEN not set — Reddit/Instagram/TikTok/LinkedIn Apify fallback will be unavailable"
 fi
 # --- Helper: wait for an HTTP endpoint to become healthy ---
 wait_for_health() {
@@ -61,6 +71,21 @@ cleanup() {
     echo "All services stopped."
 }
 trap cleanup SIGTERM SIGINT
+
+# --- Neo4j Health Check (Issue #141) ---
+# Neo4j may already be running (started by knowledge-engine or manually).
+# We check its health and warn loudly if it's not available.
+NEO4J_BOLT_PORT="${NEO4J_BOLT_PORT:-7687}"
+NEO4J_HTTP_PORT="${NEO4J_HTTP_PORT:-7474}"
+if curl -sf "http://localhost:${NEO4J_HTTP_PORT}" > /dev/null 2>&1; then
+    echo "Neo4j is healthy (HTTP port ${NEO4J_HTTP_PORT})"
+else
+    echo "WARNING: Neo4j is NOT running on port ${NEO4J_HTTP_PORT}."
+    echo "  → Prior knowledge retrieval will return empty"
+    echo "  → Condition persistence will fail silently"
+    echo "  → Cross-session knowledge accumulation is disabled"
+    echo "  → Start Neo4j manually or set NEO4J_DISABLED=true to suppress this warning"
+fi
 
 # --- SearXNG ---
 if ! pgrep -f "searx.webapp" > /dev/null; then

@@ -90,7 +90,7 @@ fi
 wait_for_health "http://localhost:${NEO4J_HTTP_PORT}" "Neo4j" 30 || true
 
 # --- Knowledge Engine (Neo4j API layer — MUST start before proxies) ---
-KE_PORT="${KE_PORT:-9400}"
+KE_PORT="${KE_PORT:-9850}"  # Note: 9400 is taken by MiroFlow Sprint
 if ! pgrep -f "knowledge_engine.main" > /dev/null; then
     REPO_DIR="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)}"
     if [ -d "$REPO_DIR/services/knowledge-engine" ]; then

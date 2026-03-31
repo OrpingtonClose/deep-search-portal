@@ -287,7 +287,7 @@ endpoints:
   custom:
     - name: "Mistral Thinking"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9100/v1"
+      baseURL: "http://localhost:9100/v1"
       models:
         default:
           - "mistral-large-thinking"
@@ -304,7 +304,7 @@ endpoints:
 
     - name: "Persistent MiroFlow"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9300/v1"
+      baseURL: "http://localhost:9300/v1"
       models:
         default:
           - "persistent-miroflow"
@@ -321,7 +321,7 @@ endpoints:
 
     - name: "MiroFlow Sprint"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9400/v1"
+      baseURL: "http://localhost:9400/v1"
       models:
         default:
           - "miroflow-sprint"
@@ -338,7 +338,7 @@ endpoints:
 
     - name: "Deep Research"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9200/v1"
+      baseURL: "http://localhost:9200/v1"
       models:
         default:
           - "miroflow"
@@ -355,7 +355,7 @@ endpoints:
 
     - name: "Swarm Deep Search"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9500/v1"
+      baseURL: "http://localhost:9500/v1"
       models:
         default:
           - "swarm-miroflow"
@@ -372,7 +372,7 @@ endpoints:
 
     - name: "G0DM0D3"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9600/v1"
+      baseURL: "http://localhost:9600/v1"
       models:
         default:
           - "godmode-classic"
@@ -396,7 +396,7 @@ endpoints:
 
     - name: "xAI Native"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9700/v1"
+      baseURL: "http://localhost:9700/v1"
       models:
         default:
           - "xai-grok-4.20-0309-reasoning"

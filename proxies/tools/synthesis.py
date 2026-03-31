@@ -38,6 +38,7 @@ from .config import (
     UPSTREAM_MODEL,
     VERITAS_MIN_CONDITIONS,
     VERITAS_VERIFY_ENABLED,
+    WIKI_AGENT_ENABLED,
     _STREAM_DONE,
     _curated_queues,
     _live_collectors,
@@ -2445,7 +2446,7 @@ async def _pipeline_producer(
         # --- Emit final knowledge wiki via agentic builder ---
         all_conditions = final_state.get("all_conditions", [])
         user_query = final_state.get("user_query", "")
-        if all_conditions and user_query:
+        if WIKI_AGENT_ENABLED and all_conditions and user_query:
             try:
                 from knowledge_wiki import (
                     format_conditions_for_agent,
@@ -2831,13 +2832,15 @@ async def run_persistent_research(
         )
     )
 
-    # Start the agentic wiki builder background task
-    wiki_agent_task = asyncio.create_task(
-        _wiki_agent_loop(
-            output_queue, collector, chunk, req_id,
-            user_query=user_query,
+    # Start the agentic wiki builder background task (opt-in via env var)
+    wiki_agent_task: Optional[asyncio.Task] = None
+    if WIKI_AGENT_ENABLED:
+        wiki_agent_task = asyncio.create_task(
+            _wiki_agent_loop(
+                output_queue, collector, chunk, req_id,
+                user_query=user_query,
+            )
         )
-    )
 
     try:
         # Consume from the output queue and yield to the SSE response
@@ -2862,8 +2865,11 @@ async def run_persistent_research(
     finally:
         # Stop the heartbeat and wiki agent
         heartbeat_task.cancel()
-        wiki_agent_task.cancel()
-        for bg_task in (heartbeat_task, wiki_agent_task):
+        bg_tasks = [heartbeat_task]
+        if wiki_agent_task is not None:
+            wiki_agent_task.cancel()
+            bg_tasks.append(wiki_agent_task)
+        for bg_task in bg_tasks:
             try:
                 await bg_task
             except asyncio.CancelledError:

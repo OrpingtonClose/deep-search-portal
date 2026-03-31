@@ -176,6 +176,9 @@ COMMERCIAL_SEARCH_ENABLED = os.getenv("COMMERCIAL_SEARCH_ENABLED", "true").lower
 BRIGHT_DATA_SERP_ZONE = os.getenv("BRIGHT_DATA_SERP_ZONE", "mcp_unlocker")
 MODERATION_MODEL = os.getenv("MODERATION_MODEL", "grok-3-fast")
 
+# Wiki agent: opt-in incremental knowledge-wiki builder
+WIKI_AGENT_ENABLED = os.getenv("WIKI_AGENT_ENABLED", "false").lower() in ("1", "true", "yes")
+
 log.info(
     f"Config: synthesis_model={UPSTREAM_MODEL}, subagent_model={SUBAGENT_MODEL}, "
     f"upstream={UPSTREAM_BASE}, searxng={SEARXNG_URL}, port={LISTEN_PORT}, "

@@ -589,12 +589,9 @@ async def chat_completions(request: Request):
             )
 
         # Determine which model/mode to use
-        # Strip "xai-" prefix if present (LibreChat adds it from model spec)
         model = model_raw
-        if model.startswith("xai-"):
-            model = model[4:]
 
-        # Check for race tiers
+        # Check for race tiers BEFORE stripping prefix (keys are "xai-race-*")
         if model in RACE_TIERS:
             log.info(f"[{req_id}] Race mode: {model}")
 
@@ -611,16 +608,24 @@ async def chat_completions(request: Request):
                 headers={"X-Request-Id": req_id},
             )
 
+        # Strip "xai-" prefix for individual model lookup (LibreChat adds it from model spec)
+        if model.startswith("xai-"):
+            model = model[4:]
+
         # Check for individual xAI model
         if model in XAI_MODELS:
             model_info = XAI_MODELS[model]
 
             # Image generation
             if model_info.get("type") == "image":
-                return await handle_image_generation(model, body, req_id)
+                try:
+                    return await handle_image_generation(model, body, req_id)
+                finally:
+                    tracker.finish(req_id)
 
             # Video generation
             if model_info.get("type") == "video":
+                tracker.finish(req_id)
                 return JSONResponse(
                     {"error": "Video generation is not yet supported via chat completions. Use the /v1/videos/generations endpoint."},
                     status_code=501,

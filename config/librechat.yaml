@@ -90,7 +90,7 @@ modelSpecs:
       group: "Chooser"
       preset:
         endpoint: "Tier Chooser"
-        model: "tier-openai/gpt-5.4-chat"
+        model: "tier-openai/gpt-5.4"
 
     - name: "tier-claude-opus"
       label: "Full Throttle — Claude Opus 4.6"
@@ -110,11 +110,11 @@ modelSpecs:
 
     - name: "tier-deepseek-r1"
       label: "Full Throttle — DeepSeek R1"
-      description: "DeepSeek R1. Math and coding standout with chain-of-thought reasoning. Direct to DeepSeek API."
+      description: "DeepSeek Reasoner (R1). Math and coding standout with chain-of-thought reasoning. Direct to DeepSeek API."
       group: "Chooser"
       preset:
         endpoint: "Tier Chooser"
-        model: "tier-deepseek/deepseek-r1"
+        model: "tier-deepseek/deepseek-reasoner"
 
     - name: "tier-gpt5"
       label: "Full Throttle — GPT-5"

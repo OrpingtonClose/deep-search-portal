@@ -604,16 +604,18 @@ async def chat_completions(request: Request):
 
             async def utility_gen():
                 try:
-                    async for delta in stream_xai(
+                    async for content, _reasoning in stream_xai(
                         "grok-3-fast", messages,
                         temperature=0.3, max_tokens=256, req_id=req_id,
                     ):
+                        if not content:
+                            continue
                         chunk_data = {
                             "id": f"chatcmpl-util-{uuid.uuid4().hex[:8]}",
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
                             "model": model_raw,
-                            "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                            "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
                         }
                         yield f"data: {json.dumps(chunk_data)}\n\n"
                     yield f"data: {json.dumps({'id': 'done', 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model_raw, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"

@@ -2265,7 +2265,7 @@ async def _pipeline_producer(
         wiki_html = final_state.get("wiki_html", "")
         if wiki_html:
             wiki_title = final_state.get("user_query", "Research")[:60]
-            safe_title = wiki_title.replace('"', '&quot;').replace('}', '').replace('{', '')
+            safe_title = wiki_title.replace('\n', ' ').replace('\r', ' ').replace('"', "'").replace('}', '').replace('{', '').strip()
             artifact_block = (
                 f"\n\n:::artifact{{identifier=\"knowledge-wiki-{req_id[:8]}\" "
                 f"type=\"text/html\" "

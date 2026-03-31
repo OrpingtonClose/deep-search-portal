@@ -743,19 +743,19 @@ Read the chunks carefully and produce THREE outputs:
 
 2. CLAIM LEDGER (Layer 2): A JSON array of structured claims extracted \
 from the text. Each claim:
-   {{"text": "atomic claim", "confidence": "high|medium|low", \
-"entities": ["Entity A"], "relationships": [{{"source": "A", \
-"target": "B", "type": "causes", "description": "..."}}], \
-"provenance_chunk_index": 0}}
+   {"text": "atomic claim", "confidence": "high|medium|low", \
+"entities": ["Entity A"], "relationships": [{"source": "A", \
+"target": "B", "type": "causes", "description": "..."}], \
+"provenance_chunk_index": 0}
    Extract ALL entities, relationships, and claims. Be exhaustive.
 
 3. INSIGHTS (Layer 3): Higher-order observations -- patterns you notice, \
 implications, hypotheses, contradictions, open questions. These are your \
 most valuable output.
-   {{"text": "insight text", "insight_type": \
-"pattern|implication|hypothesis|contradiction|open_question"}}
+   {"text": "insight text", "insight_type": \
+"pattern|implication|hypothesis|contradiction|open_question"}
 
-Output as JSON: {{"understanding": "...", "claims": [...], "insights": [...]}}
+Output as JSON: {"understanding": "...", "claims": [...], "insights": [...]}
 
 TEXT CHUNKS:
 {chunk_texts}"""
@@ -784,9 +784,9 @@ of copying everything.
 6. Your claim ledger should GROW, not shrink. New claims from peers get \
 added with provenance.
 
-Output JSON: {{"understanding": "...", "claims": [...], "insights": [...], \
-"pointers": [{{"topic": "...", "target_worker_id": "...", "strength": 0.8, \
-"excerpt": "..."}}]}}"""
+Output JSON: {"understanding": "...", "claims": [...], "insights": [...], \
+"pointers": [{"topic": "...", "target_worker_id": "...", "strength": 0.8, \
+"excerpt": "..."}]}"""
 
 _REFLECTION_PROMPT = """\
 You are a hive worker in a perpetual mining cycle. Re-examine your knowledge.
@@ -814,8 +814,8 @@ now know from gossip.
 4. Formulate 1 hypothesis that would require focused re-reading.
 5. Update your claim ledger with anything you missed on first pass.
 
-Output JSON: {{"new_insights": [...], "new_claims": [...], \
-"updated_understanding": "...", "focused_questions": ["..."]}}"""
+Output JSON: {"new_insights": [...], "new_claims": [...], \
+"updated_understanding": "...", "focused_questions": ["..."]}"""
 
 _QUEEN_SYNTHESIS_PROMPT = """\
 You are the queen synthesizer of a hive swarm. Workers have been processing \
@@ -851,8 +851,8 @@ Synthesize: What is the single most important thing the swarm now \
 understands that it didn't understand last cycle? This insight will be \
 injected into every worker's Layer 3.
 
-Output: {{"hive_insight": "...", "confidence": "high|medium|low", \
-"key_entities": [...]}}"""
+Output: {"hive_insight": "...", "confidence": "high|medium|low", \
+"key_entities": [...]}"""
 
 _QUERY_SYSTEM_PROMPT = """\
 You are a research analyst powered by a hive knowledge system. \
@@ -1750,9 +1750,9 @@ async def _handle_query(
     yield reasoning_sse(f"Found knowledge:\n{result_summary}\n\n")
 
     # Build synthesis prompt
-    system_prompt = _QUERY_SYSTEM_PROMPT.format(
-        hive_status=status_preamble,
-        knowledge_results=knowledge_results,
+    system_prompt = (_QUERY_SYSTEM_PROMPT
+        .replace("{hive_status}", status_preamble)
+        .replace("{knowledge_results}", knowledge_results)
     )
 
     synthesis_messages = [

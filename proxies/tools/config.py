@@ -205,5 +205,10 @@ _live_collectors: dict = {}
 # Per-request curated event queues for tree reactor -> heartbeat.
 _curated_queues: dict[str, asyncio.Queue] = {}
 
+# Per-request SSE output queues + chunk fns, keyed by req_id.
+# Used by tools (e.g. create_knowledge_wiki) to emit artifacts
+# directly into the user-facing SSE stream.
+_output_queues: dict[str, tuple[asyncio.Queue, Any]] = {}
+
 # Per-request metrics collectors, keyed by req_id.
 _metrics_collectors: dict[str, MetricsCollector] = {}

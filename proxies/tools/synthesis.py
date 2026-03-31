@@ -43,6 +43,7 @@ from .config import (
     _curated_queues,
     _live_collectors,
     _metrics_collectors,
+    _output_queues,
     log,
     tracker,
 )
@@ -2752,6 +2753,9 @@ async def run_persistent_research(
     curated_queue: asyncio.Queue = asyncio.Queue()
     _curated_queues[req_id] = curated_queue
 
+    # Register output queue + chunk fn so tools can emit artifacts into SSE
+    _output_queues[req_id] = (output_queue, chunk)
+
     # Create metrics collector for this session
     metrics_collector = MetricsCollector(session_id=req_id, query=user_query)
     _metrics_collectors[req_id] = metrics_collector
@@ -2890,9 +2894,10 @@ async def run_persistent_research(
             except Exception:
                 pass
 
-        # Clean up the live collector, curated queue, metrics collector, and config
+        # Clean up the live collector, curated queue, output queue, metrics collector, and config
         _live_collectors.pop(req_id, None)
         _curated_queues.pop(req_id, None)
+        _output_queues.pop(req_id, None)
         _metrics_collectors.pop(req_id, None)
         _request_configs.pop(req_id, None)
         langfuse_config.unregister_trace(req_id)

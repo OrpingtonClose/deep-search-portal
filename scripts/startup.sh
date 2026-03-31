@@ -87,10 +87,10 @@ if ! pgrep -f "org.neo4j.server" > /dev/null; then
         echo "  → Cross-session knowledge accumulation is disabled"
     fi
 fi
-wait_for_health "http://localhost:${NEO4J_HTTP_PORT}" "Neo4j" 30
+wait_for_health "http://localhost:${NEO4J_HTTP_PORT}" "Neo4j" 30 || true
 
 # --- Knowledge Engine (Neo4j API layer — MUST start before proxies) ---
-KE_PORT="${KE_PORT:-9800}"
+KE_PORT="${KE_PORT:-9400}"
 if ! pgrep -f "knowledge_engine.main" > /dev/null; then
     REPO_DIR="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)}"
     if [ -d "$REPO_DIR/services/knowledge-engine" ]; then
@@ -104,7 +104,7 @@ uvicorn.run(app, host='0.0.0.0', port=${KE_PORT})
         echo "WARNING: Knowledge Engine not found at $REPO_DIR/services/knowledge-engine"
     fi
 fi
-wait_for_health "http://localhost:${KE_PORT}/health" "Knowledge Engine" 30
+wait_for_health "http://localhost:${KE_PORT}/health" "Knowledge Engine" 30 || true
 
 # --- SearXNG ---
 if ! pgrep -f "searx.webapp" > /dev/null; then

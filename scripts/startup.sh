@@ -51,7 +51,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy search-dispatcher mcp-searxng litellm cftunnel searxng; do
+    for session in xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy search-dispatcher mcp-searxng litellm cftunnel searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -160,5 +160,12 @@ if ! pgrep -f "godmode_proxy.py" > /dev/null; then
     echo "G0DM0D3 Proxy starting..."
 fi
 wait_for_health "http://localhost:9600/health" "G0DM0D3 Proxy" 15
+
+# --- xAI Native Proxy (direct xAI API access + race modes) ---
+if ! pgrep -f "xai_native_proxy.py" > /dev/null; then
+    screen -dmS xai-native-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && XAI_PROXY_PORT=9700 python3 xai_native_proxy.py 2>&1 | tee /var/log/xai_native_proxy.log"
+    echo "xAI Native Proxy starting..."
+fi
+wait_for_health "http://localhost:9700/health" "xAI Native Proxy" 15
 
 echo "All services started. Portal: ${DOMAIN_CLIENT:-https://deep-search.uk}"

@@ -1395,17 +1395,24 @@ async def pdr_node_entities(state: PersistentResearchState) -> dict:
 
         if entities or relationships:
             _log_entities_jsonl(req_id, entities, relationships)
-            ent_stored, rel_stored, err = await _store_entities_neo4j(req_id, entities, relationships)
-            if err:
+            neo4j_down = state.get("neo4j_unavailable", False)
+            if neo4j_down:
                 progress.append(
                     f"Extracted {len(entities)} entities, {len(relationships)} relationships. "
-                    f"⚠ Neo4j entity storage failed ({err}); logged to JSONL only.\n"
+                    f"⚠ Neo4j unavailable; logged to JSONL only.\n"
                 )
             else:
-                progress.append(
-                    f"Extracted {len(entities)} entities, {len(relationships)} relationships. "
-                    f"Stored {ent_stored} new entities, {rel_stored} new edges.\n"
-                )
+                ent_stored, rel_stored, err = await _store_entities_neo4j(req_id, entities, relationships)
+                if err:
+                    progress.append(
+                        f"Extracted {len(entities)} entities, {len(relationships)} relationships. "
+                        f"⚠ Neo4j entity storage failed ({err}); logged to JSONL only.\n"
+                    )
+                else:
+                    progress.append(
+                        f"Extracted {len(entities)} entities, {len(relationships)} relationships. "
+                        f"Stored {ent_stored} new entities, {rel_stored} new edges.\n"
+                    )
         else:
             progress.append("No entities extracted.\n")
 

@@ -202,7 +202,7 @@ def _graph_search(
             OPTIONAL MATCH (c)-[r]-(neighbor:Concept)
             WHERE neighbor.namespace = c.namespace
 
-            With c, score, collect(DISTINCT {{
+            WITH c, score, collect(DISTINCT {{
                 name: neighbor.name,
                 id: neighbor.id,
                 rel_type: type(r),

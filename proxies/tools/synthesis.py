@@ -998,6 +998,8 @@ class PersistentResearchState(TypedDict):
     conversation_turn: int
     prior_conversation_facts: list[str]
     prior_conversation_summary: str
+    # --- Infrastructure health flags ---
+    neo4j_unavailable: bool
 
 
 async def pdr_node_comprehend(state: PersistentResearchState) -> dict:
@@ -1117,6 +1119,7 @@ async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
             "Research will proceed without historical context. "
             "Knowledge persistence will also be skipped this session.\n"
         )
+        # Propagate the flag so pdr_node_persist can skip Neo4j writes
     elif prior_conditions:
         progress.append(f"Found {len(prior_conditions)} relevant prior findings:\n")
         for pc in prior_conditions[:5]:
@@ -1173,6 +1176,7 @@ async def pdr_node_retrieve(state: PersistentResearchState) -> dict:
         "graph_neighbors": graph_neighbors,
         "progress_log": progress,
         "phase": "tree_research",
+        "neo4j_unavailable": neo4j_error,
     }
 
 
@@ -1614,6 +1618,7 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
     new_conditions = [c for c in all_conditions if hashlib.sha256(c.fact.encode()).hexdigest()[:16] not in already_persisted]
     progress: list[str] = []
     err = None  # initialise before the conditional block so it's always defined
+    neo4j_down = state.get("neo4j_unavailable", False)
 
     if new_conditions:
         progress.append("\n**[Phase 7: Persisting Knowledge]**\n")
@@ -1623,11 +1628,14 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
                 f"(skipping {len(already_persisted)} already-persisted)...\n"
             )
         _log_conditions_jsonl(req_id, user_query, new_conditions)
-        stored, err = await _store_conditions_neo4j(req_id, user_query, new_conditions)
-        if err:
-            progress.append(f"⚠ Neo4j storage failed ({err}); {len(new_conditions)} conditions saved to JSONL only.\n")
+        if neo4j_down:
+            progress.append(f"⚠ Neo4j unavailable (detected at startup); {len(new_conditions)} conditions saved to JSONL only.\n")
         else:
-            progress.append(f"Stored {stored} conditions to persistent knowledge base.\n")
+            stored, err = await _store_conditions_neo4j(req_id, user_query, new_conditions)
+            if err:
+                progress.append(f"⚠ Neo4j storage failed ({err}); {len(new_conditions)} conditions saved to JSONL only.\n")
+            else:
+                progress.append(f"Stored {stored} conditions to persistent knowledge base.\n")
 
     mc = _metrics_collectors.get(req_id)
     if mc:
@@ -1642,7 +1650,8 @@ async def pdr_node_persist(state: PersistentResearchState) -> dict:
     log_stage_output(req_id, "persist", {
         "new_conditions_persisted": len(new_conditions),
         "total_persisted_hashes": len(updated_hashes),
-        "neo4j_error": err if new_conditions else None,
+        "neo4j_error": err if new_conditions and not neo4j_down else None,
+        "neo4j_skipped": neo4j_down,
     })
 
     return {
@@ -2447,6 +2456,8 @@ async def run_persistent_research(
         "conversation_turn": conversation_turn,
         "prior_conversation_facts": prior_conv_facts,
         "prior_conversation_summary": prior_conv_summary,
+        # Infrastructure health (set by pdr_node_retrieve if Neo4j is down)
+        "neo4j_unavailable": False,
     }
 
     # Create the shared output queue, live findings collector, and curated queue

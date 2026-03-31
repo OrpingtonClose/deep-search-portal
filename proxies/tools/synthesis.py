@@ -484,8 +484,6 @@ async def _wiki_agent_loop(
                 "[%s] Wiki agent: %d conditions (was %d), invoking LLM",
                 req_id, current_count, last_condition_count,
             )
-            last_condition_count = current_count
-
             try:
                 from knowledge_wiki import (
                     format_conditions_for_agent,
@@ -585,6 +583,10 @@ async def _wiki_agent_loop(
                     "[%s] Wiki agent: emitted %d-char article (%d conditions, %d angles)",
                     req_id, len(wiki_html), current_count, len(by_angle),
                 )
+
+                # Only update after successful emission so failures
+                # are retried on the next interval
+                last_condition_count = current_count
 
             except Exception as wiki_err:
                 log.warning(

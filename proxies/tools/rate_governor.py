@@ -84,6 +84,8 @@ _SELF_THROTTLED_TOOLS: set[str] = {
     "chan_4plebs_search", "chan_b4k_search", "chan_warosu_search",
     # Wayback fetch throttles via get_throttler("wayback")
     "wayback_fetch",
+    # Onion fetch throttles via get_throttler("tor") internally
+    "onion_fetch",
     # Grok deep search throttles via get_throttler("xai") internally
     "grok_deep_search",
     # Search gateway delegates to sub-tools that all self-throttle
@@ -140,6 +142,8 @@ TOOL_PROVIDER_MAP: dict[str, str] = {
     "search_gateway": "gateway",
     # Web fetch
     "fetch_webpage": "web_fetch",
+    # Tor / onion fetch
+    "onion_fetch": "tor",
     # Knowledge engine (local, but still throttled)
     "knowledge_graph_search": "knowledge_engine",
     "knowledge_discover": "knowledge_engine",

@@ -140,7 +140,7 @@ def _build_toc(
     for idx, angle in enumerate(sorted(by_angle.keys()), 1):
         slug = _slug(angle)
         items.append(
-            f'<li><a href="#section-{slug}">{idx}. {_esc(angle)}</a></li>'
+            f'<li><a href="#section-{slug}">{_esc(angle)}</a></li>'
         )
     items.append('<li><a href="#sources">Sources</a></li>')
     return (

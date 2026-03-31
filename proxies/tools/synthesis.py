@@ -1977,7 +1977,7 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
 
     # --- Generate knowledge wiki article ---
     wiki_html = ""
-    if not targeted and all_conditions:
+    if not targeted and all_conditions and not synthesis_failed:
         try:
             from knowledge_wiki import generate_wiki_article
             wiki_html = generate_wiki_article(
@@ -2265,7 +2265,7 @@ async def _pipeline_producer(
         wiki_html = final_state.get("wiki_html", "")
         if wiki_html:
             wiki_title = final_state.get("user_query", "Research")[:60]
-            safe_title = wiki_title.replace('\n', ' ').replace('\r', ' ').replace('"', "'").replace('}', '').replace('{', '').strip()
+            safe_title = wiki_title.replace('\\', '').replace('\n', ' ').replace('\r', ' ').replace('"', "'").replace('}', '').replace('{', '').strip()
             artifact_block = (
                 f"\n\n:::artifact{{identifier=\"knowledge-wiki-{req_id[:8]}\" "
                 f"type=\"text/html\" "

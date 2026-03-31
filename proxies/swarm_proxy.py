@@ -1,40 +1,46 @@
 #!/usr/bin/env python3
 """
-Swarm Deep Search Proxy for LibreChat.
+Ruflo Hive Deep Search Proxy for LibreChat.
 
-A fully self-contained swarm-based proxy that decomposes large corpora of text
-using an agentic swarm -- no external infrastructure required.  Background
-worker agents continuously process corpora -- chunking, extracting entities
-and relationships via the LLM, building an in-memory knowledge graph -- while
-queries are answered non-disruptively from whatever knowledge the swarm has
-built so far.
+A swarm-based proxy implementing the Ruflo Hive architecture -- each worker
+holds its own layered knowledge, knowledge propagates through multi-channel
+gossip, and the swarm perpetually mines the corpus for deeper insights.
 
 Key design principles:
-  * Sending a prompt does NOT disturb the swarm from what it is doing.
+  * Workers are long-lived and hold layered memory (L0-L3 + pointer map).
+  * Multi-channel gossip propagates claims, insights, and contradictions.
+  * Perpetual mining re-examines raw chunks with fresh eyes after gossip.
+  * Queries route to relevant workers via the pointer network.
+  * Sending a prompt does NOT disturb the hive from what it is doing.
   * The proxy is *sincere* about what is happening: it reports real
-    swarm state, processing progress, and knowledge coverage honestly.
+    hive state, processing progress, and knowledge coverage honestly.
   * Further large corpora are treated identically to the initial send --
     they are queued additively without resetting existing work.
-  * Zero external infrastructure -- everything runs within this process.
 
 Architecture:
   Browser -> LibreChat -> Swarm Proxy (port 9500)
                               |
               +---------------+---------------+
               |               |               |
-        Swarm Director   Query Handler   Status Reporter
+        Hive Director    Query Router    Status Reporter
+              |               |
+        HiveWorker Pool   Pointer Network
+         (layered memory)  (topic -> worker routing)
               |
-        Worker Pool (LLM-powered agents)
+        Multi-Channel Gossip
+         (A: understanding, B: claims,
+          C: insights, D: contradictions)
               |
-        In-Memory Knowledge Store
-         (chunks, entities, relationships, claims)
+        Perpetual Mining Loop
+         (reflection, re-reading, sub-swarms)
+              |
+        Rotating Queen + Hive Oracle
 """
 
 import asyncio
-import collections
 import json
-import math
 import os
+import random
 import re
 import time
 import uuid
@@ -89,10 +95,21 @@ CHUNK_OVERLAP = int(os.getenv("SWARM_CHUNK_OVERLAP", "200"))
 # Large document detection threshold (chars)
 LARGE_DOC_THRESHOLD = int(os.getenv("SWARM_LARGE_DOC_THRESHOLD", "5000"))
 
+# Hive configuration
+HIVE_GOSSIP_ROUNDS = int(os.getenv("SWARM_GOSSIP_ROUNDS", "2"))
+HIVE_MINING_INTERVAL = int(os.getenv("SWARM_MINING_INTERVAL", "120"))
+HIVE_MAX_MINING_CYCLES = int(os.getenv("SWARM_MAX_MINING_CYCLES", "10"))
+HIVE_MAX_PEERS_PER_GOSSIP = int(os.getenv("SWARM_MAX_PEERS_PER_GOSSIP", "5"))
+HIVE_CHUNKS_PER_WORKER = int(os.getenv("SWARM_CHUNKS_PER_WORKER", "4"))
+HIVE_SUBSWARM_THRESHOLD = int(os.getenv("SWARM_SUBSWARM_THRESHOLD", "5"))
+HIVE_ORACLE_INTERVAL = int(os.getenv("SWARM_ORACLE_INTERVAL", "3"))
+
 log.info(
     f"Config: synthesis_model={SYNTHESIS_MODEL}, worker_model={WORKER_MODEL}, "
     f"upstream={UPSTREAM_BASE}, port={LISTEN_PORT}, "
-    f"max_queries={MAX_CONCURRENT_QUERIES}, max_workers={MAX_SWARM_WORKERS}"
+    f"max_queries={MAX_CONCURRENT_QUERIES}, max_workers={MAX_SWARM_WORKERS}, "
+    f"gossip_rounds={HIVE_GOSSIP_ROUNDS}, mining_interval={HIVE_MINING_INTERVAL}s, "
+    f"max_mining_cycles={HIVE_MAX_MINING_CYCLES}"
 )
 
 # ---------------------------------------------------------------------------
@@ -105,280 +122,112 @@ worker_semaphore = asyncio.Semaphore(MAX_SWARM_WORKERS)
 
 
 # ---------------------------------------------------------------------------
-# In-memory Knowledge Store
+# Hive Data Models (4 layers + pointer map)
 # ---------------------------------------------------------------------------
 
 @dataclass
-class KnowledgeChunk:
-    """A text chunk from a decomposed corpus."""
-    id: str
-    corpus_id: str
-    corpus_title: str
-    text: str
-    chunk_index: int
-    total_chunks: int
-    word_freq: dict = field(default_factory=dict)
-
-
-@dataclass
-class Entity:
-    """An entity extracted from a chunk by the LLM."""
-    name: str
-    entity_type: str  # person, org, concept, location, event, etc.
-    description: str
-    corpus_id: str
-    chunk_id: str
-    mentions: int = 1
-
-
-@dataclass
-class Relationship:
-    """A relationship between two entities."""
-    source: str
-    target: str
-    relation_type: str
-    description: str
-    corpus_id: str
-    chunk_id: str
-
-
-@dataclass
-class Claim:
-    """An atomic claim / fact extracted from the corpus."""
+class ClaimEntry:
+    """A structured claim in a worker's Layer 2 ledger."""
     text: str
     confidence: str  # high, medium, low
-    source_chunk_id: str
-    corpus_id: str
     entities: list[str] = field(default_factory=list)
+    relationships: list[dict] = field(default_factory=list)
+    provenance_chunk_index: int = 0
+    corpus_id: str = ""
+    contradiction_flag: bool = False
+    contradiction_details: str = ""
+    version: int = 0
 
 
-class KnowledgeStore:
-    """Thread-safe in-memory knowledge store.
-
-    This is the swarm's brain -- all extracted knowledge lives here.
-    Workers write to it as they process chunks; query handlers read
-    from it without blocking.
-    """
-
-    def __init__(self) -> None:
-        self._lock = asyncio.Lock()
-        self._chunks: dict[str, KnowledgeChunk] = {}
-        self._entities: dict[str, Entity] = {}  # keyed by lowercase name
-        self._relationships: list[Relationship] = []
-        self._claims: list[Claim] = []
-
-    async def add_chunk(self, chunk: KnowledgeChunk) -> None:
-        async with self._lock:
-            self._chunks[chunk.id] = chunk
-
-    async def add_entity(self, entity: Entity) -> None:
-        async with self._lock:
-            key = entity.name.lower().strip()
-            if key in self._entities:
-                existing = self._entities[key]
-                existing.mentions += 1
-                if len(entity.description) > len(existing.description):
-                    existing.description = entity.description
-            else:
-                self._entities[key] = entity
-
-    async def add_relationship(self, rel: Relationship) -> None:
-        async with self._lock:
-            self._relationships.append(rel)
-
-    async def add_claim(self, claim: Claim) -> None:
-        async with self._lock:
-            self._claims.append(claim)
-
-    async def search(self, query: str, limit: int = 20) -> dict:
-        """Search knowledge store using TF-IDF-like scoring.
-
-        Returns matching chunks, entities, relationships, and claims
-        ranked by relevance to the query.
-        """
-        query_terms = _tokenize(query)
-        if not query_terms:
-            return {
-                "chunks": [], "entities": [],
-                "relationships": [], "claims": [],
-            }
-
-        async with self._lock:
-            # Score chunks by term overlap
-            chunk_scores: list[tuple[float, KnowledgeChunk]] = []
-            total_chunks = max(len(self._chunks), 1)
-            for chunk in self._chunks.values():
-                score = _score_text(
-                    query_terms, chunk.word_freq, total_chunks,
-                )
-                if score > 0:
-                    chunk_scores.append((score, chunk))
-            chunk_scores.sort(key=lambda x: x[0], reverse=True)
-
-            # Score entities by name and description match
-            entity_scores: list[tuple[float, Entity]] = []
-            for entity in self._entities.values():
-                name_score = _score_text_raw(
-                    query_terms, entity.name.lower(),
-                )
-                desc_score = (
-                    _score_text_raw(
-                        query_terms, entity.description.lower(),
-                    ) * 0.5
-                )
-                total = name_score + desc_score
-                if total > 0:
-                    entity_scores.append((total, entity))
-            entity_scores.sort(key=lambda x: x[0], reverse=True)
-
-            # Score claims
-            claim_scores: list[tuple[float, Claim]] = []
-            for claim in self._claims:
-                score = _score_text_raw(query_terms, claim.text.lower())
-                if score > 0:
-                    claim_scores.append((score, claim))
-            claim_scores.sort(key=lambda x: x[0], reverse=True)
-
-            # Gather relevant relationships (connected to top entities)
-            top_entity_names = {
-                e.name.lower() for _, e in entity_scores[:10]
-            }
-            relevant_rels = [
-                r for r in self._relationships
-                if r.source.lower() in top_entity_names
-                or r.target.lower() in top_entity_names
-            ]
-
-            return {
-                "chunks": [
-                    {
-                        "id": c.id,
-                        "corpus_title": c.corpus_title,
-                        "text": c.text[:1500],
-                        "score": round(s, 4),
-                        "chunk_index": c.chunk_index,
-                    }
-                    for s, c in chunk_scores[:limit]
-                ],
-                "entities": [
-                    {
-                        "name": e.name,
-                        "type": e.entity_type,
-                        "description": e.description,
-                        "mentions": e.mentions,
-                        "score": round(s, 4),
-                    }
-                    for s, e in entity_scores[:limit]
-                ],
-                "relationships": [
-                    {
-                        "source": r.source,
-                        "target": r.target,
-                        "type": r.relation_type,
-                        "description": r.description,
-                    }
-                    for r in relevant_rels[:limit]
-                ],
-                "claims": [
-                    {
-                        "text": c.text,
-                        "confidence": c.confidence,
-                        "entities": c.entities,
-                        "score": round(s, 4),
-                    }
-                    for s, c in claim_scores[:limit]
-                ],
-            }
-
-    async def stats(self) -> dict:
-        async with self._lock:
-            return {
-                "chunks": len(self._chunks),
-                "entities": len(self._entities),
-                "relationships": len(self._relationships),
-                "claims": len(self._claims),
-            }
+@dataclass
+class InsightEntry:
+    """A Layer 3 emergent insight."""
+    text: str
+    insight_type: str  # pattern, implication, hypothesis, contradiction, open_question
+    source_worker_id: str = ""
+    cycle_created: int = 0
+    replicated_to: list[str] = field(default_factory=list)
+    version: int = 0
 
 
-def _tokenize(text: str) -> list[str]:
-    """Split text into lowercase tokens, removing short/stop words."""
-    stop_words = {
-        "the", "a", "an", "is", "are", "was", "were", "be", "been",
-        "being", "have", "has", "had", "do", "does", "did", "will",
-        "would", "could", "should", "may", "might", "can", "shall",
-        "to", "of", "in", "for", "on", "with", "at", "by", "from",
-        "as", "into", "through", "during", "before", "after", "and",
-        "but", "or", "not", "no", "nor", "so", "yet", "both", "each",
-        "this", "that", "these", "those", "it", "its", "i", "me", "my",
-        "we", "our", "you", "your", "he", "she", "they", "them", "his",
-        "her", "their", "what", "which", "who", "whom", "how", "when",
-        "where", "why", "if", "then", "than", "more", "very", "just",
-        "about", "also", "some", "any", "all", "most", "other", "such",
-    }
-    words = re.findall(r"[a-z0-9]+", text.lower())
-    return [w for w in words if len(w) > 2 and w not in stop_words]
+@dataclass
+class Pointer:
+    """A soft reference to another worker's expertise."""
+    topic: str
+    target_worker_id: str
+    strength: float = 0.5
+    last_verified_cycle: int = 0
+    tags: list[str] = field(default_factory=list)
+    excerpt: str = ""
 
 
-def _build_word_freq(text: str) -> dict[str, int]:
-    """Build word frequency map for a text."""
-    freq: dict[str, int] = collections.Counter(_tokenize(text))
-    return dict(freq)
+@dataclass
+class HiveWorker:
+    """A long-lived swarm worker that holds its own layered knowledge."""
+    id: str
+    corpus_id: str
+    assigned_chunk_indices: list[int] = field(default_factory=list)
 
+    # Layer 0: Raw chunk anchor (private, never gossiped)
+    layer0_raw_chunks: list[str] = field(default_factory=list)
 
-def _score_text(
-    query_terms: list[str], word_freq: dict, total_docs: int,
-) -> float:
-    """TF-IDF-like scoring of a document against query terms."""
-    if not word_freq:
-        return 0.0
-    total_words = max(sum(word_freq.values()), 1)
-    score = 0.0
-    for term in query_terms:
-        tf = word_freq.get(term, 0) / total_words
-        if tf > 0:
-            score += tf * (1.0 + math.log(max(total_docs, 1)))
-    return score
+    # Layer 1: Rich local understanding (prose, versioned)
+    layer1_understanding: str = ""
+    layer1_version: int = 0
 
+    # Layer 2: Structured claim ledger
+    layer2_claims: list[ClaimEntry] = field(default_factory=list)
+    layer2_version: int = 0
 
-def _score_text_raw(query_terms: list[str], text: str) -> float:
-    """Simple term-overlap scoring against raw text."""
-    text_lower = text.lower()
-    score = 0.0
-    for term in query_terms:
-        if term in text_lower:
-            score += 1.0
-    return score
+    # Layer 3: Emergent insights & hypotheses
+    layer3_insights: list[InsightEntry] = field(default_factory=list)
+    layer3_version: int = 0
 
+    # Layer 2.5: Pointer map
+    pointers: list[Pointer] = field(default_factory=list)
 
-# Global knowledge store
-knowledge = KnowledgeStore()
+    # Metadata
+    status: str = "initializing"
+    current_task: str = ""
+    gossip_rounds_completed: int = 0
+    mining_cycles_completed: int = 0
+    started_at: float = 0.0
+    last_activity: float = 0.0
+    total_llm_calls: int = 0
 
 
 # ---------------------------------------------------------------------------
-# Data models for swarm state
+# Swarm state enums and corpus record
 # ---------------------------------------------------------------------------
 
 class CorpusStatus(str, Enum):
     """Processing status for an ingested corpus."""
     QUEUED = "queued"
     CHUNKING = "chunking"
-    EXTRACTING = "extracting"
+    SURVEYING = "surveying"
+    GOSSIPING = "gossiping"
+    INTERROGATING = "interrogating"
+    MINING = "mining"
     COMPLETED = "completed"
     FAILED = "failed"
 
 
 class WorkerStatus(str, Enum):
-    """Status for an individual swarm worker."""
+    """Status for an individual hive worker."""
     IDLE = "idle"
-    CHUNKING = "chunking"
-    EXTRACTING = "extracting"
+    SURVEYING = "surveying"
+    GOSSIPING = "gossiping"
+    MINING = "mining"
+    REFLECTING = "reflecting"
+    DEBATING = "debating"
+    QUERYING = "querying"
     DONE = "done"
     ERROR = "error"
 
 
 @dataclass
 class CorpusRecord:
-    """Tracks a single corpus through the swarm pipeline."""
+    """Tracks a single corpus through the hive pipeline."""
     id: str
     title: str
     source: str
@@ -386,42 +235,102 @@ class CorpusRecord:
     status: CorpusStatus = CorpusStatus.QUEUED
     total_chunks: int = 0
     chunks_processed: int = 0
-    entities_extracted: int = 0
-    relationships_extracted: int = 0
-    claims_extracted: int = 0
+    workers_assigned: int = 0
+    gossip_rounds_done: int = 0
+    mining_cycles_done: int = 0
+    total_claims: int = 0
+    total_insights: int = 0
     error: str = ""
     submitted_at: str = ""
     started_at: str = ""
     completed_at: str = ""
 
 
-@dataclass
-class SwarmWorkerInfo:
-    """Tracks what a single worker is currently doing."""
-    id: str
-    status: WorkerStatus = WorkerStatus.IDLE
-    corpus_id: str = ""
-    current_task: str = ""
-    started_at: float = 0.0
+# ---------------------------------------------------------------------------
+# HiveState -- the registry of living workers
+# ---------------------------------------------------------------------------
 
-
-class SwarmState:
-    """Global swarm state -- holds all corpora, workers, and knowledge stats.
-
-    This is the single source of truth for the swarm's current activity.
-    Query handlers read from this without blocking; corpus ingestion
-    tasks write to it as they progress.
-    """
+class HiveState:
+    """Global hive state -- the registry of living workers."""
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
+        self._workers: dict[str, HiveWorker] = {}
         self._corpora: dict[str, CorpusRecord] = {}
-        self._workers: dict[str, SwarmWorkerInfo] = {}
         self._total_queries_answered: int = 0
         self._started_at: float = time.monotonic()
+        self._mining_active: bool = True
+        self._current_queen_id: str = ""
+        self._hive_cycle: int = 0
+        self._global_insights: list[InsightEntry] = []
+
+    async def add_worker(self, worker: HiveWorker) -> None:
+        async with self._lock:
+            self._workers[worker.id] = worker
+
+    async def get_worker(self, worker_id: str) -> Optional[HiveWorker]:
+        async with self._lock:
+            return self._workers.get(worker_id)
+
+    async def get_all_workers(self) -> list[HiveWorker]:
+        async with self._lock:
+            return list(self._workers.values())
+
+    async def get_workers_for_corpus(self, corpus_id: str) -> list[HiveWorker]:
+        async with self._lock:
+            return [w for w in self._workers.values() if w.corpus_id == corpus_id]
+
+    async def get_workers_for_topic(self, query: str, limit: int = 8) -> list[HiveWorker]:
+        """Find workers most relevant to a query via pointer maps and keyword matching."""
+        query_lower = query.lower()
+        query_terms = set(re.findall(r"[a-z0-9]{3,}", query_lower))
+
+        async with self._lock:
+            scored: list[tuple[float, HiveWorker]] = []
+            for w in self._workers.values():
+                score = 0.0
+                # Score from pointers
+                for p in w.pointers:
+                    topic_lower = p.topic.lower()
+                    for term in query_terms:
+                        if term in topic_lower:
+                            score += p.strength * 2.0
+                # Score from Layer 2 claim entities
+                for claim in w.layer2_claims:
+                    for entity in claim.entities:
+                        for term in query_terms:
+                            if term in entity.lower():
+                                score += 1.0
+                    for term in query_terms:
+                        if term in claim.text.lower():
+                            score += 0.5
+                # Score from Layer 3 insights
+                for insight in w.layer3_insights:
+                    for term in query_terms:
+                        if term in insight.text.lower():
+                            score += 1.5
+                # Score from understanding
+                for term in query_terms:
+                    if term in w.layer1_understanding.lower():
+                        score += 0.3
+                if score > 0:
+                    scored.append((score, w))
+
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [w for _, w in scored[:limit]]
+
+    async def elect_queen(self) -> str:
+        """Elect a new queen from available workers (round-robin)."""
+        async with self._lock:
+            worker_ids = list(self._workers.keys())
+            if not worker_ids:
+                return ""
+            self._hive_cycle += 1
+            idx = self._hive_cycle % len(worker_ids)
+            self._current_queen_id = worker_ids[idx]
+            return self._current_queen_id
 
     async def add_corpus(self, record: CorpusRecord) -> None:
-        """Register a new corpus for tracking."""
         async with self._lock:
             self._corpora[record.id] = record
 
@@ -436,9 +345,11 @@ class SwarmState:
         status: Optional[CorpusStatus] = None,
         total_chunks: Optional[int] = None,
         chunks_processed: Optional[int] = None,
-        entities_extracted: Optional[int] = None,
-        relationships_extracted: Optional[int] = None,
-        claims_extracted: Optional[int] = None,
+        workers_assigned: Optional[int] = None,
+        gossip_rounds_done: Optional[int] = None,
+        mining_cycles_done: Optional[int] = None,
+        total_claims: Optional[int] = None,
+        total_insights: Optional[int] = None,
         error: Optional[str] = None,
         started_at: Optional[str] = None,
         completed_at: Optional[str] = None,
@@ -453,12 +364,16 @@ class SwarmState:
                 rec.total_chunks = total_chunks
             if chunks_processed is not None:
                 rec.chunks_processed = chunks_processed
-            if entities_extracted is not None:
-                rec.entities_extracted = entities_extracted
-            if relationships_extracted is not None:
-                rec.relationships_extracted = relationships_extracted
-            if claims_extracted is not None:
-                rec.claims_extracted = claims_extracted
+            if workers_assigned is not None:
+                rec.workers_assigned = workers_assigned
+            if gossip_rounds_done is not None:
+                rec.gossip_rounds_done = gossip_rounds_done
+            if mining_cycles_done is not None:
+                rec.mining_cycles_done = mining_cycles_done
+            if total_claims is not None:
+                rec.total_claims = total_claims
+            if total_insights is not None:
+                rec.total_insights = total_insights
             if error is not None:
                 rec.error = error
             if started_at is not None:
@@ -466,45 +381,53 @@ class SwarmState:
             if completed_at is not None:
                 rec.completed_at = completed_at
 
-    async def register_worker(self, worker_id: str) -> None:
-        async with self._lock:
-            self._workers[worker_id] = SwarmWorkerInfo(id=worker_id)
-
-    async def update_worker(
-        self,
-        worker_id: str,
-        *,
-        status: Optional[WorkerStatus] = None,
-        corpus_id: Optional[str] = None,
-        current_task: Optional[str] = None,
-        started_at: Optional[float] = None,
-    ) -> None:
-        async with self._lock:
-            w = self._workers.get(worker_id)
-            if w is None:
-                return
-            if status is not None:
-                w.status = status
-            if corpus_id is not None:
-                w.corpus_id = corpus_id
-            if current_task is not None:
-                w.current_task = current_task
-            if started_at is not None:
-                w.started_at = started_at
-
-    async def remove_worker(self, worker_id: str) -> None:
-        async with self._lock:
-            self._workers.pop(worker_id, None)
-
     async def increment_queries(self) -> None:
         async with self._lock:
             self._total_queries_answered += 1
 
-    async def get_status_snapshot(self) -> dict:
-        """Return a complete snapshot of swarm state for reporting."""
-        kstats = await knowledge.stats()
-
+    async def add_global_insight(self, insight: InsightEntry) -> None:
         async with self._lock:
+            self._global_insights.append(insight)
+
+    async def get_global_insights(self) -> list[InsightEntry]:
+        async with self._lock:
+            return list(self._global_insights)
+
+    async def is_mining_active(self) -> bool:
+        async with self._lock:
+            return self._mining_active
+
+    async def set_mining_active(self, active: bool) -> None:
+        async with self._lock:
+            self._mining_active = active
+
+    async def get_corpora_list(self) -> list[dict]:
+        async with self._lock:
+            return [
+                {
+                    "id": c.id,
+                    "title": c.title,
+                    "status": c.status.value,
+                    "total_chars": c.total_chars,
+                    "submitted_at": c.submitted_at,
+                    "completed_at": c.completed_at,
+                }
+                for c in self._corpora.values()
+            ]
+
+    async def get_status_snapshot(self) -> dict:
+        """Return a complete snapshot of hive state for reporting."""
+        async with self._lock:
+            total_claims = sum(
+                len(w.layer2_claims) for w in self._workers.values()
+            )
+            total_insights = sum(
+                len(w.layer3_insights) for w in self._workers.values()
+            )
+            total_pointers = sum(
+                len(w.pointers) for w in self._workers.values()
+            )
+
             corpora_list = []
             for c in self._corpora.values():
                 progress = 0.0
@@ -518,9 +441,11 @@ class SwarmState:
                     "total_chunks": c.total_chunks,
                     "chunks_processed": c.chunks_processed,
                     "progress": round(progress, 3),
-                    "entities_extracted": c.entities_extracted,
-                    "relationships_extracted": c.relationships_extracted,
-                    "claims_extracted": c.claims_extracted,
+                    "workers_assigned": c.workers_assigned,
+                    "gossip_rounds_done": c.gossip_rounds_done,
+                    "mining_cycles_done": c.mining_cycles_done,
+                    "total_claims": c.total_claims,
+                    "total_insights": c.total_insights,
                     "error": c.error,
                     "submitted_at": c.submitted_at,
                     "completed_at": c.completed_at,
@@ -534,9 +459,15 @@ class SwarmState:
                 )
                 workers_list.append({
                     "id": w.id,
-                    "status": w.status.value,
                     "corpus_id": w.corpus_id,
+                    "status": w.status,
                     "current_task": w.current_task,
+                    "layer1_version": w.layer1_version,
+                    "layer2_claims": len(w.layer2_claims),
+                    "layer3_insights": len(w.layer3_insights),
+                    "pointers": len(w.pointers),
+                    "gossip_rounds": w.gossip_rounds_completed,
+                    "mining_cycles": w.mining_cycles_completed,
                     "uptime_s": uptime,
                 })
 
@@ -562,9 +493,9 @@ class SwarmState:
             total_chars = sum(
                 c.total_chars for c in self._corpora.values()
             )
-            active = sum(
+            active_workers = sum(
                 1 for w in self._workers.values()
-                if w.status not in (WorkerStatus.IDLE, WorkerStatus.DONE)
+                if w.status not in ("idle", "done")
             )
 
             return {
@@ -577,57 +508,67 @@ class SwarmState:
                 "corpora_queued": queued,
                 "corpora_failed": failed,
                 "total_chars_ingested": total_chars,
-                "total_entities": kstats["entities"],
-                "total_relationships": kstats["relationships"],
-                "total_claims": kstats["claims"],
-                "total_chunks": kstats["chunks"],
-                "active_workers": active,
+                "total_workers": len(self._workers),
+                "active_workers": active_workers,
+                "total_claims": total_claims,
+                "total_insights": total_insights,
+                "total_pointers": total_pointers,
+                "global_insights": len(self._global_insights),
+                "mining_active": self._mining_active,
+                "current_queen": self._current_queen_id,
+                "hive_cycle": self._hive_cycle,
                 "total_queries_answered": self._total_queries_answered,
                 "corpora": corpora_list,
                 "workers": workers_list,
             }
 
-    async def get_corpora_list(self) -> list[dict]:
-        """Return a summary of all corpora."""
-        async with self._lock:
-            return [
-                {
-                    "id": c.id,
-                    "title": c.title,
-                    "status": c.status.value,
-                    "total_chars": c.total_chars,
-                    "submitted_at": c.submitted_at,
-                    "completed_at": c.completed_at,
-                }
-                for c in self._corpora.values()
-            ]
-
     async def build_sincerity_preamble(self) -> str:
-        """Build an honest status message about the swarm's current state.
-
-        This is the 'sincerity' mechanism -- the proxy tells the user
-        exactly what is happening right now, no sugar-coating.
-        """
+        """Build an honest status message about the hive's current state."""
         snapshot = await self.get_status_snapshot()
 
         if snapshot["total_corpora"] == 0:
             return (
-                "**[Swarm Status]** No corpora have been submitted yet. "
-                "Send me a large body of text and I will begin decomposing "
-                "and understanding it. "
+                "**[Hive Status]** No corpora have been submitted yet. "
+                "Send me a large body of text and the hive will begin "
+                "surveying, gossiping, and mining it for insights. "
                 "You can ask questions at any time.\n\n"
             )
 
-        parts = ["**[Swarm Status]**"]
+        parts = ["**[Hive Status]**"]
 
         parts.append(
-            f" {snapshot['total_corpora']} corpus/corpora ingested "
+            f" {snapshot['total_workers']} workers alive, "
+            f"{snapshot['hive_cycle']} gossip rounds completed, "
+            f"{snapshot['total_corpora']} corpus/corpora ingested "
             f"({snapshot['total_chars_ingested']:,} chars total)."
         )
 
+        parts.append(
+            f"\n**Knowledge:** "
+            f"{snapshot['total_claims']} claims, "
+            f"{snapshot['total_insights']} insights, "
+            f"{snapshot['total_pointers']} pointers across the hive."
+        )
+
+        mining_status = "active" if snapshot["mining_active"] else "paused"
+        parts.append(f"\n**Mining:** {mining_status}.")
+
+        if snapshot["current_queen"]:
+            parts.append(
+                f" Current queen: {snapshot['current_queen']}."
+            )
+
+        if snapshot["global_insights"] > 0:
+            global_insights = await self.get_global_insights()
+            if global_insights:
+                latest = global_insights[-1]
+                parts.append(
+                    f"\n**Latest Hive Oracle insight:** {latest.text[:200]}"
+                )
+
         if snapshot["corpora_processing"] > 0:
             parts.append(
-                f" **Currently processing "
+                f"\n**Currently processing "
                 f"{snapshot['corpora_processing']} corpus/corpora** "
                 f"with {snapshot['active_workers']} active worker(s)."
             )
@@ -638,12 +579,14 @@ class SwarmState:
                         f"\n  -> *{c['title'][:60]}*: "
                         f"{c['status']} -- {pct}% "
                         f"({c['chunks_processed']}/"
-                        f"{c['total_chunks']} chunks)"
+                        f"{c['total_chunks']} chunks, "
+                        f"{c['gossip_rounds_done']} gossip rounds, "
+                        f"{c['mining_cycles_done']} mining cycles)"
                     )
 
         if snapshot["corpora_queued"] > 0:
             parts.append(
-                f" {snapshot['corpora_queued']} corpus/corpora "
+                f"\n{snapshot['corpora_queued']} corpus/corpora "
                 f"waiting in queue."
             )
 
@@ -658,102 +601,30 @@ class SwarmState:
             )
 
         if (
-            snapshot["total_entities"] > 0
-            or snapshot["total_claims"] > 0
-        ):
-            parts.append(
-                f"\n**Knowledge built:** "
-                f"{snapshot['total_entities']} entities, "
-                f"{snapshot['total_relationships']} relationships, "
-                f"{snapshot['total_claims']} claims across "
-                f"{snapshot['total_chunks']} chunks."
-            )
-
-        if (
             snapshot["corpora_processing"] > 0
             or snapshot["corpora_queued"] > 0
+            or snapshot["mining_active"]
         ):
             parts.append(
-                "\n*Note: The swarm is still working. My answers "
+                "\n*Note: The hive is still working. My answers "
                 "reflect knowledge extracted so far -- they may become "
-                "more complete as processing continues. "
-                "This does not affect the swarm's work.*"
+                "more complete as gossip and mining continue. "
+                "This does not affect the hive's work.*"
             )
 
         return "".join(parts) + "\n\n"
 
 
-# Global swarm state
-swarm = SwarmState()
+# Global hive state
+hive = HiveState()
 
-# Background worker tasks (kept alive for the process lifetime)
-_worker_tasks: list[asyncio.Task] = []
+# Background tasks (kept alive for the process lifetime)
+_background_tasks: list[asyncio.Task] = []
 
 
 # ---------------------------------------------------------------------------
 # LLM helpers
 # ---------------------------------------------------------------------------
-
-_EXTRACTION_PROMPT = (
-    "You are a knowledge extraction agent in a swarm system. "
-    "Your job is to extract structured knowledge from a text chunk.\n\n"
-    'Given the following text chunk from "{corpus_title}" '
-    "(chunk {chunk_index}/{total_chunks}), extract:\n\n"
-    "1. **Entities**: Named things (people, organizations, concepts, "
-    "locations, events, technologies, theories, etc.)\n"
-    "2. **Relationships**: How entities relate to each other\n"
-    "3. **Claims**: Atomic factual statements / assertions made in "
-    "the text\n\n"
-    "Respond with ONLY valid JSON in this exact format "
-    "(no markdown, no code fences):\n"
-    "{{\n"
-    '  "entities": [\n'
-    '    {{"name": "Entity Name", "type": '
-    '"person|org|concept|location|event|technology|theory|other", '
-    '"description": "Brief description"}}\n'
-    "  ],\n"
-    '  "relationships": [\n'
-    '    {{"source": "Entity A", "target": "Entity B", '
-    '"type": "relationship_type", '
-    '"description": "How they relate"}}\n'
-    "  ],\n"
-    '  "claims": [\n'
-    '    {{"text": "Atomic factual claim", '
-    '"confidence": "high|medium|low", '
-    '"entities": ["Entity A", "Entity B"]}}\n'
-    "  ]\n"
-    "}}\n\n"
-    "Extract as many entities, relationships, and claims as the text "
-    "supports. Be thorough but accurate. Only extract what the text "
-    "actually states or strongly implies.\n\n"
-    "TEXT CHUNK:\n{chunk_text}"
-)
-
-_QUERY_SYSTEM_PROMPT = (
-    "You are a research analyst powered by a swarm knowledge system. "
-    "The swarm has decomposed large corpora of text into structured "
-    "knowledge: entities, relationships, and claims.\n\n"
-    "**SWARM STATUS:**\n{swarm_status}\n\n"
-    "**YOUR JOB:**\n"
-    "Answer the user's question using ONLY the knowledge results "
-    "provided below. Be thorough, specific, and cite the source "
-    "documents when possible.\n\n"
-    "**RULES:**\n"
-    "- If the knowledge store has relevant information, synthesise "
-    "it into a clear, comprehensive answer.\n"
-    "- If the knowledge store has partial information, say what you "
-    "know and clearly state what gaps remain.\n"
-    "- If no relevant knowledge exists yet, say so honestly -- "
-    "do not fabricate.\n"
-    "- Reference specific entities, claims, and relationships from "
-    "the results.\n"
-    "- If the swarm is still processing corpora, mention that more "
-    "complete answers may be available once processing finishes.\n"
-    "- Be direct. No moralising, no disclaimers, no hedging. "
-    "Just answer.\n\n"
-    "**KNOWLEDGE RESULTS:**\n{knowledge_results}"
-)
-
 
 async def _call_llm(
     messages: list[dict],
@@ -821,6 +692,25 @@ async def _call_llm(
     return {"error": "Max retries exceeded"}
 
 
+def _parse_llm_json(content: str) -> Optional[dict]:
+    """Parse JSON from LLM response, stripping markdown fences if present."""
+    content = content.strip()
+    if content.startswith("```"):
+        content = re.sub(r"^```(?:json)?\s*", "", content)
+        content = re.sub(r"\s*```$", "", content)
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        match = re.search(r"\{[\s\S]*\}", content)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                return None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Corpus chunking
 # ---------------------------------------------------------------------------
@@ -840,178 +730,658 @@ def _chunk_text(text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Swarm worker: corpus processing pipeline (fully self-contained)
+# Phase-specific prompts
 # ---------------------------------------------------------------------------
 
-async def _extract_from_chunk(
-    chunk_text: str,
+_SURVEY_PROMPT = """\
+You are a hive worker in a collective intelligence swarm. You have been \
+assigned text chunks from a corpus.
+Read the chunks carefully and produce THREE outputs:
+
+1. UNDERSTANDING (Layer 1): A rich narrative of what these chunks contain \
+-- themes, arguments, key points, nuances. Be thorough. (~2000 words max)
+
+2. CLAIM LEDGER (Layer 2): A JSON array of structured claims extracted \
+from the text. Each claim:
+   {"text": "atomic claim", "confidence": "high|medium|low", \
+"entities": ["Entity A"], "relationships": [{"source": "A", \
+"target": "B", "type": "causes", "description": "..."}], \
+"provenance_chunk_index": 0}
+   Extract ALL entities, relationships, and claims. Be exhaustive.
+
+3. INSIGHTS (Layer 3): Higher-order observations -- patterns you notice, \
+implications, hypotheses, contradictions, open questions. These are your \
+most valuable output.
+   {"text": "insight text", "insight_type": \
+"pattern|implication|hypothesis|contradiction|open_question"}
+
+Output as JSON: {"understanding": "...", "claims": [...], "insights": [...]}
+
+TEXT CHUNKS:
+{chunk_texts}"""
+
+_GOSSIP_PROMPT = """\
+You are a hive worker refining your understanding through peer gossip.
+
+YOUR CURRENT STATE:
+- Understanding (Layer 1): {own_understanding}
+- Claim Ledger (Layer 2): {own_claims_json}
+- Insights (Layer 3): {own_insights_json}
+
+PEER INPUTS (prioritized):
+- Peer Insights (Channel C -- highest priority): {peer_insights}
+- Peer Claim Deltas (Channel B): {peer_claim_deltas}
+- Peer Understandings (Channel A -- if materially changed): {peer_understandings}
+- Open Questions & Contradictions (Channel D): {open_questions}
+
+REFINEMENT RULES:
+1. Cross-reference your claims with peers'. Flag contradictions.
+2. Absorb peer insights into your Layer 3 -- do NOT drop them.
+3. If a peer has deeper knowledge on a topic, create a POINTER instead \
+of copying everything.
+4. Promote any new patterns or contradictions to Layer 3.
+5. Update your understanding (Layer 1) to reflect cross-referenced knowledge.
+6. Your claim ledger should GROW, not shrink. New claims from peers get \
+added with provenance.
+
+Output JSON: {"understanding": "...", "claims": [...], "insights": [...], \
+"pointers": [{"topic": "...", "target_worker_id": "...", "strength": 0.8, \
+"excerpt": "..."}]}"""
+
+_REFLECTION_PROMPT = """\
+You are a hive worker in a perpetual mining cycle. Re-examine your knowledge.
+
+YOUR RAW CHUNKS (Layer 0 -- re-read these carefully):
+{raw_chunks}
+
+YOUR CURRENT UNDERSTANDING (Layer 1):
+{understanding}
+
+YOUR CLAIM LEDGER (Layer 2):
+{claims_json}
+
+YOUR INSIGHTS (Layer 3):
+{insights_json}
+
+SWARM-WIDE INSIGHTS (from peers):
+{global_insights}
+
+REFLECTION TASK:
+1. Re-read your raw chunks with fresh eyes, informed by everything you \
+now know from gossip.
+2. Generate up to 3 NEW insights you missed before.
+3. Identify up to 2 contradictions (internal or with peer knowledge).
+4. Formulate 1 hypothesis that would require focused re-reading.
+5. Update your claim ledger with anything you missed on first pass.
+
+Output JSON: {"new_insights": [...], "new_claims": [...], \
+"updated_understanding": "...", "focused_questions": ["..."]}"""
+
+_QUEEN_SYNTHESIS_PROMPT = """\
+You are the queen synthesizer of a hive swarm. Workers have been processing \
+a corpus through multiple gossip rounds and mining cycles.
+
+USER QUERY: {query}
+
+WORKER PERSPECTIVES (routed via pointer network -- these are the most \
+relevant workers):
+{worker_perspectives}
+
+GLOBAL HIVE INSIGHTS:
+{global_insights}
+
+Synthesize a comprehensive answer. Rules:
+1. Cross-reference across workers. Note consensus and contradictions.
+2. Cite which workers/chunks support each claim.
+3. If workers disagree, present both sides with evidence.
+4. Be direct, thorough, specific. No moralizing.
+5. If the hive's understanding is still evolving (mining active), say so."""
+
+_HIVE_ORACLE_PROMPT = """\
+You are the Hive Oracle. All workers have reported their single most \
+important new understanding.
+
+WORKER REPORTS:
+{worker_reports}
+
+PREVIOUS HIVE INSIGHT:
+{previous_hive_insight}
+
+Synthesize: What is the single most important thing the swarm now \
+understands that it didn't understand last cycle? This insight will be \
+injected into every worker's Layer 3.
+
+Output: {"hive_insight": "...", "confidence": "high|medium|low", \
+"key_entities": [...]}"""
+
+_QUERY_SYSTEM_PROMPT = """\
+You are a research analyst powered by a hive knowledge system. \
+The hive has decomposed large corpora of text into structured \
+knowledge through multi-channel gossip and perpetual mining.
+
+**HIVE STATUS:**
+{hive_status}
+
+**YOUR JOB:**
+Answer the user's question using ONLY the knowledge results \
+provided below. Be thorough, specific, and cite the source \
+documents when possible.
+
+**RULES:**
+- If the hive has relevant information, synthesise \
+it into a clear, comprehensive answer.
+- If the hive has partial information, say what you \
+know and clearly state what gaps remain.
+- If no relevant knowledge exists yet, say so honestly -- \
+do not fabricate.
+- Reference specific claims, insights, and worker perspectives.
+- If the hive is still mining, mention that more \
+complete answers may be available as mining continues.
+- Be direct. No moralising, no disclaimers, no hedging. \
+Just answer.
+
+**KNOWLEDGE RESULTS:**
+{knowledge_results}"""
+
+
+# ---------------------------------------------------------------------------
+# Hive Ingestion Pipeline
+# ---------------------------------------------------------------------------
+
+async def _survey_worker(
+    worker: HiveWorker,
     corpus_id: str,
-    corpus_title: str,
-    chunk_index: int,
-    total_chunks: int,
-    worker_id: str,
-    req_id: str = "",
-) -> tuple[int, int, int]:
-    """Use LLM to extract entities, relationships, and claims.
+    req_id: str,
+) -> None:
+    """Phase 1: Worker surveys its assigned chunks and builds initial layers."""
+    worker.status = "surveying"
+    worker.current_task = "Surveying assigned chunks"
+    worker.last_activity = time.monotonic()
 
-    Returns (entities_count, relationships_count, claims_count).
-    """
-    chunk_id = f"{corpus_id}-chunk-{chunk_index}"
+    chunk_texts = "\n\n---CHUNK BOUNDARY---\n\n".join(
+        f"[Chunk {idx}]\n{text}"
+        for idx, text in zip(worker.assigned_chunk_indices, worker.layer0_raw_chunks)
+    )
+
+    prompt = _SURVEY_PROMPT.replace("{chunk_texts}", chunk_texts)
+
     span = lf.start_span(
-        req_id, f"swarm:extract_chunk:{chunk_index}",
-        input={"corpus_id": corpus_id, "chunk_index": chunk_index,
-               "total_chunks": total_chunks, "worker_id": worker_id},
-    )
-
-    # Store the raw chunk in the knowledge store
-    kchunk = KnowledgeChunk(
-        id=chunk_id,
-        corpus_id=corpus_id,
-        corpus_title=corpus_title,
-        text=chunk_text,
-        chunk_index=chunk_index,
-        total_chunks=total_chunks,
-        word_freq=_build_word_freq(chunk_text),
-    )
-    await knowledge.add_chunk(kchunk)
-
-    # Ask the LLM to extract structured knowledge
-    prompt = _EXTRACTION_PROMPT.format(
-        corpus_title=corpus_title,
-        chunk_index=chunk_index + 1,
-        total_chunks=total_chunks,
-        chunk_text=chunk_text,
+        req_id, f"hive:survey:{worker.id}",
+        input={"worker_id": worker.id, "chunks": len(worker.layer0_raw_chunks)},
     )
 
     result = await _call_llm(
         [{"role": "user", "content": prompt}],
         model=WORKER_MODEL,
-        max_tokens=4096,
-        temperature=0.1,
+        max_tokens=8192,
+        temperature=0.2,
+    )
+    worker.total_llm_calls += 1
+
+    if "error" in result:
+        log.warning(f"[{worker.id}] Survey error: {result['error']}")
+        lf.end_span(span, output={"error": result["error"]}, level="ERROR")
+        return
+
+    parsed = _parse_llm_json(result["content"])
+    if not parsed:
+        log.warning(f"[{worker.id}] Survey JSON parse failed")
+        # Fall back to using raw content as understanding
+        worker.layer1_understanding = result["content"][:4000]
+        worker.layer1_version = 1
+        lf.end_span(span, output={"error": "json_parse_failed"}, level="WARNING")
+        return
+
+    # Populate layers
+    worker.layer1_understanding = parsed.get("understanding", "")
+    worker.layer1_version = 1
+
+    for c in parsed.get("claims", []):
+        if isinstance(c, dict) and c.get("text"):
+            worker.layer2_claims.append(ClaimEntry(
+                text=c["text"],
+                confidence=c.get("confidence", "medium"),
+                entities=c.get("entities", []),
+                relationships=c.get("relationships", []),
+                provenance_chunk_index=c.get("provenance_chunk_index", 0),
+                corpus_id=corpus_id,
+                version=1,
+            ))
+    worker.layer2_version = 1
+
+    for i in parsed.get("insights", []):
+        if isinstance(i, dict) and i.get("text"):
+            worker.layer3_insights.append(InsightEntry(
+                text=i["text"],
+                insight_type=i.get("insight_type", "pattern"),
+                source_worker_id=worker.id,
+                cycle_created=0,
+                version=1,
+            ))
+    worker.layer3_version = 1
+
+    worker.last_activity = time.monotonic()
+    lf.end_span(span, output={
+        "claims": len(worker.layer2_claims),
+        "insights": len(worker.layer3_insights),
+    })
+
+
+async def _gossip_round(
+    workers: list[HiveWorker],
+    round_num: int,
+    corpus_id: str,
+    req_id: str,
+) -> int:
+    """Run one gossip round across all workers. Returns count of new insights."""
+    new_insights_total = 0
+
+    for worker in workers:
+        worker.status = "gossiping"
+        worker.current_task = f"Gossip round {round_num + 1}"
+        worker.last_activity = time.monotonic()
+
+        # Select peers (up to HIVE_MAX_PEERS_PER_GOSSIP, excluding self)
+        peers = [w for w in workers if w.id != worker.id]
+        if len(peers) > HIVE_MAX_PEERS_PER_GOSSIP:
+            peers = random.sample(peers, HIVE_MAX_PEERS_PER_GOSSIP)
+
+        # Build peer inputs by channel priority
+        # Channel C: insights (highest priority, always included)
+        peer_insights_parts = []
+        for p in peers:
+            for ins in p.layer3_insights:
+                peer_insights_parts.append(
+                    f"[{p.id}] ({ins.insight_type}) {ins.text}"
+                )
+        peer_insights = "\n".join(peer_insights_parts) or "(none)"
+
+        # Channel B: claim deltas
+        peer_claims_parts = []
+        for p in peers:
+            for cl in p.layer2_claims[:10]:  # limit per peer
+                peer_claims_parts.append(
+                    f"[{p.id}] [{cl.confidence}] {cl.text}"
+                )
+        peer_claim_deltas = "\n".join(peer_claims_parts[:30]) or "(none)"
+
+        # Channel A: understandings (if materially changed)
+        peer_understandings_parts = []
+        for p in peers:
+            if p.layer1_version > 0:
+                peer_understandings_parts.append(
+                    f"[{p.id}] {p.layer1_understanding[:1000]}"
+                )
+        peer_understandings = "\n".join(peer_understandings_parts) or "(none)"
+
+        # Channel D: open questions and contradictions
+        open_q_parts = []
+        for p in peers:
+            for ins in p.layer3_insights:
+                if ins.insight_type in ("contradiction", "open_question"):
+                    open_q_parts.append(f"[{p.id}] {ins.text}")
+        open_questions = "\n".join(open_q_parts) or "(none)"
+
+        own_claims_json = json.dumps(
+            [{"text": c.text, "confidence": c.confidence, "entities": c.entities}
+             for c in worker.layer2_claims[:20]],
+            indent=None,
+        )
+        own_insights_json = json.dumps(
+            [{"text": i.text, "insight_type": i.insight_type}
+             for i in worker.layer3_insights],
+            indent=None,
+        )
+
+        prompt = (_GOSSIP_PROMPT
+            .replace("{own_understanding}", worker.layer1_understanding[:2000])
+            .replace("{own_claims_json}", own_claims_json)
+            .replace("{own_insights_json}", own_insights_json)
+            .replace("{peer_insights}", peer_insights[:3000])
+            .replace("{peer_claim_deltas}", peer_claim_deltas[:2000])
+            .replace("{peer_understandings}", peer_understandings[:3000])
+            .replace("{open_questions}", open_questions[:1000])
+        )
+
+        span = lf.start_span(
+            req_id, f"hive:gossip:{worker.id}:r{round_num}",
+            input={"worker_id": worker.id, "round": round_num, "peers": len(peers)},
+        )
+
+        result = await _call_llm(
+            [{"role": "user", "content": prompt}],
+            model=WORKER_MODEL,
+            max_tokens=8192,
+            temperature=0.2,
+        )
+        worker.total_llm_calls += 1
+
+        if "error" in result:
+            log.warning(f"[{worker.id}] Gossip round {round_num} error: {result['error']}")
+            lf.end_span(span, output={"error": result["error"]}, level="ERROR")
+            continue
+
+        parsed = _parse_llm_json(result["content"])
+        if not parsed:
+            log.warning(f"[{worker.id}] Gossip JSON parse failed")
+            lf.end_span(span, output={"error": "json_parse_failed"}, level="WARNING")
+            continue
+
+        # Update layers
+        new_understanding = parsed.get("understanding", "")
+        if new_understanding:
+            worker.layer1_understanding = new_understanding
+            worker.layer1_version += 1
+
+        prev_claims = len(worker.layer2_claims)
+        for c in parsed.get("claims", []):
+            if isinstance(c, dict) and c.get("text"):
+                worker.layer2_claims.append(ClaimEntry(
+                    text=c["text"],
+                    confidence=c.get("confidence", "medium"),
+                    entities=c.get("entities", []),
+                    relationships=c.get("relationships", []),
+                    provenance_chunk_index=c.get("provenance_chunk_index", 0),
+                    corpus_id=corpus_id,
+                    version=worker.layer2_version + 1,
+                ))
+        worker.layer2_version += 1
+
+        prev_insights = len(worker.layer3_insights)
+        for i in parsed.get("insights", []):
+            if isinstance(i, dict) and i.get("text"):
+                worker.layer3_insights.append(InsightEntry(
+                    text=i["text"],
+                    insight_type=i.get("insight_type", "pattern"),
+                    source_worker_id=worker.id,
+                    cycle_created=round_num,
+                    version=worker.layer3_version + 1,
+                ))
+        worker.layer3_version += 1
+        new_insights_total += len(worker.layer3_insights) - prev_insights
+
+        # Update pointers
+        for p in parsed.get("pointers", []):
+            if isinstance(p, dict) and p.get("topic") and p.get("target_worker_id"):
+                worker.pointers.append(Pointer(
+                    topic=p["topic"],
+                    target_worker_id=p["target_worker_id"],
+                    strength=float(p.get("strength", 0.5)),
+                    excerpt=p.get("excerpt", ""),
+                ))
+
+        worker.gossip_rounds_completed = round_num + 1
+        worker.last_activity = time.monotonic()
+        lf.end_span(span, output={
+            "new_claims": len(worker.layer2_claims) - prev_claims,
+            "new_insights": len(worker.layer3_insights) - prev_insights,
+            "pointers": len(worker.pointers),
+        })
+
+    return new_insights_total
+
+
+async def _interrogation_round(
+    workers: list[HiveWorker],
+    corpus_id: str,
+    req_id: str,
+) -> None:
+    """Phase 3: Workers re-read raw chunks with focused questions from gossip."""
+    global_insights = await hive.get_global_insights()
+    global_text = "\n".join(
+        f"- ({i.insight_type}) {i.text}" for i in global_insights
+    ) or "(none yet)"
+
+    for worker in workers:
+        worker.status = "reflecting"
+        worker.current_task = "Interrogation: re-reading chunks"
+        worker.last_activity = time.monotonic()
+
+        raw_chunks = "\n\n---CHUNK---\n\n".join(worker.layer0_raw_chunks)
+        claims_json = json.dumps(
+            [{"text": c.text, "confidence": c.confidence}
+             for c in worker.layer2_claims[:20]],
+            indent=None,
+        )
+        insights_json = json.dumps(
+            [{"text": i.text, "insight_type": i.insight_type}
+             for i in worker.layer3_insights],
+            indent=None,
+        )
+
+        prompt = (_REFLECTION_PROMPT
+            .replace("{raw_chunks}", raw_chunks[:6000])
+            .replace("{understanding}", worker.layer1_understanding[:2000])
+            .replace("{claims_json}", claims_json)
+            .replace("{insights_json}", insights_json)
+            .replace("{global_insights}", global_text[:2000])
+        )
+
+        span = lf.start_span(
+            req_id, f"hive:interrogate:{worker.id}",
+            input={"worker_id": worker.id},
+        )
+
+        result = await _call_llm(
+            [{"role": "user", "content": prompt}],
+            model=WORKER_MODEL,
+            max_tokens=4096,
+            temperature=0.3,
+        )
+        worker.total_llm_calls += 1
+
+        if "error" in result:
+            log.warning(f"[{worker.id}] Interrogation error: {result['error']}")
+            lf.end_span(span, output={"error": result["error"]}, level="ERROR")
+            continue
+
+        parsed = _parse_llm_json(result["content"])
+        if not parsed:
+            lf.end_span(span, output={"error": "json_parse_failed"}, level="WARNING")
+            continue
+
+        # Absorb new findings
+        for i in parsed.get("new_insights", []):
+            if isinstance(i, dict) and i.get("text"):
+                worker.layer3_insights.append(InsightEntry(
+                    text=i["text"],
+                    insight_type=i.get("insight_type", "pattern"),
+                    source_worker_id=worker.id,
+                    version=worker.layer3_version + 1,
+                ))
+        worker.layer3_version += 1
+
+        for c in parsed.get("new_claims", []):
+            if isinstance(c, dict) and c.get("text"):
+                worker.layer2_claims.append(ClaimEntry(
+                    text=c["text"],
+                    confidence=c.get("confidence", "medium"),
+                    entities=c.get("entities", []),
+                    corpus_id=corpus_id,
+                    version=worker.layer2_version + 1,
+                ))
+        worker.layer2_version += 1
+
+        updated = parsed.get("updated_understanding", "")
+        if updated:
+            worker.layer1_understanding = updated
+            worker.layer1_version += 1
+
+        worker.last_activity = time.monotonic()
+        lf.end_span(span, output={"status": "complete"})
+
+
+async def _run_hive_oracle(
+    workers: list[HiveWorker],
+    req_id: str,
+) -> Optional[InsightEntry]:
+    """Run the Hive Oracle to produce a global comprehension insight."""
+    worker_reports_parts = []
+    for w in workers:
+        if w.layer3_insights:
+            latest = w.layer3_insights[-1]
+            worker_reports_parts.append(
+                f"[{w.id}] {latest.text}"
+            )
+    if not worker_reports_parts:
+        return None
+
+    worker_reports = "\n".join(worker_reports_parts)
+
+    global_insights = await hive.get_global_insights()
+    prev_insight = global_insights[-1].text if global_insights else "(none)"
+
+    prompt = (_HIVE_ORACLE_PROMPT
+        .replace("{worker_reports}", worker_reports[:4000])
+        .replace("{previous_hive_insight}", prev_insight[:1000])
+    )
+
+    span = lf.start_span(req_id, "hive:oracle", input={})
+
+    result = await _call_llm(
+        [{"role": "user", "content": prompt}],
+        model=SYNTHESIS_MODEL,
+        max_tokens=2048,
+        temperature=0.3,
     )
 
     if "error" in result:
-        log.warning(
-            f"[{worker_id}] Extraction error for chunk "
-            f"{chunk_index}: {result['error']}"
-        )
+        log.warning(f"Hive Oracle error: {result['error']}")
         lf.end_span(span, output={"error": result["error"]}, level="ERROR")
-        return (0, 0, 0)
+        return None
 
-    # Parse the JSON response
-    content = result["content"].strip()
-    # Strip markdown code fences if present
-    if content.startswith("```"):
-        content = re.sub(r"^```(?:json)?\s*", "", content)
-        content = re.sub(r"\s*```$", "", content)
+    parsed = _parse_llm_json(result["content"])
+    if not parsed:
+        lf.end_span(span, output={"error": "json_parse_failed"}, level="WARNING")
+        return None
 
-    try:
-        extracted = json.loads(content)
-    except json.JSONDecodeError:
-        # Try to find JSON object in the response
-        match = re.search(r"\{[\s\S]*\}", content)
-        if match:
-            try:
-                extracted = json.loads(match.group())
-            except json.JSONDecodeError:
-                log.warning(
-                    f"[{worker_id}] Failed to parse extraction "
-                    f"for chunk {chunk_index}"
-                )
-                lf.end_span(span, output={"error": "json_parse_failed"}, level="ERROR")
-                return (0, 0, 0)
-        else:
-            log.warning(
-                f"[{worker_id}] No JSON found in extraction "
-                f"for chunk {chunk_index}"
+    insight_text = parsed.get("hive_insight", "")
+    if not insight_text:
+        lf.end_span(span, output={"error": "empty_insight"}, level="WARNING")
+        return None
+
+    insight = InsightEntry(
+        text=insight_text,
+        insight_type="pattern",
+        source_worker_id="hive-oracle",
+        version=1,
+    )
+
+    await hive.add_global_insight(insight)
+
+    # Inject into all workers' Layer 3
+    for w in workers:
+        w.layer3_insights.append(InsightEntry(
+            text=insight_text,
+            insight_type="pattern",
+            source_worker_id="hive-oracle",
+            version=w.layer3_version + 1,
+        ))
+        w.layer3_version += 1
+
+    lf.end_span(span, output={"insight": insight_text[:200]})
+    return insight
+
+
+async def _perpetual_mining_loop(
+    corpus_id: str,
+    req_id: str,
+) -> None:
+    """Phase 4: Background mining loop for continuous insight extraction."""
+    cycle = 0
+    while cycle < HIVE_MAX_MINING_CYCLES:
+        if not await hive.is_mining_active():
+            log.info(f"Mining paused for corpus {corpus_id}")
+            await asyncio.sleep(5)
+            continue
+
+        await asyncio.sleep(HIVE_MINING_INTERVAL)
+
+        if not await hive.is_mining_active():
+            continue
+
+        cycle += 1
+        workers = await hive.get_workers_for_corpus(corpus_id)
+        if not workers:
+            break
+
+        log.info(
+            f"Mining cycle {cycle}/{HIVE_MAX_MINING_CYCLES} "
+            f"for corpus {corpus_id} with {len(workers)} workers"
+        )
+
+        # Each worker reflects
+        for worker in workers:
+            worker.status = "mining"
+            worker.current_task = f"Mining cycle {cycle}"
+
+        await _interrogation_round(workers, corpus_id, req_id)
+
+        # One gossip round to share mining findings
+        gossip_round_num = max(
+            (w.gossip_rounds_completed for w in workers), default=0,
+        )
+        new_insights = await _gossip_round(
+            workers, gossip_round_num, corpus_id, req_id,
+        )
+
+        # Run Hive Oracle periodically
+        if cycle % HIVE_ORACLE_INTERVAL == 0:
+            await hive.elect_queen()
+            await _run_hive_oracle(workers, req_id)
+
+        for w in workers:
+            w.mining_cycles_completed = cycle
+
+        await hive.update_corpus(
+            corpus_id,
+            mining_cycles_done=cycle,
+            total_claims=sum(len(w.layer2_claims) for w in workers),
+            total_insights=sum(len(w.layer3_insights) for w in workers),
+        )
+
+        log.info(
+            f"Mining cycle {cycle} complete: "
+            f"{new_insights} new insights across {len(workers)} workers"
+        )
+
+        # Check for sub-swarm trigger
+        if new_insights >= HIVE_SUBSWARM_THRESHOLD:
+            log.info(
+                f"Sub-swarm threshold met ({new_insights} >= "
+                f"{HIVE_SUBSWARM_THRESHOLD}), running focused debate round"
             )
-            lf.end_span(span, output={"error": "no_json_found"}, level="ERROR")
-            return (0, 0, 0)
+            await _gossip_round(
+                workers, gossip_round_num + 1, corpus_id, req_id,
+            )
 
-    entities_count = 0
-    rels_count = 0
-    claims_count = 0
-
-    # Store entities
-    for e in extracted.get("entities", []):
-        name = e.get("name", "").strip()
-        if not name:
-            continue
-        await knowledge.add_entity(Entity(
-            name=name,
-            entity_type=e.get("type", "other"),
-            description=e.get("description", ""),
-            corpus_id=corpus_id,
-            chunk_id=chunk_id,
-        ))
-        entities_count += 1
-
-    # Store relationships
-    for r in extracted.get("relationships", []):
-        source = r.get("source", "").strip()
-        target = r.get("target", "").strip()
-        if not source or not target:
-            continue
-        await knowledge.add_relationship(Relationship(
-            source=source,
-            target=target,
-            relation_type=r.get("type", "related_to"),
-            description=r.get("description", ""),
-            corpus_id=corpus_id,
-            chunk_id=chunk_id,
-        ))
-        rels_count += 1
-
-    # Store claims
-    for c in extracted.get("claims", []):
-        claim_text = c.get("text", "").strip()
-        if not claim_text:
-            continue
-        await knowledge.add_claim(Claim(
-            text=claim_text,
-            confidence=c.get("confidence", "medium"),
-            source_chunk_id=chunk_id,
-            corpus_id=corpus_id,
-            entities=c.get("entities", []),
-        ))
-        claims_count += 1
-
-    lf.end_span(span, output={
-        "entities": entities_count,
-        "relationships": rels_count,
-        "claims": claims_count,
-    })
-    return (entities_count, rels_count, claims_count)
+    # Set workers to idle when mining is done
+    for w in await hive.get_workers_for_corpus(corpus_id):
+        w.status = "idle"
+        w.current_task = "Mining complete"
 
 
-async def _process_corpus(
+async def _hive_ingest_corpus(
     corpus_id: str, text: str, req_id: str = "",
 ) -> None:
-    """Process a single corpus through the swarm pipeline.
+    """Process a corpus through the Ruflo Hive pipeline.
 
-    Steps:
-      1. Decompose text into overlapping chunks
-      2. For each chunk, extract entities/relationships/claims via LLM
-      3. Store everything in the in-memory knowledge store
-      4. Update swarm state at each stage
-
-    This runs as a background task and does NOT block any queries.
+    Phases:
+      1. Survey -- workers read chunks, build initial layered understanding
+      2. Gossip -- multi-channel gossip rounds for cross-referencing
+      3. Interrogation -- workers re-read chunks with focused questions
+      4. Perpetual Mining -- background loop for continuous insight extraction
     """
-    worker_id = f"worker-{uuid.uuid4().hex[:8]}"
     corpus_span = lf.start_span(
-        req_id, "swarm:process_corpus",
+        req_id, "hive:ingest_corpus",
         input={"corpus_id": corpus_id, "chars": len(text)},
     )
 
     async with worker_semaphore:
-        await swarm.register_worker(worker_id)
-
         try:
-            record = await swarm.get_corpus(corpus_id)
+            record = await hive.get_corpus(corpus_id)
             if not record:
-                log.error(
-                    f"[{worker_id}] Corpus {corpus_id} not found",
-                )
+                log.error(f"Corpus {corpus_id} not found")
                 lf.end_span(
                     corpus_span, output={"error": "corpus_not_found"},
                     level="ERROR",
@@ -1019,14 +1389,7 @@ async def _process_corpus(
                 return
 
             # Step 1: Chunking
-            await swarm.update_worker(
-                worker_id,
-                status=WorkerStatus.CHUNKING,
-                corpus_id=corpus_id,
-                current_task=f"Chunking: {record.title[:40]}",
-                started_at=time.monotonic(),
-            )
-            await swarm.update_corpus(
+            await hive.update_corpus(
                 corpus_id,
                 status=CorpusStatus.CHUNKING,
                 started_at=datetime.now(timezone.utc).isoformat(),
@@ -1034,123 +1397,165 @@ async def _process_corpus(
 
             chunks = _chunk_text(text)
             total_chunks = len(chunks)
-            await swarm.update_corpus(
-                corpus_id, total_chunks=total_chunks,
+            await hive.update_corpus(corpus_id, total_chunks=total_chunks)
+
+            log.info(
+                f"Corpus {corpus_id} ({record.title[:40]}): "
+                f"{record.total_chars:,} chars -> {total_chunks} chunks"
+            )
+
+            # Step 2: Assign chunks to workers
+            num_workers = max(1, total_chunks // HIVE_CHUNKS_PER_WORKER)
+            num_workers = min(num_workers, MAX_SWARM_WORKERS)
+            chunks_per_w = max(1, total_chunks // num_workers)
+
+            workers: list[HiveWorker] = []
+            for wi in range(num_workers):
+                start_idx = wi * chunks_per_w
+                end_idx = min(start_idx + chunks_per_w, total_chunks)
+                if wi == num_workers - 1:
+                    end_idx = total_chunks  # last worker gets remainder
+
+                worker_id = f"worker-{corpus_id[-8:]}-{wi}"
+                worker = HiveWorker(
+                    id=worker_id,
+                    corpus_id=corpus_id,
+                    assigned_chunk_indices=list(range(start_idx, end_idx)),
+                    layer0_raw_chunks=[chunks[j] for j in range(start_idx, end_idx)],
+                    started_at=time.monotonic(),
+                    last_activity=time.monotonic(),
+                )
+                workers.append(worker)
+                await hive.add_worker(worker)
+
+            await hive.update_corpus(
+                corpus_id, workers_assigned=len(workers),
+            )
+
+            # Phase 1: Survey
+            await hive.update_corpus(
+                corpus_id, status=CorpusStatus.SURVEYING,
+            )
+            log.info(f"Phase 1 (Survey): {len(workers)} workers surveying")
+
+            survey_tasks = []
+            for w in workers:
+                survey_tasks.append(_survey_worker(w, corpus_id, req_id))
+            await asyncio.gather(*survey_tasks)
+
+            # Update progress
+            await hive.update_corpus(
+                corpus_id,
+                chunks_processed=total_chunks,
+                total_claims=sum(len(w.layer2_claims) for w in workers),
+                total_insights=sum(len(w.layer3_insights) for w in workers),
             )
 
             log.info(
-                f"[{worker_id}] Corpus {corpus_id} "
-                f"({record.title[:40]}): "
-                f"{record.total_chars:,} chars -> "
-                f"{total_chunks} chunks"
+                f"Phase 1 complete: "
+                f"{sum(len(w.layer2_claims) for w in workers)} claims, "
+                f"{sum(len(w.layer3_insights) for w in workers)} insights"
             )
 
-            # Step 2: Extract knowledge from each chunk
-            await swarm.update_worker(
-                worker_id,
-                status=WorkerStatus.EXTRACTING,
-                current_task=f"Extracting: {record.title[:40]}",
+            # Phase 2: Gossip rounds
+            await hive.update_corpus(
+                corpus_id, status=CorpusStatus.GOSSIPING,
             )
-            await swarm.update_corpus(
-                corpus_id, status=CorpusStatus.EXTRACTING,
-            )
-
-            total_entities = 0
-            total_rels = 0
-            total_claims = 0
-
-            for i, chunk_text in enumerate(chunks):
-                await swarm.update_worker(
-                    worker_id,
-                    current_task=(
-                        f"Extracting chunk {i + 1}/{total_chunks}: "
-                        f"{record.title[:30]}"
-                    ),
+            for gossip_round in range(HIVE_GOSSIP_ROUNDS):
+                log.info(
+                    f"Phase 2 (Gossip): round {gossip_round + 1}/"
+                    f"{HIVE_GOSSIP_ROUNDS}"
                 )
-
-                try:
-                    ent_count, rel_count, claim_count = (
-                        await _extract_from_chunk(
-                            chunk_text,
-                            corpus_id,
-                            record.title,
-                            i,
-                            total_chunks,
-                            worker_id,
-                            req_id=req_id,
-                        )
-                    )
-                    total_entities += ent_count
-                    total_rels += rel_count
-                    total_claims += claim_count
-
-                except Exception as e:
-                    log.warning(
-                        f"[{worker_id}] Error extracting chunk "
-                        f"{i}/{total_chunks}: {e}"
-                    )
-
-                # Update progress after each chunk
-                await swarm.update_corpus(
+                new_insights = await _gossip_round(
+                    workers, gossip_round, corpus_id, req_id,
+                )
+                await hive.update_corpus(
                     corpus_id,
-                    chunks_processed=i + 1,
-                    entities_extracted=total_entities,
-                    relationships_extracted=total_rels,
-                    claims_extracted=total_claims,
+                    gossip_rounds_done=gossip_round + 1,
+                    total_claims=sum(len(w.layer2_claims) for w in workers),
+                    total_insights=sum(len(w.layer3_insights) for w in workers),
                 )
+                log.info(
+                    f"Gossip round {gossip_round + 1} complete: "
+                    f"{new_insights} new insights"
+                )
+                # Check for convergence
+                if new_insights == 0 and gossip_round > 0:
+                    log.info("Gossip converged (no new insights)")
+                    break
 
-                if i < total_chunks - 1:
-                    await asyncio.sleep(0.1)
+            # Phase 3: Interrogation
+            await hive.update_corpus(
+                corpus_id, status=CorpusStatus.INTERROGATING,
+            )
+            log.info("Phase 3 (Interrogation): workers re-reading chunks")
+            await _interrogation_round(workers, corpus_id, req_id)
 
-            # Step 3: Mark completed
-            await swarm.update_corpus(
+            # One final gossip round to share interrogation findings
+            final_gossip_round = max(
+                (w.gossip_rounds_completed for w in workers), default=0,
+            )
+            await _gossip_round(
+                workers, final_gossip_round, corpus_id, req_id,
+            )
+
+            # Run initial Hive Oracle
+            await hive.elect_queen()
+            await _run_hive_oracle(workers, req_id)
+
+            # Mark completed (mining will continue in background)
+            await hive.update_corpus(
                 corpus_id,
                 status=CorpusStatus.COMPLETED,
                 completed_at=datetime.now(timezone.utc).isoformat(),
+                total_claims=sum(len(w.layer2_claims) for w in workers),
+                total_insights=sum(len(w.layer3_insights) for w in workers),
             )
+
+            for w in workers:
+                w.status = "idle"
+                w.current_task = "Ingestion complete, awaiting mining"
 
             log.info(
-                f"[{worker_id}] Corpus {corpus_id} COMPLETED: "
-                f"{total_entities} entities, "
-                f"{total_rels} relationships, "
-                f"{total_claims} claims from {total_chunks} chunks"
+                f"Corpus {corpus_id} ingestion COMPLETED: "
+                f"{sum(len(w.layer2_claims) for w in workers)} claims, "
+                f"{sum(len(w.layer3_insights) for w in workers)} insights, "
+                f"{sum(len(w.pointers) for w in workers)} pointers "
+                f"from {len(workers)} workers"
             )
             lf.end_span(corpus_span, output={
-                "entities": total_entities,
-                "relationships": total_rels,
-                "claims": total_claims,
-                "chunks": total_chunks,
+                "workers": len(workers),
+                "claims": sum(len(w.layer2_claims) for w in workers),
+                "insights": sum(len(w.layer3_insights) for w in workers),
+                "pointers": sum(len(w.pointers) for w in workers),
             })
 
-        except Exception as e:
-            log.error(
-                f"[{worker_id}] Unexpected error processing "
-                f"{corpus_id}: {e}"
+            # Phase 4: Launch perpetual mining as a separate background task
+            mining_task = asyncio.create_task(
+                _perpetual_mining_loop(corpus_id, req_id),
             )
+            _background_tasks.append(mining_task)
+            _background_tasks[:] = [t for t in _background_tasks if not t.done()]
+
+        except Exception as e:
+            log.error(f"Unexpected error processing {corpus_id}: {e}")
             lf.end_span(
                 corpus_span, output={"error": str(e)},
                 level="ERROR", status_message=str(e),
             )
-            await swarm.update_corpus(
+            await hive.update_corpus(
                 corpus_id,
                 status=CorpusStatus.FAILED,
-                error=f"Worker error: {e}",
+                error=f"Hive error: {e}",
             )
 
-        finally:
-            await swarm.update_worker(
-                worker_id, status=WorkerStatus.DONE,
-            )
-            await swarm.remove_worker(worker_id)
 
+# ---------------------------------------------------------------------------
+# Document detection and corpus submission
+# ---------------------------------------------------------------------------
 
 def _is_large_document(text: str) -> bool:
-    """Detect whether a message is a large document rather than a query.
-
-    Heuristics:
-      - Length > LARGE_DOC_THRESHOLD chars
-      - Low question density (few '?' relative to text length)
-    """
+    """Detect whether a message is a large document rather than a query."""
     if len(text) < LARGE_DOC_THRESHOLD:
         return False
     question_marks = text.count("?")
@@ -1162,10 +1567,7 @@ async def _submit_corpus(
     text: str, title: str = "", source: str = "",
     req_id: str = "",
 ) -> CorpusRecord:
-    """Submit a new corpus to the swarm for background processing.
-
-    Returns immediately -- the actual processing happens asynchronously.
-    """
+    """Submit a new corpus to the hive for background processing."""
     corpus_id = f"corpus-{uuid.uuid4().hex[:12]}"
     if not title:
         title = text[:80].replace("\n", " ").strip()
@@ -1178,14 +1580,11 @@ async def _submit_corpus(
         submitted_at=datetime.now(timezone.utc).isoformat(),
     )
 
-    await swarm.add_corpus(record)
+    await hive.add_corpus(record)
 
-    # Fire-and-forget background task -- does NOT block the response
-    task = asyncio.create_task(_process_corpus(corpus_id, text, req_id))
-    _worker_tasks.append(task)
-
-    # Clean up finished tasks
-    _worker_tasks[:] = [t for t in _worker_tasks if not t.done()]
+    task = asyncio.create_task(_hive_ingest_corpus(corpus_id, text, req_id))
+    _background_tasks.append(task)
+    _background_tasks[:] = [t for t in _background_tasks if not t.done()]
 
     log.info(
         f"Corpus {corpus_id} queued: {len(text):,} chars, "
@@ -1196,77 +1595,94 @@ async def _submit_corpus(
 
 
 # ---------------------------------------------------------------------------
-# Query handler: answer from current swarm knowledge
+# Query handler: answer from hive knowledge via pointer routing
 # ---------------------------------------------------------------------------
 
-async def _query_knowledge(query: str, req_id: str) -> str:
-    """Query the in-memory knowledge store for relevant information."""
+async def _hive_query(query: str, messages: list[dict], req_id: str) -> str:
+    """Query the hive by routing to relevant workers via pointers."""
     span = lf.start_span(
-        req_id, "swarm:query_knowledge",
+        req_id, "hive:query",
         input={"query": query[:200]},
     )
-    results = await knowledge.search(query, limit=20)
+
+    # Pointer routing: find most relevant workers
+    relevant_workers = await hive.get_workers_for_topic(query, limit=8)
+
+    if not relevant_workers:
+        # Fall back to all workers
+        relevant_workers = await hive.get_all_workers()
+
+    if not relevant_workers:
+        lf.end_span(span, output={"result": "no_workers"})
+        return (
+            "(No knowledge available yet. "
+            "The hive has not processed any corpora.)"
+        )
+
+    # Phase 1 (Fast): Collect Layer 2 claims + Layer 3 insights
     parts: list[str] = []
 
-    # Format chunks
-    chunks = results.get("chunks", [])
-    if chunks:
-        formatted = []
-        for i, c in enumerate(chunks, 1):
-            header = (
-                f"{i}. [chunk] from *{c['corpus_title']}* "
-                f"[relevance: {c['score']:.3f}]"
+    for w in relevant_workers[:8]:
+        worker_parts = [f"### Worker {w.id}"]
+
+        # Claims relevant to query
+        query_terms = set(re.findall(r"[a-z0-9]{3,}", query.lower()))
+        relevant_claims = []
+        for c in w.layer2_claims:
+            claim_lower = c.text.lower()
+            entity_match = any(
+                term in ent.lower()
+                for term in query_terms for ent in c.entities
             )
-            formatted.append(f"{header}\n{c['text']}")
-        parts.append(
-            "**Matching Text Chunks:**\n"
-            + "\n\n---\n\n".join(formatted)
-        )
+            text_match = any(term in claim_lower for term in query_terms)
+            if entity_match or text_match:
+                relevant_claims.append(c)
 
-    # Format entities
-    entities = results.get("entities", [])
-    if entities:
-        entity_text = "\n".join(
-            f"- **{e['name']}** ({e['type']}) -- "
-            f"{e['description']} "
-            f"[{e['mentions']} mentions, "
-            f"relevance: {e['score']:.3f}]"
-            for e in entities[:15]
-        )
-        parts.append(f"**Entities:**\n{entity_text}")
+        if relevant_claims:
+            claims_text = "\n".join(
+                f"- [{c.confidence}] {c.text}"
+                + (f" (contradicted: {c.contradiction_details})"
+                   if c.contradiction_flag else "")
+                for c in relevant_claims[:10]
+            )
+            worker_parts.append(f"**Claims:**\n{claims_text}")
 
-    # Format relationships
-    rels = results.get("relationships", [])
-    if rels:
-        rel_text = "\n".join(
-            f"- {r['source']} --[{r['type']}]--> "
-            f"{r['target']}: {r['description']}"
-            for r in rels[:15]
-        )
-        parts.append(f"**Relationships:**\n{rel_text}")
+        # All insights (high value)
+        if w.layer3_insights:
+            insights_text = "\n".join(
+                f"- ({i.insight_type}) {i.text}"
+                for i in w.layer3_insights[:8]
+            )
+            worker_parts.append(f"**Insights:**\n{insights_text}")
 
-    # Format claims
-    claims = results.get("claims", [])
-    if claims:
-        claim_text = "\n".join(
-            f"- [{c['confidence']}] {c['text']}"
-            for c in claims[:15]
+        # Brief understanding excerpt
+        if w.layer1_understanding:
+            worker_parts.append(
+                f"**Understanding excerpt:** {w.layer1_understanding[:500]}"
+            )
+
+        if len(worker_parts) > 1:
+            parts.append("\n".join(worker_parts))
+
+    # Add global hive insights
+    global_insights = await hive.get_global_insights()
+    if global_insights:
+        gi_text = "\n".join(
+            f"- {i.text}" for i in global_insights[-5:]
         )
-        parts.append(f"**Claims:**\n{claim_text}")
+        parts.append(f"### Hive Oracle Insights\n{gi_text}")
 
     if not parts:
-        answer = (
-            "(No knowledge available yet. "
-            "The swarm has not processed any corpora.)"
+        lf.end_span(span, output={"result": "no_relevant_knowledge"})
+        return (
+            "(The hive has workers but no knowledge relevant to this query. "
+            "Try a different question or wait for more processing.)"
         )
-        lf.end_span(span, output={"result": "no_knowledge"})
-        return answer
 
     answer = "\n\n".join(parts)
     lf.end_span(span, output={
-        "chunks": len(results.get("chunks", [])),
-        "entities": len(results.get("entities", [])),
-        "claims": len(results.get("claims", [])),
+        "workers_queried": len(relevant_workers),
+        "sections": len(parts),
     })
     return answer
 
@@ -1276,10 +1692,7 @@ async def _handle_query(
     original_body: dict,
     req_id: str,
 ) -> AsyncGenerator[str, None]:
-    """Handle a query by searching knowledge and synthesising.
-
-    This does NOT disturb the swarm -- it only reads from the store.
-    """
+    """Handle a query by searching hive knowledge and synthesising."""
     model_id = original_body.get("model", "swarm-miroflow")
     request_id = f"chatcmpl-swarm-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
@@ -1296,7 +1709,6 @@ async def _handle_query(
         )
 
     def reasoning_sse(content: str) -> str:
-        """Emit a reasoning_content delta (collapsible Thinking block)."""
         return make_sse_chunk(
             "",
             request_id=request_id,
@@ -1305,7 +1717,6 @@ async def _handle_query(
             reasoning_content=content,
         )
 
-    # Extract the user's question (strip any attachment markers)
     raw_query = extract_user_text(messages)
     parsed_q = parse_attachments(raw_query)
     user_query = parsed_q.prompt if parsed_q.has_attachments else raw_query
@@ -1319,31 +1730,29 @@ async def _handle_query(
         return
 
     query_span = lf.start_span(
-        req_id, "swarm:handle_query",
+        req_id, "hive:handle_query",
         input={"query": user_query[:300]},
     )
 
-    # Get swarm status preamble (sincerity mechanism)
-    status_preamble = await swarm.build_sincerity_preamble()
+    # Get hive status preamble
+    status_preamble = await hive.build_sincerity_preamble()
 
-    # Stream the thinking section with status
     yield reasoning_sse(status_preamble)
     yield reasoning_sse(f"**Query:** {user_query[:200]}\n\n")
 
-    # Query the knowledge store
-    yield reasoning_sse("**[Searching swarm knowledge...]**\n")
-    knowledge_results = await _query_knowledge(user_query, req_id)
+    # Query the hive via pointer routing
+    yield reasoning_sse("**[Querying hive workers via pointer network...]**\n")
+    knowledge_results = await _hive_query(user_query, messages, req_id)
 
-    # Show what we found
     result_summary = knowledge_results[:500]
     if len(knowledge_results) > 500:
         result_summary += "..."
     yield reasoning_sse(f"Found knowledge:\n{result_summary}\n\n")
 
-    # Build the synthesis prompt
-    system_prompt = _QUERY_SYSTEM_PROMPT.format(
-        swarm_status=status_preamble,
-        knowledge_results=knowledge_results,
+    # Build synthesis prompt
+    system_prompt = (_QUERY_SYSTEM_PROMPT
+        .replace("{hive_status}", status_preamble)
+        .replace("{knowledge_results}", knowledge_results)
     )
 
     synthesis_messages = [
@@ -1363,7 +1772,7 @@ async def _handle_query(
 
     yield reasoning_sse("**[Synthesising answer...]**\n")
 
-    # Call LLM for synthesis and stream the response
+    # Stream synthesis response
     try:
         async with get_throttler("mistral").throttle():
             client = http_client()
@@ -1395,7 +1804,11 @@ async def _handle_query(
                         f"[{req_id}] Synthesis LLM error "
                         f"{resp.status_code}: {error_text}"
                     )
-                    lf.end_span(query_span, output={"error": f"HTTP {resp.status_code}"}, level="ERROR")
+                    lf.end_span(
+                        query_span,
+                        output={"error": f"HTTP {resp.status_code}"},
+                        level="ERROR",
+                    )
                     yield sse(
                         "Error synthesising answer: "
                         f"{error_text[:200]}",
@@ -1430,7 +1843,7 @@ async def _handle_query(
         yield "data: [DONE]\n\n"
         return
 
-    await swarm.increment_queries()
+    await hive.increment_queries()
     lf.end_span(query_span, output={"status": "complete"})
 
     yield sse("", finish_reason="stop")
@@ -1442,11 +1855,7 @@ async def _handle_corpus_submission(
     original_body: dict,
     req_id: str,
 ) -> AsyncGenerator[str, None]:
-    """Handle a large document by submitting it to the swarm.
-
-    Returns immediately with a confirmation -- the actual processing
-    happens in the background without blocking.
-    """
+    """Handle a large document by submitting it to the hive."""
     model_id = original_body.get("model", "swarm-miroflow")
     request_id = f"chatcmpl-swarm-ingest-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
@@ -1464,12 +1873,11 @@ async def _handle_corpus_submission(
 
     title = text[:80].replace("\n", " ").strip()
     submit_span = lf.start_span(
-        req_id, "swarm:corpus_submission",
+        req_id, "hive:corpus_submission",
         input={"title": title, "chars": len(text)},
     )
 
     def reasoning_sse(content: str) -> str:
-        """Emit a reasoning_content delta (collapsible Thinking block)."""
         return make_sse_chunk(
             "",
             request_id=request_id,
@@ -1481,46 +1889,43 @@ async def _handle_corpus_submission(
     yield reasoning_sse(f"**[Corpus Received]** {len(text):,} characters\n")
     yield reasoning_sse(f"Title: {title}...\n")
     yield reasoning_sse(
-        "Submitting to the swarm for background processing...\n",
+        "Submitting to the hive for background processing...\n",
     )
 
-    # Submit to the swarm -- this returns immediately
     record = await _submit_corpus(
         text, title=title, source="chat-submission",
         req_id=req_id,
     )
 
     yield reasoning_sse(f"Corpus ID: {record.id}\n")
-    yield reasoning_sse("Status: Queued for processing\n")
+    yield reasoning_sse("Status: Queued for hive processing\n")
 
-    # Show current swarm state
-    status = await swarm.build_sincerity_preamble()
+    status = await hive.build_sincerity_preamble()
     yield reasoning_sse(f"\n{status}")
 
-    # User-facing response
-    snapshot = await swarm.get_status_snapshot()
+    snapshot = await hive.get_status_snapshot()
     yield sse(
-        f"## Corpus Submitted to Swarm\n\n"
+        f"## Corpus Submitted to Hive\n\n"
         f"Your document ({len(text):,} characters) has been submitted "
-        f"to the swarm for background processing.\n\n"
+        f"to the hive for background processing.\n\n"
         f"**Corpus ID:** `{record.id}`\n"
         f"**Title:** {title}\n\n"
-        f"The swarm will now:\n"
-        f"1. Decompose the text into overlapping chunks\n"
-        f"2. Use LLM agents to extract entities, claims, and "
-        f"relationships from each chunk\n"
-        f"3. Merge extracted knowledge into the swarm's in-memory "
-        f"knowledge store\n"
-        f"4. Make all extracted knowledge immediately queryable\n\n"
+        f"The hive will now:\n"
+        f"1. Assign chunks to workers who build layered understanding\n"
+        f"2. Workers survey and extract claims, entities, and insights\n"
+        f"3. Multi-channel gossip for cross-referencing and contradiction detection\n"
+        f"4. Interrogation round: re-read chunks with focused questions\n"
+        f"5. Perpetual mining for deeper insights (runs in background)\n\n"
         f"**You can ask questions immediately** -- I will answer from "
-        f"whatever knowledge the swarm has built so far and be honest "
+        f"whatever knowledge the hive has built so far and be honest "
         f"about what has and hasn't been processed yet.\n\n"
         f"This submission does not interrupt any ongoing processing. "
-        f"The swarm continues its current work and will process this "
+        f"The hive continues its current work and will process this "
         f"corpus when a worker becomes available.\n\n"
-        f"**Current swarm:** {snapshot['total_corpora']} corpora, "
-        f"{snapshot['active_workers']} active workers, "
-        f"{snapshot['total_entities']} entities in knowledge store.\n"
+        f"**Current hive:** {snapshot['total_corpora']} corpora, "
+        f"{snapshot['total_workers']} workers, "
+        f"{snapshot['total_claims']} claims, "
+        f"{snapshot['total_insights']} insights.\n"
     )
 
     lf.end_span(submit_span, output={
@@ -1548,6 +1953,9 @@ register_standard_routes(
         "worker_model": WORKER_MODEL,
         "max_workers": MAX_SWARM_WORKERS,
         "max_concurrent_queries": MAX_CONCURRENT_QUERIES,
+        "gossip_rounds": HIVE_GOSSIP_ROUNDS,
+        "mining_interval": HIVE_MINING_INTERVAL,
+        "max_mining_cycles": HIVE_MAX_MINING_CYCLES,
     },
 )
 
@@ -1569,38 +1977,144 @@ async def list_models():
 
 @app.get("/v1/swarm/status")
 async def swarm_status():
-    """Return complete swarm status."""
-    snapshot = await swarm.get_status_snapshot()
+    """Return complete hive status."""
+    snapshot = await hive.get_status_snapshot()
     return JSONResponse(snapshot)
 
 
 @app.get("/v1/swarm/corpora")
 async def swarm_corpora():
     """List all submitted corpora with their processing status."""
-    corpora = await swarm.get_corpora_list()
+    corpora = await hive.get_corpora_list()
     return JSONResponse({"corpora": corpora, "count": len(corpora)})
 
 
 @app.get("/v1/swarm/sincerity")
 async def swarm_sincerity():
     """Return the current sincerity preamble."""
-    preamble = await swarm.build_sincerity_preamble()
+    preamble = await hive.build_sincerity_preamble()
     return JSONResponse({"preamble": preamble})
 
 
-@app.get("/v1/swarm/knowledge")
-async def swarm_knowledge_stats():
-    """Return statistics about the in-memory knowledge store."""
-    stats = await knowledge.stats()
-    return JSONResponse(stats)
+@app.get("/v1/swarm/hive")
+async def swarm_hive():
+    """Full hive status with worker layer sizes, pointer counts, mining status."""
+    snapshot = await hive.get_status_snapshot()
+    global_insights = await hive.get_global_insights()
+    return JSONResponse({
+        **snapshot,
+        "global_insight_details": [
+            {
+                "text": i.text,
+                "insight_type": i.insight_type,
+                "source_worker_id": i.source_worker_id,
+            }
+            for i in global_insights
+        ],
+    })
+
+
+@app.get("/v1/swarm/insights")
+async def swarm_insights():
+    """All Layer 3 insights across hive + global Hive Oracle insights."""
+    workers = await hive.get_all_workers()
+    worker_insights = []
+    for w in workers:
+        for i in w.layer3_insights:
+            worker_insights.append({
+                "text": i.text,
+                "insight_type": i.insight_type,
+                "source_worker_id": i.source_worker_id or w.id,
+                "cycle_created": i.cycle_created,
+            })
+
+    global_insights = await hive.get_global_insights()
+    return JSONResponse({
+        "worker_insights": worker_insights,
+        "global_insights": [
+            {
+                "text": i.text,
+                "insight_type": i.insight_type,
+                "source_worker_id": i.source_worker_id,
+            }
+            for i in global_insights
+        ],
+        "total_worker_insights": len(worker_insights),
+        "total_global_insights": len(global_insights),
+    })
+
+
+@app.get("/v1/swarm/workers/{worker_id}")
+async def swarm_worker_detail(worker_id: str):
+    """Detailed view of a single worker's layers."""
+    worker = await hive.get_worker(worker_id)
+    if not worker:
+        return JSONResponse(
+            {"error": f"Worker {worker_id} not found"},
+            status_code=404,
+        )
+
+    return JSONResponse({
+        "id": worker.id,
+        "corpus_id": worker.corpus_id,
+        "status": worker.status,
+        "current_task": worker.current_task,
+        "assigned_chunk_indices": worker.assigned_chunk_indices,
+        "layer1_understanding": worker.layer1_understanding[:2000],
+        "layer1_version": worker.layer1_version,
+        "layer2_claims": [
+            {
+                "text": c.text,
+                "confidence": c.confidence,
+                "entities": c.entities,
+                "contradiction_flag": c.contradiction_flag,
+                "contradiction_details": c.contradiction_details,
+            }
+            for c in worker.layer2_claims
+        ],
+        "layer2_version": worker.layer2_version,
+        "layer3_insights": [
+            {
+                "text": i.text,
+                "insight_type": i.insight_type,
+                "source_worker_id": i.source_worker_id,
+                "cycle_created": i.cycle_created,
+            }
+            for i in worker.layer3_insights
+        ],
+        "layer3_version": worker.layer3_version,
+        "pointers": [
+            {
+                "topic": p.topic,
+                "target_worker_id": p.target_worker_id,
+                "strength": p.strength,
+                "excerpt": p.excerpt,
+            }
+            for p in worker.pointers
+        ],
+        "gossip_rounds_completed": worker.gossip_rounds_completed,
+        "mining_cycles_completed": worker.mining_cycles_completed,
+        "total_llm_calls": worker.total_llm_calls,
+    })
+
+
+@app.post("/v1/swarm/mining/pause")
+async def mining_pause():
+    """Pause the perpetual mining loop."""
+    await hive.set_mining_active(False)
+    return JSONResponse({"mining_active": False, "message": "Mining paused"})
+
+
+@app.post("/v1/swarm/mining/resume")
+async def mining_resume():
+    """Resume the perpetual mining loop."""
+    await hive.set_mining_active(True)
+    return JSONResponse({"mining_active": True, "message": "Mining resumed"})
 
 
 @app.post("/v1/swarm/submit")
 async def submit_corpus_api(request: Request):
-    """Direct API endpoint to submit a corpus for swarm processing.
-
-    Body: {"text": "...", "title": "optional", "source": "optional"}
-    """
+    """Direct API endpoint to submit a corpus for hive processing."""
     try:
         body = await request.json()
     except Exception as e:
@@ -1625,7 +2139,7 @@ async def submit_corpus_api(request: Request):
     source = body.get("source", "api-submission")
 
     record = await _submit_corpus(text, title=title, source=source)
-    snapshot = await swarm.get_status_snapshot()
+    snapshot = await hive.get_status_snapshot()
 
     return JSONResponse({
         "corpus_id": record.id,
@@ -1633,9 +2147,10 @@ async def submit_corpus_api(request: Request):
         "total_chars": record.total_chars,
         "status": record.status.value,
         "message": (
-            f"Corpus submitted for background processing. "
-            f"Swarm has {snapshot['total_corpora']} corpora, "
-            f"{snapshot['active_workers']} active workers."
+            f"Corpus submitted for hive processing. "
+            f"Hive has {snapshot['total_corpora']} corpora, "
+            f"{snapshot['total_workers']} workers, "
+            f"{snapshot['active_workers']} active."
         ),
     })
 
@@ -1684,14 +2199,13 @@ async def chat_completions(request: Request):
         messages=len(messages), phase="init",
     )
 
-    # --- Langfuse trace (only for non-utility requests) ---
     trace_id = lf.create_trace_id(req_id)
     lf.register_trace(req_id, trace_id)
 
-    # Utility requests (title/tag generation) pass through
+    # Utility requests pass through
     if utility:
         log.info(f"[{req_id}] Routing to PASSTHROUGH")
-        lf.unregister_trace(req_id)  # no spans needed for utility
+        lf.unregister_trace(req_id)
         generator = stream_passthrough(
             messages, body,
             req_id=req_id,
@@ -1703,19 +2217,10 @@ async def chat_completions(request: Request):
             log=log,
         )
     else:
-        # Extract the last user message and check for file attachments.
-        # Use extract_user_text_with_attachments() which also checks system
-        # messages for the LibreChat attachment block (LibreChat v0.8.x
-        # sends file content as a system message, not in the user message).
         user_text = extract_user_text_with_attachments(messages)
         parsed = parse_attachments(user_text)
 
         if parsed.has_attachments:
-            # --- File attachments detected ---
-            # Submit each document to the swarm for gossiping.
-            # The swarm agents will read batches, gossip about content,
-            # and spawn more agents if more context space is needed.
-            # If there's a prompt, it becomes an immediate query.
             doc_summary = ", ".join(
                 f"{d.filename} ({len(d.content):,} chars)"
                 for d in parsed.documents
@@ -1726,7 +2231,6 @@ async def chat_completions(request: Request):
             )
 
             async def _handle_attachment_submission():
-                """Submit attached docs to swarm and optionally query."""
                 model_id = body.get("model", "swarm-miroflow")
                 request_id = f"chatcmpl-swarm-attach-{uuid.uuid4().hex[:12]}"
                 created = int(time.time())
@@ -1753,7 +2257,6 @@ async def chat_completions(request: Request):
                     )
 
                 try:
-                    # Submit each document as a corpus
                     yield reasoning_sse(
                         f"**[Attachments Received]** "
                         f"{len(parsed.documents)} document(s)\n"
@@ -1774,34 +2277,29 @@ async def chat_completions(request: Request):
                         submitted_ids.append(record.id)
                         yield reasoning_sse(
                             f"  -> Corpus {record.id} queued "
-                            f"for swarm processing\n"
+                            f"for hive processing\n"
                         )
 
                     yield reasoning_sse(
-                        "\nThe swarm will now gossip about "
-                        "these documents — reading them in batches, "
-                        "extracting knowledge, and building ever-deeper "
-                        "insights through collaborative discussion.\n\n"
+                        "\nThe hive will now survey, gossip, "
+                        "and mine these documents -- building layered "
+                        "knowledge through multi-channel collaboration.\n\n"
                     )
 
-                    status = await swarm.build_sincerity_preamble()
+                    status = await hive.build_sincerity_preamble()
                     yield reasoning_sse(f"\n{status}")
 
                     if parsed.prompt:
-                        # User also typed a question — answer it
                         yield reasoning_sse(
-                            f"\n**[Answering query while swarm "
+                            f"\n**[Answering query while hive "
                             f"processes documents...]**\n"
                             f"Query: {parsed.prompt[:200]}\n\n"
                         )
 
-                        # Query the knowledge store (may have
-                        # partial results if processing already started)
-                        knowledge_results = await _query_knowledge(
-                            parsed.prompt, req_id,
+                        knowledge_results = await _hive_query(
+                            parsed.prompt, messages, req_id,
                         )
 
-                        # Build synthesis with document context
                         doc_context = "\n\n".join(
                             f"[From attachment: {d.filename}]\n"
                             f"{d.content}"
@@ -1810,26 +2308,26 @@ async def chat_completions(request: Request):
 
                         system_prompt = (
                             "You are a research analyst powered by a "
-                            "swarm knowledge system. The user has just "
-                            "submitted document(s) to the swarm for "
+                            "hive knowledge system. The user has just "
+                            "submitted document(s) to the hive for "
                             "deep analysis.\n\n"
-                            "The swarm is currently processing these "
-                            "documents — gossiping about them to extract "
-                            "knowledge. Meanwhile, answer the user's "
+                            "The hive is currently processing these "
+                            "documents -- surveying, gossiping, and mining "
+                            "them for insights. Meanwhile, answer the user's "
                             "question using the document content provided "
-                            "and any knowledge already in the store.\n\n"
-                            "**SWARM STATUS:**\n"
+                            "and any knowledge already in the hive.\n\n"
+                            "**HIVE STATUS:**\n"
                             f"{status}\n\n"
                             "**DOCUMENT EXCERPTS:**\n"
                             f"{doc_context}\n\n"
                             "**EXISTING KNOWLEDGE:**\n"
                             f"{knowledge_results}\n\n"
                             "**RULES:**\n"
-                            "- Answer from the documents and knowledge "
-                            "store. Be thorough and specific.\n"
-                            "- Note that the swarm is still processing — "
+                            "- Answer from the documents and hive "
+                            "knowledge. Be thorough and specific.\n"
+                            "- Note that the hive is still processing -- "
                             "deeper insights will be available as the "
-                            "swarm continues its work.\n"
+                            "hive continues its work.\n"
                             "- Be direct. No moralising.\n"
                         )
 
@@ -1893,32 +2391,32 @@ async def chat_completions(request: Request):
                                         except json.JSONDecodeError:
                                             pass
 
-                        await swarm.increment_queries()
+                        await hive.increment_queries()
                     else:
-                        # No query — just confirm submission
-                        snapshot = await swarm.get_status_snapshot()
+                        snapshot = await hive.get_status_snapshot()
                         corpus_list = ", ".join(
                             f"`{cid}`" for cid in submitted_ids
                         )
                         yield sse(
-                            f"## Documents Submitted to Swarm\n\n"
+                            f"## Documents Submitted to Hive\n\n"
                             f"**{len(parsed.documents)} document(s)** "
-                            f"submitted for swarm processing.\n\n"
+                            f"submitted for hive processing.\n\n"
                             f"**Corpus IDs:** {corpus_list}\n\n"
-                            f"The swarm agents will now:\n"
-                            f"1. Read documents in batches\n"
-                            f"2. Gossip about content — building "
-                            f"collaborative insights\n"
-                            f"3. Spawn more agents if more context "
-                            f"space is needed\n"
-                            f"4. Continuously refine understanding\n\n"
-                            f"**Ask questions at any time** — I'll "
-                            f"answer from the swarm's current "
+                            f"The hive workers will now:\n"
+                            f"1. Survey chunks and build layered "
+                            f"understanding\n"
+                            f"2. Gossip across channels -- sharing claims, "
+                            f"insights, and contradictions\n"
+                            f"3. Interrogate raw text with focused "
+                            f"questions\n"
+                            f"4. Perpetually mine for deeper insights\n\n"
+                            f"**Ask questions at any time** -- I'll "
+                            f"answer from the hive's current "
                             f"collective understanding.\n\n"
-                            f"**Current swarm:** "
+                            f"**Current hive:** "
                             f"{snapshot['total_corpora']} corpora, "
-                            f"{snapshot['active_workers']} active "
-                            f"workers.\n"
+                            f"{snapshot['total_workers']} workers, "
+                            f"{snapshot['total_claims']} claims.\n"
                         )
 
                     yield sse("", finish_reason="stop")
@@ -1932,9 +2430,8 @@ async def chat_completions(request: Request):
             generator = _handle_attachment_submission()
 
         elif _is_large_document(parsed.prompt or user_text):
-            # Large document without attachment markers -> submit to swarm
             log.info(
-                f"[{req_id}] Routing to SWARM CORPUS SUBMISSION "
+                f"[{req_id}] Routing to HIVE CORPUS SUBMISSION "
                 f"({len(user_text):,} chars)"
             )
 
@@ -1951,7 +2448,6 @@ async def chat_completions(request: Request):
 
             generator = _guarded_submit()
         else:
-            # Regular query -> answer from swarm knowledge
             if not query_limiter.available():
                 lf.unregister_trace(req_id)
                 tracker.finish(req_id)
@@ -1969,7 +2465,7 @@ async def chat_completions(request: Request):
                     },
                 )
 
-            log.info(f"[{req_id}] Routing to SWARM QUERY")
+            log.info(f"[{req_id}] Routing to HIVE QUERY")
 
             async def _guarded_query():
                 try:

@@ -321,8 +321,12 @@ async def stream_xai(
     max_tokens: int = 4096,
     req_id: str = "",
     extra_body: Optional[dict] = None,
-) -> AsyncGenerator[str, None]:
-    """Stream a single xAI model's response. Yields content deltas."""
+) -> AsyncGenerator[tuple[str, str], None]:
+    """Stream a single xAI model's response.
+
+    Yields ``(content, reasoning_content)`` tuples so callers can forward
+    both the visible answer *and* the model's chain-of-thought to the UI.
+    """
     headers = {
         "Authorization": f"Bearer {XAI_API_KEY}",
         "Content-Type": "application/json",
@@ -363,8 +367,9 @@ async def stream_xai(
                     chunk = json.loads(payload)
                     delta = chunk.get("choices", [{}])[0].get("delta", {})
                     content = delta.get("content", "")
-                    if content:
-                        yield content
+                    reasoning = delta.get("reasoning_content", "")
+                    if content or reasoning:
+                        yield content, reasoning
                 except json.JSONDecodeError:
                     pass
     except Exception as e:
@@ -397,8 +402,17 @@ async def run_race(
             reasoning_content=reasoning,
         )
 
-    # Status in reasoning block
-    yield _chunk("", reasoning=f"Racing {len(models)} xAI models: {', '.join(models)}...\n")
+    # --- Pliny-style editorial thoughts ---
+    yield _chunk("", reasoning=(
+        f"[xAI RACE — {tier['description']}]\n"
+        f"Deploying {len(models)} models in parallel arena:\n"
+    ))
+    for m in models:
+        info = XAI_MODELS.get(m, {})
+        ctx = info.get('context', '?')
+        tag = ' (reasoning)' if info.get('reasoning') else ''
+        yield _chunk("", reasoning=f"  • {m}{tag} — {ctx:,} ctx\n")
+    yield _chunk("", reasoning="\nAll models received the same prompt. Scoring: substance, structure, directness. Penalties: refusals, hedging.\n\n")
 
     # Query all models in parallel
     sem = asyncio.Semaphore(MAX_CONCURRENT_MODELS)
@@ -410,15 +424,22 @@ async def run_race(
 
     tasks = [asyncio.create_task(query_model(m)) for m in models]
     results: list[tuple[str, str, float]] = []
+    finished = 0
 
     for coro in asyncio.as_completed(tasks):
         model_name, response = await coro
+        finished += 1
         if response:
             sc = score_response(response)
             results.append((model_name, response, sc))
-            yield _chunk("", reasoning=f"  {model_name}: {len(response)} chars, score={sc:.1f}\n")
+            preview = response[:120].replace('\n', ' ')
+            yield _chunk("", reasoning=(
+                f"[{finished}/{len(models)}] {model_name} responded — "
+                f"{len(response):,} chars, score {sc:.1f}\n"
+                f"    \"{preview}...\"\n"
+            ))
         else:
-            yield _chunk("", reasoning=f"  {model_name}: failed/empty\n")
+            yield _chunk("", reasoning=f"[{finished}/{len(models)}] {model_name} — no response\n")
 
     if not results:
         yield _chunk("All xAI models failed or returned empty responses.", finish_reason="stop")
@@ -429,7 +450,17 @@ async def run_race(
     results.sort(key=lambda x: x[2], reverse=True)
     winner_model, winner_text, winner_score = results[0]
 
-    yield _chunk("", reasoning=f"\nWinner: {winner_model} (score={winner_score:.1f})\n")
+    # Editorial verdict
+    verdict_parts = [f"\n{'='*40}\n"]
+    verdict_parts.append(f"WINNER: {winner_model} (score {winner_score:.1f})\n")
+    if len(results) > 1:
+        runner = results[1]
+        verdict_parts.append(f"Runner-up: {runner[0]} (score {runner[2]:.1f}, delta {winner_score - runner[2]:.1f})\n")
+    if any(sc < 0 for _, _, sc in results):
+        refusers = [m for m, _, sc in results if sc < 0]
+        verdict_parts.append(f"Refused/hedged: {', '.join(refusers)}\n")
+    verdict_parts.append(f"{'='*40}\n")
+    yield _chunk("", reasoning="".join(verdict_parts))
 
     # Stream the winning response
     for i in range(0, len(winner_text), 50):
@@ -450,7 +481,12 @@ async def stream_single(
     req_id: str,
     original_body: dict,
 ) -> AsyncGenerator[str, None]:
-    """Stream a single xAI model with proper SSE formatting."""
+    """Stream a single xAI model with proper SSE formatting.
+
+    Forwards both ``content`` and ``reasoning_content`` from the upstream
+    xAI response so LibreChat renders a collapsible Thoughts section for
+    reasoning models.
+    """
     request_id = f"chatcmpl-xai-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
     model_id = f"xai-{model}"
@@ -467,30 +503,28 @@ async def stream_single(
     # Pass through temperature if set
     temp = original_body.get("temperature", 0.7)
 
-    async for delta in stream_xai(
+    async for content, reasoning in stream_xai(
         model, messages,
         temperature=temp,
         req_id=req_id,
         extra_body=extra_body if extra_body else None,
     ):
-        data = {
-            "id": request_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model_id,
-            "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
-        }
-        yield f"data: {json.dumps(data)}\n\n"
+        yield make_sse_chunk(
+            content,
+            request_id=request_id,
+            created=created,
+            model_id=model_id,
+            reasoning_content=reasoning if reasoning else None,
+        )
 
     # Final chunk
-    data = {
-        "id": request_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model_id,
-        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-    }
-    yield f"data: {json.dumps(data)}\n\n"
+    yield make_sse_chunk(
+        "",
+        request_id=request_id,
+        created=created,
+        model_id=model_id,
+        finish_reason="stop",
+    )
     yield "data: [DONE]\n\n"
 
 

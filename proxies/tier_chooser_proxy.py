@@ -566,9 +566,12 @@ async def run_tier_race(
                 model_name, messages,
                 temperature=0.7, max_tokens=4096, req_id=req_id,
             )
-            result = score_response(content, user_query) if content else {
-                "score": -9999, "is_refusal": True, "hedge_count": 0,
-            }
+            if not content:
+                # Empty string means timeout, HTTP error, or exception — not a refusal
+                return {"model": model_name, "content": "", "score": -9999,
+                        "is_refusal": False, "is_empty": True, "hedge_count": 0}
+            result = score_response(content, user_query)
+            result["is_empty"] = False
             return {"model": model_name, "content": content, **result}
 
     tasks = [asyncio.create_task(query_model(m)) for m in models]
@@ -579,27 +582,40 @@ async def run_tier_race(
         result = await coro
         results.append(result)
         completed += 1
-        status = "REFUSAL" if result["is_refusal"] else f"score={result['score']}"
+        if result.get("is_empty"):
+            status = "ERROR/TIMEOUT"
+        elif result["is_refusal"]:
+            status = "REFUSAL"
+        else:
+            status = f"score={result['score']}"
         short_model = result["model"].split("/")[-1]
         yield _chunk("", reasoning=f"  [{completed}/{len(models)}] {short_model}: {status}\n")
 
-    valid = [r for r in results if not r["is_refusal"] and r["content"]]
+    valid = [r for r in results if not r["is_refusal"] and not r.get("is_empty") and r["content"]]
     if not valid:
-        yield _chunk(
-            f"All {len(models)} models in the {tier} tier refused or returned empty. Try rephrasing.",
-            finish_reason="stop",
-        )
+        empty_count = sum(1 for r in results if r.get("is_empty"))
+        refusal_count = sum(1 for r in results if r["is_refusal"] and not r.get("is_empty"))
+        msg = f"All {len(models)} models in the {tier} tier failed"
+        if empty_count and refusal_count:
+            msg += f" ({refusal_count} refused, {empty_count} timed out/errored)"
+        elif empty_count:
+            msg += f" ({empty_count} timed out/errored)"
+        elif refusal_count:
+            msg += f" ({refusal_count} refused)"
+        msg += ". Try rephrasing."
+        yield _chunk(msg, finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
 
     best = max(valid, key=lambda r: r["score"])
     short_winner = best["model"].split("/")[-1]
     avg_score = sum(r["score"] for r in valid) / len(valid)
-    refusal_count = sum(1 for r in results if r["is_refusal"])
+    refusal_count = sum(1 for r in results if r["is_refusal"] and not r.get("is_empty"))
+    empty_count = sum(1 for r in results if r.get("is_empty"))
 
     yield _chunk("", reasoning=(
         f"\nResults: {len(valid)} valid / {refusal_count} refused / "
-        f"{len(results) - len(valid) - refusal_count} empty\n"
+        f"{empty_count} error\n"
         f"Winner: {short_winner} (score={best['score']}, avg={avg_score:.0f})\n"
     ))
 

@@ -538,7 +538,12 @@ def build_model_list() -> list[dict]:
 # ============================================================================
 
 app = create_app("xai-native-proxy")
-register_standard_routes(app, tracker, log)
+register_standard_routes(
+    app,
+    service_name="xai-native-proxy",
+    log_dir=LOG_DIR,
+    tracker=tracker,
+)
 register_ingest_routes(app, INGEST_DB, log)
 
 

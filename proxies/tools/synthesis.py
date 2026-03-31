@@ -1883,6 +1883,7 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
     # before the research is actually complete.
     report_url = ""
     metrics_url = ""
+    metrics_dict: dict = {}
     if not targeted:
         mc = _metrics_collectors.get(req_id)
         if mc:
@@ -1982,7 +1983,7 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
             wiki_html = generate_wiki_article(
                 conditions=all_conditions,
                 query=state["user_query"],
-                metrics=metrics_dict if 'metrics_dict' in dir() else {},
+                metrics=metrics_dict,
             )
             log.info(
                 "[%s] Generated knowledge wiki: %d chars from %d conditions",
@@ -2264,10 +2265,11 @@ async def _pipeline_producer(
         wiki_html = final_state.get("wiki_html", "")
         if wiki_html:
             wiki_title = final_state.get("user_query", "Research")[:60]
+            safe_title = wiki_title.replace('"', '&quot;').replace('}', '').replace('{', '')
             artifact_block = (
                 f"\n\n:::artifact{{identifier=\"knowledge-wiki-{req_id[:8]}\" "
                 f"type=\"text/html\" "
-                f"title=\"Knowledge Base: {wiki_title}\"}}"
+                f"title=\"Knowledge Base: {safe_title}\"}}"
                 f"\n{wiki_html}\n"
                 f":::\n\n"
             )

@@ -511,13 +511,20 @@ async def _wiki_agent_loop(
                     "is available now."
                 )
 
-                prompt = _WIKI_AGENT_PROMPT.format(
-                    query=user_query,
-                    conditions_text=conditions_text[:12000],  # cap context size
-                    phase=activity.get("phase", "researching"),
-                    active_questions=active_qs_str,
-                    sources_count=activity.get("sources_count", 0),
-                    progress_note=progress_note,
+                # Use .replace() instead of .format() to avoid
+                # KeyError when user_query or conditions contain { or }
+                prompt = _WIKI_AGENT_PROMPT.replace(
+                    "{query}", user_query
+                ).replace(
+                    "{conditions_text}", conditions_text[:12000]
+                ).replace(
+                    "{phase}", activity.get("phase", "researching")
+                ).replace(
+                    "{active_questions}", active_qs_str
+                ).replace(
+                    "{sources_count}", str(activity.get("sources_count", 0))
+                ).replace(
+                    "{progress_note}", progress_note
                 )
 
                 messages = [
@@ -2449,16 +2456,23 @@ async def _pipeline_producer(
                 url_to_num, _ = _build_source_index(all_conditions)
                 by_angle = _group_by_angle(all_conditions)
 
-                final_prompt = _WIKI_AGENT_PROMPT.format(
-                    query=user_query,
-                    conditions_text=conditions_text[:12000],
-                    phase="completed",
-                    active_questions="none — research is complete",
-                    sources_count=len(url_to_num),
-                    progress_note=(
+                # Use .replace() instead of .format() to avoid
+                # KeyError when user_query or conditions contain { or }
+                final_prompt = _WIKI_AGENT_PROMPT.replace(
+                    "{query}", user_query
+                ).replace(
+                    "{conditions_text}", conditions_text[:12000]
+                ).replace(
+                    "{phase}", "completed"
+                ).replace(
+                    "{active_questions}", "none — research is complete"
+                ).replace(
+                    "{sources_count}", str(len(url_to_num))
+                ).replace(
+                    "{progress_note}", (
                         "\n9. This is the FINAL version — research is "
                         "complete. Write a comprehensive, polished article."
-                    ),
+                    )
                 )
                 messages = [
                     {"role": "system", "content": final_prompt},

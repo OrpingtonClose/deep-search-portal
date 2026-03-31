@@ -275,13 +275,6 @@ async def chat_completions(request: Request):
             log.info(f"[{req_id}] Sprint RESEARCH (with docs)")
 
             async def _guarded_research_with_docs():
-                yield make_sse_chunk(
-                    "",
-                    request_id=f"chatcmpl-sprint-{req_id[:12]}",
-                    created=int(time.time()),
-                    model_id=body.get("model", "miroflow-sprint"),
-                    reasoning_content="",
-                )
                 async with limiter.hold():
                     async for event in run_persistent_research(
                         augmented_messages, body, req_id,
@@ -339,17 +332,6 @@ async def chat_completions(request: Request):
             log.info(f"[{req_id}] Sprint RESEARCH")
 
             async def _guarded_research():
-                # Yield an initial empty reasoning_content data chunk so
-                # LibreChat receives a valid ``data:`` line before the
-                # concurrency limiter or pipeline startup emit keepalive
-                # SSE comments that the stream handler ignores.
-                yield make_sse_chunk(
-                    "",
-                    request_id=f"chatcmpl-sprint-{req_id[:12]}",
-                    created=int(time.time()),
-                    model_id=body.get("model", "miroflow-sprint"),
-                    reasoning_content="",
-                )
                 async with limiter.hold():
                     async for event in run_persistent_research(
                         messages, body, req_id,

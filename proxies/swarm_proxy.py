@@ -1305,6 +1305,11 @@ async def _handle_query(
             reasoning_content=content,
         )
 
+    # Yield an initial empty reasoning_content data chunk immediately so
+    # LibreChat's stream handler receives a valid ``data:`` line within
+    # its timeout window before any async delays.
+    yield reasoning_sse("")
+
     # Extract the user's question (strip any attachment markers)
     raw_query = extract_user_text(messages)
     parsed_q = parse_attachments(raw_query)
@@ -1477,6 +1482,11 @@ async def _handle_corpus_submission(
             model_id=model_id,
             reasoning_content=content,
         )
+
+    # Yield an initial empty reasoning_content data chunk immediately so
+    # LibreChat's stream handler receives a valid ``data:`` line within
+    # its timeout window before any async delays.
+    yield reasoning_sse("")
 
     yield reasoning_sse(f"**[Corpus Received]** {len(text):,} characters\n")
     yield reasoning_sse(f"Title: {title}...\n")
@@ -1939,13 +1949,6 @@ async def chat_completions(request: Request):
             )
 
             async def _guarded_submit():
-                yield make_sse_chunk(
-                    "",
-                    request_id=f"chatcmpl-swarm-ingest-{req_id[:12]}",
-                    created=int(time.time()),
-                    model_id=body.get("model", "swarm-miroflow"),
-                    reasoning_content="",
-                )
                 try:
                     async for event in _handle_corpus_submission(
                         user_text, body, req_id,
@@ -1979,17 +1982,6 @@ async def chat_completions(request: Request):
             log.info(f"[{req_id}] Routing to SWARM QUERY")
 
             async def _guarded_query():
-                # Yield an initial empty reasoning_content data chunk so
-                # LibreChat receives a valid ``data:`` line before the
-                # query limiter or knowledge lookup emit keepalive
-                # SSE comments that the stream handler ignores.
-                yield make_sse_chunk(
-                    "",
-                    request_id=f"chatcmpl-swarm-{req_id[:12]}",
-                    created=int(time.time()),
-                    model_id=body.get("model", "swarm-miroflow"),
-                    reasoning_content="",
-                )
                 try:
                     async with query_limiter.hold():
                         async for event in _handle_query(

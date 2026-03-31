@@ -993,6 +993,8 @@ class PersistentResearchState(TypedDict):
     # Uses SHA-256 truncated hex for determinism across process restarts.
     persisted_fact_hashes: list[str]
     extracted_fact_hashes: list[str]
+    # --- Knowledge wiki HTML (emitted as LibreChat Artifact) ---
+    wiki_html: str
     # --- Conversation continuity fields ---
     conversation_id: str
     conversation_turn: int
@@ -1972,6 +1974,23 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
             "report_url": report_url,
         })
 
+    # --- Generate knowledge wiki article ---
+    wiki_html = ""
+    if not targeted and all_conditions:
+        try:
+            from knowledge_wiki import generate_wiki_article
+            wiki_html = generate_wiki_article(
+                conditions=all_conditions,
+                query=state["user_query"],
+                metrics=metrics_dict if 'metrics_dict' in dir() else {},
+            )
+            log.info(
+                "[%s] Generated knowledge wiki: %d chars from %d conditions",
+                req_id, len(wiki_html), len(all_conditions),
+            )
+        except Exception as wiki_err:
+            log.warning("[%s] Failed to generate knowledge wiki: %s", req_id, wiki_err)
+
     return {
         "final_answer": final_answer,
         "targeted_questions": targeted,
@@ -1979,6 +1998,7 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         "phase": "done" if not targeted else "synthesize",
         "report_url": report_url,
         "metrics_url": metrics_url,
+        "wiki_html": wiki_html,
     }
 
 
@@ -2240,6 +2260,20 @@ async def _pipeline_producer(
         if link_lines:
             await output_queue.put(chunk_fn(" | ".join(link_lines) + "\n\n"))
 
+        # --- Emit knowledge wiki as LibreChat Artifact ---
+        wiki_html = final_state.get("wiki_html", "")
+        if wiki_html:
+            wiki_title = final_state.get("user_query", "Research")[:60]
+            artifact_block = (
+                f"\n\n:::artifact{{identifier=\"knowledge-wiki-{req_id[:8]}\" "
+                f"type=\"text/html\" "
+                f"title=\"Knowledge Base: {wiki_title}\"}}"
+                f"\n{wiki_html}\n"
+                f":::\n\n"
+            )
+            for i in range(0, len(artifact_block), 200):
+                await output_queue.put(chunk_fn(artifact_block[i:i + 200]))
+
         final_answer = final_state.get("final_answer") or "(No answer generated)"
         for i in range(0, len(final_answer), 200):
             await output_queue.put(chunk_fn(final_answer[i:i + 200]))
@@ -2428,6 +2462,8 @@ async def run_persistent_research(
         # Identity-based dedup lists (prevent duplicate persist/entity-extraction)
         "persisted_fact_hashes": [],
         "extracted_fact_hashes": [],
+        # Knowledge wiki HTML (populated by synthesize node)
+        "wiki_html": "",
         # Conversation continuity fields
         "conversation_id": conversation_id,
         "conversation_turn": conversation_turn,

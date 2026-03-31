@@ -2400,6 +2400,7 @@ async def _pipeline_producer(
     req_id: str,
     graph: Any = None,
     reasoning_chunk_fn=None,
+    wiki_agent_task: Optional[asyncio.Task] = None,
 ) -> None:
     """Run the LangGraph pipeline and push SSE chunks to the output queue.
 
@@ -2445,6 +2446,16 @@ async def _pipeline_producer(
             await output_queue.put(chunk_fn(" | ".join(link_lines) + "\n\n"))
 
         # --- Emit final knowledge wiki via agentic builder ---
+        # Cancel the incremental wiki agent first to prevent interleaved
+        # artifact chunks in the SSE stream.
+        if wiki_agent_task is not None and not wiki_agent_task.done():
+            wiki_agent_task.cancel()
+            try:
+                await wiki_agent_task
+            except asyncio.CancelledError:
+                pass
+            log.info("[%s] Wiki agent stopped before final wiki emission", req_id)
+
         all_conditions = final_state.get("all_conditions", [])
         user_query = final_state.get("user_query", "")
         if WIKI_AGENT_ENABLED and all_conditions and user_query:
@@ -2818,12 +2829,25 @@ async def run_persistent_research(
         )
         checkpointed_graph = _persistent_research_graph
 
+    # Start the agentic wiki builder background task (opt-in via env var).
+    # Created BEFORE the pipeline producer so it can be passed in and
+    # cancelled before the final wiki emission (prevents interleaving).
+    wiki_agent_task: Optional[asyncio.Task] = None
+    if WIKI_AGENT_ENABLED:
+        wiki_agent_task = asyncio.create_task(
+            _wiki_agent_loop(
+                output_queue, collector, chunk, req_id,
+                user_query=user_query,
+            )
+        )
+
     # Start the pipeline producer as a background task
     pipeline_task = asyncio.create_task(
         _pipeline_producer(
             initial_state, config, output_queue, chunk, req_id,
             graph=checkpointed_graph,
             reasoning_chunk_fn=reasoning_chunk,
+            wiki_agent_task=wiki_agent_task,
         )
     )
 
@@ -2835,16 +2859,6 @@ async def run_persistent_research(
             reasoning_chunk_fn=reasoning_chunk,
         )
     )
-
-    # Start the agentic wiki builder background task (opt-in via env var)
-    wiki_agent_task: Optional[asyncio.Task] = None
-    if WIKI_AGENT_ENABLED:
-        wiki_agent_task = asyncio.create_task(
-            _wiki_agent_loop(
-                output_queue, collector, chunk, req_id,
-                user_query=user_query,
-            )
-        )
 
     try:
         # Consume from the output queue and yield to the SSE response

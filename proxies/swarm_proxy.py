@@ -1939,6 +1939,13 @@ async def chat_completions(request: Request):
             )
 
             async def _guarded_submit():
+                yield make_sse_chunk(
+                    "",
+                    request_id=f"chatcmpl-swarm-ingest-{req_id[:12]}",
+                    created=int(time.time()),
+                    model_id=body.get("model", "swarm-miroflow"),
+                    reasoning_content="",
+                )
                 try:
                     async for event in _handle_corpus_submission(
                         user_text, body, req_id,
@@ -1972,6 +1979,17 @@ async def chat_completions(request: Request):
             log.info(f"[{req_id}] Routing to SWARM QUERY")
 
             async def _guarded_query():
+                # Yield an initial empty reasoning_content data chunk so
+                # LibreChat receives a valid ``data:`` line before the
+                # query limiter or knowledge lookup emit keepalive
+                # SSE comments that the stream handler ignores.
+                yield make_sse_chunk(
+                    "",
+                    request_id=f"chatcmpl-swarm-{req_id[:12]}",
+                    created=int(time.time()),
+                    model_id=body.get("model", "swarm-miroflow"),
+                    reasoning_content="",
+                )
                 try:
                     async with query_limiter.hold():
                         async for event in _handle_query(

@@ -45,6 +45,7 @@ os.environ.setdefault(
 
 # ── Now safe to import everything from the tools/ package ─────────────────
 
+import time  # noqa: E402
 import uuid  # noqa: E402
 
 from fastapi import Request  # noqa: E402
@@ -54,6 +55,7 @@ from shared import (  # noqa: E402
     create_app,
     extract_user_text_with_attachments,
     is_utility_request,
+    make_sse_chunk,
     parse_attachments,
     register_standard_routes,
     stream_passthrough,
@@ -273,6 +275,13 @@ async def chat_completions(request: Request):
             log.info(f"[{req_id}] Sprint RESEARCH (with docs)")
 
             async def _guarded_research_with_docs():
+                yield make_sse_chunk(
+                    "",
+                    request_id=f"chatcmpl-sprint-{req_id[:12]}",
+                    created=int(time.time()),
+                    model_id=body.get("model", "miroflow-sprint"),
+                    reasoning_content="",
+                )
                 async with limiter.hold():
                     async for event in run_persistent_research(
                         augmented_messages, body, req_id,
@@ -330,6 +339,17 @@ async def chat_completions(request: Request):
             log.info(f"[{req_id}] Sprint RESEARCH")
 
             async def _guarded_research():
+                # Yield an initial empty reasoning_content data chunk so
+                # LibreChat receives a valid ``data:`` line before the
+                # concurrency limiter or pipeline startup emit keepalive
+                # SSE comments that the stream handler ignores.
+                yield make_sse_chunk(
+                    "",
+                    request_id=f"chatcmpl-sprint-{req_id[:12]}",
+                    created=int(time.time()),
+                    model_id=body.get("model", "miroflow-sprint"),
+                    reasoning_content="",
+                )
                 async with limiter.hold():
                     async for event in run_persistent_research(
                         messages, body, req_id,

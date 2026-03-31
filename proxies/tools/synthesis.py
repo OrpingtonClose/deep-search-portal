@@ -2522,6 +2522,13 @@ async def run_persistent_research(
         )
     )
 
+    # Yield an initial empty reasoning_content data chunk immediately so
+    # LibreChat's SplitStreamHandler receives a valid ``data:`` line within
+    # its timeout window.  Without this, the keepalive SSE *comments*
+    # (": keepalive\n\n") emitted while the pipeline spins up are invisible
+    # to the handler and it disconnects.
+    yield reasoning_chunk("")
+
     try:
         # Consume from the output queue and yield to the SSE response
         while True:

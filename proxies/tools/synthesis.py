@@ -404,6 +404,192 @@ async def _heartbeat_loop(
         return
 
 
+# ============================================================================
+# Agentic Wiki Builder (background task)
+# ============================================================================
+
+_WIKI_AGENT_PROMPT = """You are an encyclopedia author. You are observing a live deep-research process and your job is to write a structured, Wikipedia-style HTML article from the research findings gathered so far.
+
+## Your Task
+Write the BODY of an encyclopedia article about: {query}
+
+You will receive the current research state: a list of atomic findings grouped by research angle, each with confidence scores, verification status, source domains, entities, and cross-references.
+
+## Output Rules
+1. Write ONLY the inner HTML body content (no <html>, <head>, <body>, or <style> tags — those are added by the scaffold).
+2. Use semantic HTML: <h2> for major sections, <h3> for subsections, <p> for prose, <ul>/<ol> for lists.
+3. Write real encyclopedia prose — synthesize findings into coherent narratives, don't just list facts.
+4. Include inline citations as superscript links: <sup><a href="URL">[N]</a></sup> using the source index numbers provided.
+5. When confidence is notably low (<40%) on a claim, note it parenthetically (e.g., "(unverified)" or "(low confidence)").
+6. Organize by topic/theme, not mechanically by research angle — merge related angles into coherent sections.
+7. Include a "Current Limitations" paragraph at the end noting what is still being researched or has low coverage.
+8. Keep it concise but substantive — aim for quality over quantity.
+{progress_note}
+
+## Research Findings
+{conditions_text}
+
+## Activity Context
+- Research phase: {phase}
+- Active investigations: {active_questions}
+- Total sources checked: {sources_count}
+
+Write the HTML article body now."""
+
+_WIKI_AGENT_MIN_CONDITIONS = 3
+_WIKI_AGENT_INTERVAL = 25  # seconds between re-invocations
+_WIKI_AGENT_CHUNK_SIZE = 200
+
+
+async def _wiki_agent_loop(
+    output_queue: asyncio.Queue,
+    collector: LiveFindingsCollector,
+    chunk_fn,
+    req_id: str,
+    user_query: str,
+    interval: float = _WIKI_AGENT_INTERVAL,
+) -> None:
+    """Background task: periodically read research state and invoke an LLM
+    agent to write/rewrite the knowledge wiki article.
+
+    Emits the wiki as a LibreChat ``:::artifact{...}:::`` block.  Each
+    emission uses the same identifier so LibreChat replaces the previous
+    version in the side pane.
+
+    Follows the same lifecycle pattern as ``_heartbeat_loop``: runs until
+    cancelled by the orchestrator when the pipeline completes.
+    """
+    last_condition_count = 0
+    safe_title = (
+        user_query[:60]
+        .replace('\\', '').replace('\n', ' ').replace('\r', ' ')
+        .replace('"', "'").replace('}', '').replace('{', '').strip()
+    )
+
+    try:
+        while True:
+            await asyncio.sleep(interval)
+
+            # Read current conditions from the live collector
+            conditions = await collector.all_conditions()
+            current_count = len(conditions)
+
+            # Skip if not enough conditions or nothing new since last build
+            if current_count < _WIKI_AGENT_MIN_CONDITIONS:
+                continue
+            if current_count == last_condition_count:
+                continue
+
+            log.info(
+                "[%s] Wiki agent: %d conditions (was %d), invoking LLM",
+                req_id, current_count, last_condition_count,
+            )
+            last_condition_count = current_count
+
+            try:
+                from knowledge_wiki import (
+                    format_conditions_for_agent,
+                    wrap_agent_prose_as_wiki,
+                    _build_source_index,
+                    _group_by_angle,
+                )
+
+                # Prepare context for the agent
+                conditions_text = format_conditions_for_agent(conditions)
+                activity = await collector.get_activity_context()
+                url_to_num, _ = _build_source_index(conditions)
+                by_angle = _group_by_angle(conditions)
+
+                active_qs = activity.get("active_questions", [])
+                active_qs_str = (
+                    ", ".join(active_qs[:5]) if active_qs else "none currently"
+                )
+
+                progress_note = (
+                    "\n9. This is a LIVE PREVIEW — research is ongoing. "
+                    "New findings may arrive. Write what you can from what "
+                    "is available now."
+                )
+
+                prompt = _WIKI_AGENT_PROMPT.format(
+                    query=user_query,
+                    conditions_text=conditions_text[:12000],  # cap context size
+                    phase=activity.get("phase", "researching"),
+                    active_questions=active_qs_str,
+                    sources_count=activity.get("sources_count", 0),
+                    progress_note=progress_note,
+                )
+
+                messages = [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": (
+                        f"Write the encyclopedia article body HTML for: "
+                        f"{user_query}\n\n"
+                        f"You have {current_count} research findings from "
+                        f"{len(by_angle)} angles across {len(url_to_num)} sources."
+                    )},
+                ]
+
+                result = await call_llm(
+                    messages, req_id,
+                    model=SUBAGENT_MODEL,
+                    max_tokens=6144,
+                    temperature=0.3,
+                )
+
+                if "error" in result:
+                    log.warning(
+                        "[%s] Wiki agent LLM error: %s", req_id, result["error"]
+                    )
+                    continue
+
+                prose_html = result.get("content", "").strip()
+                if not prose_html:
+                    continue
+
+                # Strip markdown code fences if the LLM wrapped its output
+                if prose_html.startswith("```"):
+                    prose_html = re.sub(r'^```(?:html)?\s*', '', prose_html)
+                    prose_html = re.sub(r'\s*```$', '', prose_html)
+
+                wiki_html = wrap_agent_prose_as_wiki(
+                    prose_html=prose_html,
+                    query=user_query,
+                    condition_count=current_count,
+                    source_count=len(url_to_num),
+                    angle_count=len(by_angle),
+                    in_progress=True,
+                )
+
+                # Emit as LibreChat artifact (same identifier = replaces previous)
+                artifact_block = (
+                    f"\n\n:::artifact{{identifier=\"knowledge-wiki-{req_id[:8]}\" "
+                    f"type=\"text/html\" "
+                    f"title=\"Knowledge Base: {safe_title}\"}}"
+                    f"\n{wiki_html}\n"
+                    f":::\n\n"
+                )
+                for i in range(0, len(artifact_block), _WIKI_AGENT_CHUNK_SIZE):
+                    await output_queue.put(
+                        chunk_fn(artifact_block[i:i + _WIKI_AGENT_CHUNK_SIZE])
+                    )
+
+                log.info(
+                    "[%s] Wiki agent: emitted %d-char article (%d conditions, %d angles)",
+                    req_id, len(wiki_html), current_count, len(by_angle),
+                )
+
+            except Exception as wiki_err:
+                log.warning(
+                    "[%s] Wiki agent iteration failed: %s", req_id, wiki_err
+                )
+                continue
+
+    except asyncio.CancelledError:
+        log.debug(f"[{req_id}] Wiki agent task cancelled")
+        return
+
+
 _CURATED_EVENT_PROMPT = """You are a research progress formatter. Convert the raw research event below into a single concise, informative status message for the user.
 
 Rules:
@@ -1975,22 +2161,9 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
             "report_url": report_url,
         })
 
-    # --- Generate knowledge wiki article ---
-    wiki_html = ""
-    if not targeted and all_conditions and not synthesis_failed:
-        try:
-            from knowledge_wiki import generate_wiki_article
-            wiki_html = generate_wiki_article(
-                conditions=all_conditions,
-                query=state["user_query"],
-                metrics=metrics_dict,
-            )
-            log.info(
-                "[%s] Generated knowledge wiki: %d chars from %d conditions",
-                req_id, len(wiki_html), len(all_conditions),
-            )
-        except Exception as wiki_err:
-            log.warning("[%s] Failed to generate knowledge wiki: %s", req_id, wiki_err)
+    # NOTE: Knowledge wiki is now built incrementally by the agentic
+    # _wiki_agent_loop background task.  The final definitive version is
+    # emitted by _pipeline_producer after the pipeline completes.
 
     return {
         "final_answer": final_answer,
@@ -1999,7 +2172,6 @@ async def pdr_node_synthesize(state: PersistentResearchState) -> dict:
         "phase": "done" if not targeted else "synthesize",
         "report_url": report_url,
         "metrics_url": metrics_url,
-        "wiki_html": wiki_html,
     }
 
 
@@ -2261,20 +2433,103 @@ async def _pipeline_producer(
         if link_lines:
             await output_queue.put(chunk_fn(" | ".join(link_lines) + "\n\n"))
 
-        # --- Emit knowledge wiki as LibreChat Artifact ---
-        wiki_html = final_state.get("wiki_html", "")
-        if wiki_html:
-            wiki_title = final_state.get("user_query", "Research")[:60]
-            safe_title = wiki_title.replace('\\', '').replace('\n', ' ').replace('\r', ' ').replace('"', "'").replace('}', '').replace('{', '').strip()
-            artifact_block = (
-                f"\n\n:::artifact{{identifier=\"knowledge-wiki-{req_id[:8]}\" "
-                f"type=\"text/html\" "
-                f"title=\"Knowledge Base: {safe_title}\"}}"
-                f"\n{wiki_html}\n"
-                f":::\n\n"
-            )
-            for i in range(0, len(artifact_block), 200):
-                await output_queue.put(chunk_fn(artifact_block[i:i + 200]))
+        # --- Emit final knowledge wiki via agentic builder ---
+        all_conditions = final_state.get("all_conditions", [])
+        user_query = final_state.get("user_query", "")
+        if all_conditions and user_query:
+            try:
+                from knowledge_wiki import (
+                    format_conditions_for_agent,
+                    wrap_agent_prose_as_wiki,
+                    _build_source_index,
+                    _group_by_angle,
+                )
+
+                conditions_text = format_conditions_for_agent(all_conditions)
+                url_to_num, _ = _build_source_index(all_conditions)
+                by_angle = _group_by_angle(all_conditions)
+
+                final_prompt = _WIKI_AGENT_PROMPT.format(
+                    query=user_query,
+                    conditions_text=conditions_text[:12000],
+                    phase="completed",
+                    active_questions="none — research is complete",
+                    sources_count=len(url_to_num),
+                    progress_note=(
+                        "\n9. This is the FINAL version — research is "
+                        "complete. Write a comprehensive, polished article."
+                    ),
+                )
+                messages = [
+                    {"role": "system", "content": final_prompt},
+                    {"role": "user", "content": (
+                        f"Write the final encyclopedia article body HTML "
+                        f"for: {user_query}\n\n"
+                        f"Research is complete. You have {len(all_conditions)} "
+                        f"findings from {len(by_angle)} angles across "
+                        f"{len(url_to_num)} sources."
+                    )},
+                ]
+
+                result = await call_llm(
+                    messages, req_id,
+                    model=SUBAGENT_MODEL,
+                    max_tokens=8192,
+                    temperature=0.3,
+                )
+
+                prose_html = ""
+                if "error" not in result:
+                    prose_html = result.get("content", "").strip()
+                    # Strip markdown code fences if present
+                    if prose_html.startswith("```"):
+                        prose_html = re.sub(
+                            r'^```(?:html)?\s*', '', prose_html
+                        )
+                        prose_html = re.sub(r'\s*```$', '', prose_html)
+
+                if prose_html:
+                    wiki_html = wrap_agent_prose_as_wiki(
+                        prose_html=prose_html,
+                        query=user_query,
+                        condition_count=len(all_conditions),
+                        source_count=len(url_to_num),
+                        angle_count=len(by_angle),
+                        in_progress=False,
+                    )
+                    safe_title = (
+                        user_query[:60]
+                        .replace('\\', '').replace('\n', ' ')
+                        .replace('\r', ' ').replace('"', "'")
+                        .replace('}', '').replace('{', '').strip()
+                    )
+                    artifact_block = (
+                        f"\n\n:::artifact{{identifier=\""
+                        f"knowledge-wiki-{req_id[:8]}\" "
+                        f"type=\"text/html\" "
+                        f"title=\"Knowledge Base: {safe_title}\"}}"
+                        f"\n{wiki_html}\n"
+                        f":::\n\n"
+                    )
+                    for i in range(0, len(artifact_block), 200):
+                        await output_queue.put(
+                            chunk_fn(artifact_block[i:i + 200])
+                        )
+                    log.info(
+                        "[%s] Final wiki: %d chars, %d conditions, %d angles",
+                        req_id, len(wiki_html), len(all_conditions),
+                        len(by_angle),
+                    )
+                else:
+                    log.warning(
+                        "[%s] Final wiki agent returned empty content",
+                        req_id,
+                    )
+            except Exception as wiki_err:
+                log.warning(
+                    "[%s] Final wiki generation failed: %s",
+                    req_id, wiki_err,
+                )
 
         final_answer = final_state.get("final_answer") or "(No answer generated)"
         for i in range(0, len(final_answer), 200):
@@ -2464,7 +2719,7 @@ async def run_persistent_research(
         # Identity-based dedup lists (prevent duplicate persist/entity-extraction)
         "persisted_fact_hashes": [],
         "extracted_fact_hashes": [],
-        # Knowledge wiki HTML (populated by synthesize node)
+        # Knowledge wiki HTML (populated by agentic wiki builder)
         "wiki_html": "",
         # Conversation continuity fields
         "conversation_id": conversation_id,
@@ -2560,6 +2815,14 @@ async def run_persistent_research(
         )
     )
 
+    # Start the agentic wiki builder background task
+    wiki_agent_task = asyncio.create_task(
+        _wiki_agent_loop(
+            output_queue, collector, chunk, req_id,
+            user_query=user_query,
+        )
+    )
+
     try:
         # Consume from the output queue and yield to the SSE response
         while True:
@@ -2581,12 +2844,14 @@ async def run_persistent_research(
         raise
 
     finally:
-        # Stop the heartbeat
+        # Stop the heartbeat and wiki agent
         heartbeat_task.cancel()
-        try:
-            await heartbeat_task
-        except asyncio.CancelledError:
-            pass
+        wiki_agent_task.cancel()
+        for bg_task in (heartbeat_task, wiki_agent_task):
+            try:
+                await bg_task
+            except asyncio.CancelledError:
+                pass
 
         # Ensure the pipeline task is done
         if not pipeline_task.done():

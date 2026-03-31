@@ -586,8 +586,13 @@ def format_conditions_for_agent(
                 f"      Entities: {entities_str}"
             )
             if c.cross_refs:
-                xrefs = [xr.target_fact[:60] for xr in c.cross_refs[:3]]
-                parts.append(f"      Cross-refs: {'; '.join(xrefs)}")
+                xrefs = [
+                    conditions[xr.target_idx].fact[:60]
+                    for xr in c.cross_refs[:3]
+                    if 0 <= xr.target_idx < len(conditions)
+                ]
+                if xrefs:
+                    parts.append(f"      Cross-refs: {'; '.join(xrefs)}")
 
     # Source index
     url_to_num, _ = _build_source_index(conditions)

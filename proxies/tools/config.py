@@ -28,12 +28,14 @@ LOG_DIR = os.getenv("PERSISTENT_RESEARCH_LOG_DIR", "/opt/persistent_research_log
 log = setup_logging("persistent-research", LOG_DIR)
 
 # --- Configuration ---
-# Default to xAI direct API for Grok (bypasses OpenRouter safety layer).
-# See docs/model-evaluation-march-2026.md for the full evaluation.
-UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://api.x.ai/v1")
+# Default to Venice AI direct API for uncensored research.
+# See docs/model-evaluation-april-2026.md for the full evaluation.
+# miro-long  (UPSTREAM_MODEL): synthesis, final answers, deep reasoning — needs uncensored + tool calling
+# miro-short (SUBAGENT_MODEL): sub-tasks, planning, verification — needs speed + tool calling
+UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://api.venice.ai/api/v1")
 UPSTREAM_KEY = require_env("UPSTREAM_KEY")
-UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "grok-3-fast")
-SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "grok-3-fast")
+UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "olafangensan-glm-4.7-flash-heretic")  # miro-long
+SUBAGENT_MODEL = os.getenv("SUBAGENT_MODEL", "qwen3.5-9b")  # miro-short
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
 
 # --- LiteLLM / MCP Framework Config ---

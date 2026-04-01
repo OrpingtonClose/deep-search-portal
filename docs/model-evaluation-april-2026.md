@@ -199,17 +199,38 @@ Each model is tested across four dimensions in a single run:
 
 ## Recommendations
 
-### For persistent-miroflow (needs: tool calling + uncensored + strong reasoning)
+### miro-long — `UPSTREAM_MODEL` (synthesis, final answers, deep reasoning)
 
-**PRIMARY:** olafangensan-glm-4.7-flash-heretic via venice (thought=6/6, tok/s=82.4)
+Needs: uncensored + native tool calling + strong reasoning + decent speed
+
+**PRIMARY:** `olafangensan-glm-4.7-flash-heretic` via Venice ($0.1/M out)
+- UNCENSORED, thought=6/6, 82.4 tok/s, native `tools` param, $0.1/M
+- Only uncensored model with native (non-XML) tool calling support
+
+**FALLBACK:** `venice-uncensored` via Venice ($0.1/M out)
+- UNCENSORED, thought=6/6, 41.0 tok/s, XML tool calling only, $0.1/M
+- Slower but Venice's flagship uncensored model
+
+### miro-short — `SUBAGENT_MODEL` (sub-tasks, planning, verification, tool execution)
+
+Needs: fast tok/s + native tool calling + good reasoning + cheap
+
+**PRIMARY:** `qwen3.5-9b` via Venice ($0.1/M out)
+- thought=6/6, 147.5 tok/s (fastest cheap model), native `tools` param, $0.1/M
+- 40% faster than grok-3-fast, 5× cheaper
+
+**FALLBACK:** `qwen3.5-35b-a3b` via Venice ($0.1/M out)
+- thought=6/6, 95.4 tok/s, native `tools` param, $0.1/M
+- Larger model if more reasoning depth is needed per sub-task
 
 ### For swarm (needs: fast + cheap + uncensored, NO tool calling required)
 
-**PRIMARY:** olafangensan-glm-4.7-flash-heretic via venice (tok/s=82.4, actionable=6)
+**PRIMARY:** `olafangensan-glm-4.7-flash-heretic` via Venice (tok/s=82.4, actionable=6)
 
-### For synthesis (needs: strong reasoning + large context + uncensored)
+### Previous defaults (for reference)
 
-**PRIMARY:** google/gemini-2.5-flash via openrouter (thought=6/6, censorship=SEMI-PASS)
+`grok-3-fast` via xAI — thought=6/6, 106.5 tok/s, REFUSED on censorship, $0.5/M out.
+Fast and strong reasoning but censored — unsuitable for an anti-censorship research portal.
 
 ## Raw Data
 

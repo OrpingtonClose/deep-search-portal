@@ -1034,6 +1034,106 @@ NATIVE_TOOLS = [
             },
         },
     },
+    # -----------------------------------------------------------------------
+    # Sicry Dark Web Search Tools (Tor/.onion access via Sicry MCP)
+    # -----------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "sicry_search",
+            "description": (
+                "Search the dark web using 18 Tor search engines simultaneously "
+                "(Ahmia, OnionLand, Tor66, Torgle, etc.) via the Sicry OSINT layer. "
+                "Returns deduplicated results with titles, .onion URLs, and source "
+                "engine names. Use this for researching hidden services, darknet "
+                "markets, underground forums, leaked databases, and any information "
+                "only available on the Tor network. This is a REAL dark web search — "
+                "not a clearnet proxy. Requires Tor daemon running."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query (keywords work best)",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum results to return (default 20)",
+                    },
+                    "engines": {
+                        "type": "string",
+                        "description": (
+                            "Comma-separated engine names to use (optional, default: all 18). "
+                            "Options include: ahmia, torch, onionland, tor66, torgle, etc."
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sicry_fetch",
+            "description": (
+                "Fetch the full text content of any .onion hidden service page "
+                "or clearnet URL routed anonymously through Tor. Returns extracted "
+                "text, title, status code, and links found on the page. Use after "
+                "sicry_search to read the actual content of dark web pages. Also "
+                "useful for fetching clearnet pages anonymously when direct access "
+                "is blocked by geo-restrictions or censorship."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": (
+                            "URL to fetch — supports both .onion addresses "
+                            "(e.g. http://example.onion/page) and clearnet URLs"
+                        ),
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sicry_check_tor",
+            "description": (
+                "Check if the Tor network is accessible and return the current "
+                "exit node IP address. Use this to diagnose connectivity issues "
+                "before attempting dark web searches. If Tor is not active, other "
+                "sicry_* tools will fail."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sicry_renew_identity",
+            "description": (
+                "Rotate the Tor circuit to get a new exit node IP address. "
+                "Use this when a hidden service blocks the current exit node "
+                "or when you want to appear as a different user. Takes ~5-10 "
+                "seconds for the new circuit to establish."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
 ]
 
 

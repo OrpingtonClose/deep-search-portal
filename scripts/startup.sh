@@ -106,6 +106,28 @@ uvicorn.run(app, host='0.0.0.0', port=${KE_PORT})
 fi
 wait_for_health "http://localhost:${KE_PORT}/health" "Knowledge Engine" 30 || true
 
+# --- Tor Daemon (required for Sicry dark web search + onion_fetch) ---
+if ! pgrep -f "tor " > /dev/null 2>&1 && ! pgrep -x "tor" > /dev/null 2>&1; then
+    if command -v tor > /dev/null 2>&1; then
+        tor --RunAsDaemon 1 --SocksPort 9050 --ControlPort 9051 --CookieAuthentication 0 --HashedControlPassword "" 2>&1 || echo "WARNING: Tor daemon failed to start"
+        echo "Tor daemon starting on SOCKS5 :9050, ControlPort :9051..."
+        sleep 3
+    else
+        echo "WARNING: Tor is NOT installed. Dark web search (Sicry) will be unavailable."
+        echo "  → Install with: apt-get install -y tor"
+    fi
+fi
+
+# --- Sicry (dark web search engine — clone if not present) ---
+SICRY_PATH="${SICRY_PATH:-/opt/sicry/sicry.py}"
+if [ ! -f "$SICRY_PATH" ]; then
+    echo "Cloning Sicry dark web search engine..."
+    git clone --depth 1 https://github.com/JacobJandon/Sicry.git "$(dirname "$SICRY_PATH")" 2>/dev/null || echo "WARNING: Failed to clone Sicry"
+    if [ -f "$(dirname "$SICRY_PATH")/requirements.txt" ]; then
+        pip3 install -q -r "$(dirname "$SICRY_PATH")/requirements.txt" 2>/dev/null || true
+    fi
+fi
+
 # --- SearXNG ---
 if ! pgrep -f "searx.webapp" > /dev/null; then
     cd /tmp/searxng

@@ -83,6 +83,10 @@ SOURCE_CATEGORIES = {
         "label": "Video (YouTube)",
         "description": "YouTube search + transcript extraction",
     },
+    "darkweb": {
+        "label": "Dark Web (Sicry Tor search)",
+        "description": "Search .onion hidden services via 18 Tor search engines (Ahmia, Tor66, OnionLand, etc.)",
+    },
 }
 
 
@@ -100,8 +104,9 @@ async def gateway_search(
         query: The search query.
         sources: Comma-separated source categories to use.  Options:
             ``"all"`` (default), ``"grok"``, ``"searxng"``, ``"social"``,
-            ``"community"``, ``"academic"``, ``"archive"``, ``"video"``.
-            Example: ``"grok,social,community"``
+            ``"community"``, ``"academic"``, ``"archive"``, ``"video"``,
+            ``"darkweb"``.
+            Example: ``"grok,social,community,darkweb"``
         search_type: For Grok: ``"web"``, ``"x"``, or ``"both"``.
         max_results_per_source: Max results from each backend.
         req_id: Request ID for logging.
@@ -166,6 +171,14 @@ async def gateway_search(
             "video",
             asyncio.create_task(
                 _safe_call("video", _video_search, query)
+            ),
+        ))
+
+    if "darkweb" in requested:
+        tasks.append((
+            "darkweb",
+            asyncio.create_task(
+                _safe_call("darkweb", _darkweb_search, query)
             ),
         ))
 
@@ -309,6 +322,13 @@ async def _video_search(query: str) -> str:
     from .search_tools2 import tool_youtube_search as yt_search_tool
 
     return await yt_search_tool(query)
+
+
+async def _darkweb_search(query: str) -> str:
+    """Search dark web via Sicry (18 Tor search engines)."""
+    from .sicry_tools import tool_sicry_search
+
+    return await tool_sicry_search(query, max_results=15)
 
 
 # ---------------------------------------------------------------------------

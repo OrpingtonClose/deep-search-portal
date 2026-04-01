@@ -67,6 +67,12 @@ from .search_tools2 import (
 )
 from .grok_search import tool_grok_deep_search
 from .search_gateway import gateway_search
+from .sicry_tools import (
+    tool_sicry_search,
+    tool_sicry_fetch,
+    tool_sicry_check_tor,
+    tool_sicry_renew_identity,
+)
 
 
 # ============================================================================
@@ -104,6 +110,7 @@ _RARE_SOURCE_TOOLS = {
     "forum_search", "telegram_search", "darknet_market_search",
     "twitter_search", "substack_search", "youtube_search",
     "youtube_transcript", "youtube_video_metadata", "youtube_video_analyze",
+    "sicry_search", "sicry_fetch",
 }
 
 
@@ -423,6 +430,18 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
             max_results_per_source=arguments.get("max_results_per_source", 10),
             req_id="",
         )
+    elif tool_name == "sicry_search":
+        return await tool_sicry_search(
+            arguments.get("query", ""),
+            max_results=arguments.get("max_results", 20),
+            engines=arguments.get("engines"),
+        )
+    elif tool_name == "sicry_fetch":
+        return await tool_sicry_fetch(arguments.get("url", ""))
+    elif tool_name == "sicry_check_tor":
+        return await tool_sicry_check_tor()
+    elif tool_name == "sicry_renew_identity":
+        return await tool_sicry_renew_identity()
     else:
         return f"[TOOL_ERROR] Unknown tool: {tool_name}. This tool does not exist in the system."
 
@@ -442,6 +461,7 @@ _CACHEABLE_TOOLS = {
     "tiktok_search", "linkedin_search",
     "chan_4plebs_search", "chan_b4k_search", "chan_warosu_search",
     "grok_deep_search", "search_gateway",
+    "sicry_search", "sicry_fetch", "sicry_check_tor", "sicry_renew_identity",
 }
 
 # Tools that involve long-running local computation (e.g. WhisperX GPU

@@ -325,12 +325,23 @@ async def _video_search(query: str) -> str:
 
 
 async def _darkweb_search(query: str) -> str:
-    """Search dark web via Sicry (18 Tor search engines)."""
-    from .sicry_tools import tool_sicry_search
-    from .rate_governor import governed_request
+    """Search dark web via Sicry (18 Tor search engines).
 
-    async with governed_request("sicry_search"):
+    NOTE: Do NOT wrap with governed_request() here — the gateway is already
+    inside a governed_request("search_gateway") from execute_tool(), and
+    governed_request acquires the global semaphore.  Double-acquiring would
+    risk deadlock at high concurrency.  We apply only the per-provider
+    token-bucket throttle so Tor circuits aren't overwhelmed.
+    """
+    from .sicry_tools import tool_sicry_search
+    from shared import get_throttler
+
+    throttler = get_throttler("sicry")
+    await throttler.acquire()
+    try:
         return await tool_sicry_search(query, max_results=15)
+    finally:
+        throttler.release()
 
 
 # ---------------------------------------------------------------------------

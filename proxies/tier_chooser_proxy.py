@@ -36,6 +36,7 @@ from shared import (
     setup_logging,
     stream_passthrough,
 )
+import knowledge_client
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -53,6 +54,10 @@ INGEST_DB = os.getenv("INGEST_DB", INGEST_DB_PATH)
 
 MAX_CONCURRENT_MODELS = env_int("TIER_CHOOSER_MAX_CONCURRENT", 10, minimum=1)
 MODEL_TIMEOUT = int(os.getenv("TIER_CHOOSER_MODEL_TIMEOUT", "90"))
+
+# Synthesis configuration
+SYNTHESIS_MODEL = os.getenv("TIER_CHOOSER_SYNTHESIS_MODEL", "google/gemini-2.5-flash")
+KNOWLEDGE_NAMESPACE = os.getenv("TIER_CHOOSER_NAMESPACE", "tier-chooser")
 
 # ---------------------------------------------------------------------------
 # Provider Registry — route models to their native APIs
@@ -575,7 +580,111 @@ async def stream_model(
 
 
 # ============================================================================
-# Tier Race — race all models in a tier, score responses, return the best
+# Neo4j Persistence — store all race results for knowledge accumulation
+# ============================================================================
+
+async def _store_race_results_neo4j(
+    req_id: str,
+    user_query: str,
+    tier: str,
+    results: list[dict],
+) -> None:
+    """Store all race results in Neo4j via the Knowledge Engine.
+
+    Each model response is persisted as a condition so that the knowledge
+    graph accumulates answers over time — matching the miropersistent
+    pattern.
+    """
+    conditions = []
+    for r in results:
+        if r.get("is_empty") or not r.get("content"):
+            continue
+        # Normalise score into 0-1 range for confidence/trust fields
+        norm_score = max(0.0, min(1.0, r["score"] / 300))
+        conditions.append({
+            "fact": r["content"][:10000],
+            "source_url": f"tier-chooser:{tier}:{r['model']}",
+            "confidence": 0.0 if r["is_refusal"] else norm_score,
+            "trust_score": 0.0 if r["is_refusal"] else norm_score,
+            "angle": r["model"],
+            "domain": tier,
+            "is_serendipitous": False,
+            "serendipity_score": 0.0,
+            "publication_date": "",
+            "author": r["model"].split("/")[-1],
+            "content_type": "model_response",
+            "source_type": "tier_race",
+        })
+    if not conditions:
+        return
+    try:
+        result = await knowledge_client.store_conditions(
+            session_id=req_id,
+            query=user_query,
+            conditions=conditions,
+            namespace=KNOWLEDGE_NAMESPACE,
+        )
+        stored = result.get("stored", len(conditions))
+        log.info(f"[{req_id}] Stored {stored} race results in Neo4j (namespace={KNOWLEDGE_NAMESPACE})")
+    except Exception as e:
+        log.warning(f"[{req_id}] Neo4j storage failed (non-fatal): {e}")
+
+
+# ============================================================================
+# Synthesis — merge all valid responses into the richest possible answer
+# ============================================================================
+
+_SYNTHESIS_PROMPT = """You are a synthesis engine. You have received multiple responses from different AI models answering the same question. Your job is to produce a single comprehensive answer that captures the maximum wealth of information from ALL responses.
+
+Rules:
+- Extract and combine ALL unique facts, details, examples, code snippets, URLs, and actionable information from every response
+- If models disagree on a point, present both perspectives with their reasoning
+- Preserve specific numbers, dates, names, URLs, code blocks, and technical details from all responses
+- Do NOT add hedging, disclaimers, or meta-commentary about the synthesis process
+- Do NOT mention that multiple models were consulted or that this is a synthesis
+- Structure the answer clearly with markdown headers and sections when content warrants it
+- The final answer must read as a single authoritative response, not a compilation
+- Prioritize depth, specificity, and completeness over brevity
+- If one model provides a unique insight or example that others missed, ALWAYS include it"""
+
+
+async def _synthesize_responses(
+    user_query: str,
+    valid_results: list[dict],
+    req_id: str,
+) -> str:
+    """Merge all valid model responses into a single comprehensive answer.
+
+    Uses the SYNTHESIS_MODEL (default: Gemini Flash for speed and large
+    context window) to combine the best information from every response.
+    Returns the synthesised text, or empty string on failure.
+    """
+    # Build the labelled responses block — highest scoring first
+    response_parts = []
+    for r in sorted(valid_results, key=lambda x: x["score"], reverse=True):
+        short = r["model"].split("/")[-1]
+        response_parts.append(
+            f"--- {short} (score={r['score']}) ---\n{r['content']}\n"
+        )
+    responses_text = "\n".join(response_parts)
+
+    messages = [
+        {"role": "system", "content": _SYNTHESIS_PROMPT},
+        {"role": "user", "content": (
+            f"User question: {user_query}\n\n"
+            f"Model responses:\n{responses_text}\n\n"
+            f"Produce the most comprehensive, information-rich answer possible."
+        )},
+    ]
+
+    return await call_model(
+        SYNTHESIS_MODEL, messages,
+        temperature=0.3, max_tokens=8192, req_id=req_id,
+    )
+
+
+# ============================================================================
+# Tier Race — race models, store in Neo4j, synthesise the richest answer
 # ============================================================================
 
 async def run_tier_race(
@@ -584,7 +693,7 @@ async def run_tier_race(
     user_query: str,
     req_id: str,
 ) -> AsyncGenerator[str, None]:
-    """Race all models in a tier, score responses, return the best."""
+    """Race all models in a tier, store results in Neo4j, synthesise the richest answer."""
     request_id = f"chatcmpl-tier-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
     model_id = f"tier-race-{tier}"
@@ -662,6 +771,9 @@ async def run_tier_race(
         yield "data: [DONE]\n\n"
         return
 
+    # --- Persist ALL results to Neo4j (fire-and-forget) ---
+    asyncio.create_task(_store_race_results_neo4j(req_id, user_query, tier, results))
+
     best = max(valid, key=lambda r: r["score"])
     short_winner = best["model"].split("/")[-1]
     avg_score = sum(r["score"] for r in valid) / len(valid)
@@ -671,10 +783,30 @@ async def run_tier_race(
     yield _chunk("", reasoning=(
         f"\nResults: {len(valid)} valid / {refusal_count} refused / "
         f"{empty_count} error\n"
-        f"Winner: {short_winner} (score={best['score']}, avg={avg_score:.0f})\n"
+        f"Best: {short_winner} (score={best['score']}, avg={avg_score:.0f})\n"
     ))
 
-    yield _chunk(best["content"], finish_reason="stop")
+    # --- Synthesise the richest answer from all valid responses ---
+    if len(valid) == 1:
+        # Only one valid response — return it directly, no synthesis needed
+        yield _chunk("", reasoning="Single valid response — returning directly.\n")
+        yield _chunk(valid[0]["content"], finish_reason="stop")
+        yield "data: [DONE]\n\n"
+        return
+
+    yield _chunk("", reasoning=(
+        f"Synthesising comprehensive answer from {len(valid)} model responses "
+        f"(via {SYNTHESIS_MODEL.split('/')[-1]})...\n"
+    ))
+
+    synthesised = await _synthesize_responses(user_query, valid, req_id)
+    if synthesised:
+        yield _chunk("", reasoning="Synthesis complete — returning merged answer.\n")
+        yield _chunk(synthesised, finish_reason="stop")
+    else:
+        # Synthesis failed — fall back to the single best-scored response
+        yield _chunk("", reasoning="Synthesis failed — falling back to best individual response.\n")
+        yield _chunk(best["content"], finish_reason="stop")
     yield "data: [DONE]\n\n"
 
 

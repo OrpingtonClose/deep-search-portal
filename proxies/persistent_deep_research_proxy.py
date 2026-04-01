@@ -37,10 +37,13 @@ from shared import (
     all_throttler_stats,
     create_app,
     env_int,  # noqa: F401
+    extract_user_text,
+    extract_user_text_with_attachments,
     get_throttler,  # noqa: F401
     http_client,  # noqa: F401
     is_utility_request,
     make_sse_chunk,
+    parse_attachments,
     register_standard_routes,
     require_env,  # noqa: F401
     setup_logging,  # noqa: F401
@@ -253,6 +256,12 @@ from tools.tree_reactor import (  # noqa: F401
 )
 # Backward-compat alias used in synthesis.py
 run_tree_research_reactor = tree_research_reactor
+
+from tools.conversation import (  # noqa: F401
+    derive_conversation_id,
+    get_conversation_store,
+    merge_research_focus,
+)
 
 from tools.synthesis import (  # noqa: F401
     LiveFindingsCollector,
@@ -1090,24 +1099,160 @@ async def chat_completions(request: Request):
             log=log,
         )
     else:
-        # Check if the last user message is a large document for ingestion
-        user_text = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    user_text = content
-                elif isinstance(content, list):
-                    user_text = " ".join(
-                        p.get("text", "") for p in content
-                        if isinstance(p, dict) and p.get("type") == "text"
-                    )
-                break
+        # Extract the last user message and check for file attachments.
+        # Use extract_user_text_with_attachments() which also checks system
+        # messages for the LibreChat attachment block (LibreChat v0.8.x
+        # sends file content as a system message, not in the user message).
+        user_text = extract_user_text_with_attachments(messages)
+        parsed = parse_attachments(user_text)
 
-        if _is_large_document(user_text):
+        # ------------------------------------------------------------------
+        # Prompt inheritance: merge new prompt with prior research focus
+        # (PMFB-FU-01 through PMFB-FU-06 in docs/persistent-miroflow-behaviors.md)
+        #
+        # Rules:
+        #   - New prompt takes precedence on conflict (PMFB-FU-02)
+        #   - Non-contradicting terms inherited from prior (PMFB-FU-03)
+        #   - Unstated aspects carried forward unchanged (PMFB-FU-04)
+        #   - File attachments always get first-priority decomposition (PMFB-FU-06)
+        #   - Sending a new prompt restarts research with new focus (PMFB-FU-01)
+        # ------------------------------------------------------------------
+        prior_focus = ""
+        conversation_id = ""
+        try:
+            conversation_id = derive_conversation_id(
+                messages, chat_id=body.get("chat_id"),
+            )
+            store = get_conversation_store()
+            latest = store.get_latest_turn(conversation_id)
+            if latest is not None:
+                prior_focus = latest.user_query
+                log.info(
+                    f"[{req_id}] Prior research focus found "
+                    f"(conv={conversation_id}): {prior_focus[:80]!r}"
+                )
+        except Exception as e:
+            log.warning(
+                f"[{req_id}] Could not load prior focus (non-fatal): {e}"
+            )
+
+        if parsed.has_attachments:
+            # --- File attachments detected (PMFB-ATT-01: first priority) ---
+            # Attachments are first-class research inputs: decompose them
+            # into atomic conditions, cross-reference, and fact-check.
+            # The prompt (if any) provides research direction/focus.
+            doc_summary = ", ".join(
+                f"{d.filename} ({len(d.content):,} chars)"
+                for d in parsed.documents
+            )
+            log.info(
+                f"[{req_id}] ATTACHMENT DETECTED: {len(parsed.documents)} "
+                f"doc(s) [{doc_summary}], prompt={parsed.prompt[:80]!r}"
+            )
+
+            # Determine the effective research direction via prompt merge
+            # (PMFB-PM-04: merge applies to text prompt only, not doc content)
+            raw_prompt = parsed.prompt
+            if raw_prompt and prior_focus:
+                effective_prompt = await merge_research_focus(
+                    prior_focus, raw_prompt, req_id,
+                )
+            elif raw_prompt:
+                effective_prompt = raw_prompt
+            elif prior_focus:
+                # No explicit prompt but prior focus exists — inherit it
+                # (PMFB-FU-04: unstated aspects carried forward unchanged)
+                effective_prompt = prior_focus
+                log.info(
+                    f"[{req_id}] No typed prompt with attachment; "
+                    f"inheriting prior focus: {prior_focus[:80]!r}"
+                )
+            else:
+                # No explicit prompt and no prior focus — use default
+                # (PMFB-ATT-05)
+                effective_prompt = (
+                    "Analyse the attached document(s) thoroughly. "
+                    "Decompose all claims into atomic conditions, "
+                    "cross-reference facts, identify "
+                    "contradictions, and fact-check key "
+                    "assertions against external sources."
+                )
+
+            # Inject the document content as a research-source system message
+            # so the pipeline treats it as material to decompose and verify.
+            # (PMFB-ATT-03: system message before user message)
+            #
+            # Remove the original LibreChat attachment system message to avoid
+            # sending document content to the LLM twice (v0.8.x sends it as
+            # a separate system message with "Attached document(s):" prefix).
+            augmented_messages = [
+                msg for msg in messages
+                if not (
+                    msg.get("role") == "system"
+                    and isinstance(msg.get("content", ""), str)
+                    and msg["content"].lstrip().startswith("Attached document(s):")
+                )
+            ]
+            for i in range(len(augmented_messages) - 1, -1, -1):
+                if augmented_messages[i].get("role") == "user":
+                    doc_system_msg = {
+                        "role": "system",
+                        "content": (
+                            "The user has attached the following document(s) "
+                            "for research analysis. Treat these as PRIMARY "
+                            "research sources — decompose every claim into "
+                            "atomic conditions, cross-reference facts across "
+                            "paragraphs, and fact-check all assertions. "
+                            "The user's prompt provides the research "
+                            "direction and focus.\n\n"
+                            "=== ATTACHED DOCUMENTS ===\n\n"
+                            + parsed.all_document_text
+                            + "\n\n=== END DOCUMENTS ==="
+                        ),
+                    }
+                    augmented_messages.insert(i, doc_system_msg)
+                    # Update the user message to the effective (merged) prompt
+                    augmented_messages[i + 1] = {
+                        **augmented_messages[i + 1],
+                        "content": effective_prompt,
+                    }
+                    break
+
+            if not limiter.available():
+                tracker.finish(req_id)
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": {
+                            "message": (
+                                f"Too many concurrent persistent research "
+                                f"sessions ({limiter.max_concurrent}). "
+                                f"Try again shortly."
+                            ),
+                            "type": "rate_limit",
+                        }
+                    },
+                )
+
+            log.info(
+                f"[{req_id}] Routing to PERSISTENT DEEP RESEARCH "
+                f"(with {len(parsed.documents)} attached doc(s))"
+            )
+
+            async def _guarded_research_with_docs():
+                async with limiter.hold():
+                    async for event in run_persistent_research(
+                        augmented_messages, body, req_id,
+                        conversation_id_override=conversation_id,
+                    ):
+                        yield event
+
+            generator = _guarded_research_with_docs()
+
+        elif _is_large_document(parsed.prompt or user_text):
             log.info(
                 f"[{req_id}] Routing to DOCUMENT INGESTION "
-                f"({len(user_text):,} chars)"
+                f"({len(parsed.prompt or user_text):,} chars)"
             )
 
             async def _guarded_ingest():
@@ -1122,6 +1267,28 @@ async def chat_completions(request: Request):
 
             generator = _guarded_ingest()
         else:
+            # --- Normal research prompt ---
+            # Apply prompt-inheritance merge if this is a follow-up
+            # (PMFB-FU-01: restarts research with new merged focus)
+            if prior_focus:
+                effective_prompt = await merge_research_focus(
+                    prior_focus, user_text, req_id,
+                )
+                if effective_prompt != user_text:
+                    # Replace the last user message with the merged prompt
+                    messages = list(messages)
+                    for i in range(len(messages) - 1, -1, -1):
+                        if messages[i].get("role") == "user":
+                            messages[i] = {
+                                **messages[i],
+                                "content": effective_prompt,
+                            }
+                            break
+                    log.info(
+                        f"[{req_id}] Merged follow-up prompt: "
+                        f"{user_text[:60]!r} -> {effective_prompt[:80]!r}"
+                    )
+
             if not limiter.available():
                 tracker.finish(req_id)
                 return JSONResponse(
@@ -1141,7 +1308,10 @@ async def chat_completions(request: Request):
 
             async def _guarded_research():
                 async with limiter.hold():
-                    async for event in run_persistent_research(messages, body, req_id):
+                    async for event in run_persistent_research(
+                        messages, body, req_id,
+                        conversation_id_override=conversation_id,
+                    ):
                         yield event
 
             generator = _guarded_research()

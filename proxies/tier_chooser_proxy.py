@@ -476,7 +476,9 @@ async def call_model(
     """Call a single model via its native API (or OpenRouter fallback)."""
     base_url, api_key, native_model = resolve_provider(model)
     is_openrouter = (base_url == OPENROUTER_BASE)
-    provider_prefix = model.split("/", 1)[0] if "/" in model else ""
+    # Only apply provider-specific body tweaks when routing natively;
+    # OpenRouter expects plain max_tokens / temperature for all models.
+    provider_prefix = "" if is_openrouter else (model.split("/", 1)[0] if "/" in model else "")
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -532,7 +534,7 @@ async def stream_model(
     """Stream a single model's response via its native API (or OpenRouter fallback)."""
     base_url, api_key, native_model = resolve_provider(model)
     is_openrouter = (base_url == OPENROUTER_BASE)
-    provider_prefix = model.split("/", 1)[0] if "/" in model else ""
+    provider_prefix = "" if is_openrouter else (model.split("/", 1)[0] if "/" in model else "")
 
     headers = {
         "Authorization": f"Bearer {api_key}",

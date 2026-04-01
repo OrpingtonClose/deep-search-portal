@@ -54,6 +54,7 @@ from .search_tools2 import (
     tool_scholar_search,
     tool_substack_search,
     tool_telegram_search,
+    tool_onion_fetch,
     tool_darknet_market_search,
     tool_facebook_search,
     tool_discord_search,
@@ -69,6 +70,12 @@ from .search_tools2 import (
 )
 from .grok_search import tool_grok_deep_search
 from .search_gateway import gateway_search
+from .sicry_tools import (
+    tool_sicry_search,
+    tool_sicry_fetch,
+    tool_sicry_check_tor,
+    tool_sicry_renew_identity,
+)
 
 
 # ============================================================================
@@ -106,6 +113,7 @@ _RARE_SOURCE_TOOLS = {
     "forum_search", "telegram_search", "darknet_market_search",
     "twitter_search", "substack_search", "youtube_search",
     "youtube_transcript", "youtube_video_metadata", "youtube_video_analyze",
+    "sicry_search", "sicry_fetch",
 }
 
 
@@ -374,6 +382,8 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
             arguments.get("query", ""),
             arguments.get("platform", ""),
         )
+    elif tool_name == "onion_fetch":
+        return await tool_onion_fetch(arguments.get("url", ""))
     elif tool_name == "darknet_market_search":
         return await tool_darknet_market_search(arguments.get("query", ""))
     elif tool_name == "facebook_search":
@@ -428,6 +438,18 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
             req_id=arguments.get("_req_id", ""),
             topic=arguments.get("topic", ""),
         )
+    elif tool_name == "sicry_search":
+        return await tool_sicry_search(
+            arguments.get("query", ""),
+            max_results=arguments.get("max_results", 20),
+            engines=arguments.get("engines"),
+        )
+    elif tool_name == "sicry_fetch":
+        return await tool_sicry_fetch(arguments.get("url", ""))
+    elif tool_name == "sicry_check_tor":
+        return await tool_sicry_check_tor()
+    elif tool_name == "sicry_renew_identity":
+        return await tool_sicry_renew_identity()
     else:
         return f"[TOOL_ERROR] Unknown tool: {tool_name}. This tool does not exist in the system."
 
@@ -439,7 +461,7 @@ _CACHEABLE_TOOLS = {
     "pubmed_search", "wikipedia_search", "archiveorg_search",
     "forum_search", "scholar_search", "substack_search",
     "youtube_search", "youtube_transcript", "youtube_video_metadata",
-    "twitter_search", "telegram_search", "darknet_market_search",
+    "twitter_search", "telegram_search", "onion_fetch", "darknet_market_search",
     "facebook_search", "discord_search", "signal_search",
     "whatsapp_search", "crunchbase_search", "trustpilot_search",
     "whois_lookup", "wayback_fetch",
@@ -447,6 +469,7 @@ _CACHEABLE_TOOLS = {
     "tiktok_search", "linkedin_search",
     "chan_4plebs_search", "chan_b4k_search", "chan_warosu_search",
     "grok_deep_search", "search_gateway",
+    "sicry_search",  # sicry_fetch/check_tor/renew_identity are NOT cached (operational/mutating)
 }
 
 # Tools that involve long-running local computation (e.g. WhisperX GPU
@@ -459,7 +482,12 @@ _UNGOVERNED_HEAVY_TOOLS: set[str] = {
 
 # Tools that access the internet (governed by rate limiter).
 # Excludes heavy local-compute tools that would starve the global semaphore.
-_GOVERNED_TOOLS = (_CACHEABLE_TOOLS | {"fetch_webpage"}) - _UNGOVERNED_HEAVY_TOOLS
+# Sicry operational tools (fetch/check_tor/renew_identity) are NOT cacheable
+# but still need rate governing to avoid overwhelming Tor circuits.
+_GOVERNED_TOOLS = (
+    (_CACHEABLE_TOOLS | {"fetch_webpage", "sicry_fetch", "sicry_check_tor", "sicry_renew_identity"})
+    - _UNGOVERNED_HEAVY_TOOLS
+)
 
 
 def _extract_query_for_cache(tool_name: str, arguments: dict) -> str:

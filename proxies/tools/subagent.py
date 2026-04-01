@@ -128,7 +128,7 @@ async def plan_research(
 
     # Parse ANGLE: / QUERY: / DESCRIPTION: blocks
     angle_blocks = re.split(r'(?:^|\n)\s*ANGLE:\s*', content)
-    for block in angle_blocks:
+    for block in angle_blocks[1:]:  # skip preamble before first ANGLE:
         block = block.strip()
         if not block:
             continue
@@ -810,7 +810,7 @@ async def run_subagent(
                 except (json.JSONDecodeError, ValueError):
                     # Natural language parsing
                     gap_blocks = re.split(r'(?:^|\n)\s*GAP:\s*', gap_content)
-                    for block in gap_blocks:
+                    for block in gap_blocks[1:]:  # skip preamble before first GAP:
                         block = block.strip()
                         if not block:
                             continue

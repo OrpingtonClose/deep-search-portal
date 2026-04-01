@@ -257,7 +257,7 @@ async def _spawn_sub_questions(
     except (json.JSONDecodeError, ValueError):
         # Natural language parsing: QUESTION: / CONTEXT: / PRESSURE: / STRATEGY: blocks
         q_blocks = re.split(r'(?:^|\n)\s*QUESTION:\s*', content)
-        for block in q_blocks:
+        for block in q_blocks[1:]:  # skip preamble before first QUESTION:
             block = block.strip()
             if not block:
                 continue
@@ -424,7 +424,7 @@ async def _extract_entities_for_verification(
 
     entities: list[dict] = []
     ent_blocks = re.split(r'(?:^|\n)\s*ENTITY:\s*', content)
-    for block in ent_blocks:
+    for block in ent_blocks[1:]:  # skip preamble before first ENTITY:
         block = block.strip()
         if not block:
             continue
@@ -802,7 +802,7 @@ async def tree_research_reactor(
                 except (json.JSONDecodeError, ValueError):
                     # Natural language parsing
                     angle_blocks = re.split(r'(?:^|\n)\s*ANGLE:\s*', seed_content)
-                    for block in angle_blocks:
+                    for block in angle_blocks[1:]:  # skip preamble before first ANGLE:
                         block = block.strip()
                         if not block:
                             continue

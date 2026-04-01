@@ -67,7 +67,7 @@ _PROCUREMENT_VERIFIED_PATTERNS = re.compile(
     r"(?:confirmed|verified|listed|available|in.stock)\s+(?:on|at)\s+(?:https?://\S+|the\s+site|the\s+website)"
     r"|(?:product\s+page|product\s+listing|item\s+listed)"
     r"|(?:visited|fetched|scraped|checked)\s+(?:the\s+)?(?:site|website|page|URL|vendor).*?(?:confirmed|verified|listed|available|in.stock|product|price|ships)"
-    r"|(?:price\s+(?:is|was|listed|shown|displayed)\s+)"
+    r"|(?:price\s+(?:is|was|listed|shown|displayed)\s+(?:\$|€|£|PLN|EUR|USD|GBP|\d))"
     r"|(?:ships?\s+to\s+\w+.*?(?:confirmed|verified|available))"
     r"|(?:add\s+to\s+cart|checkout|order\s+(?:page|form|button))"
 )

@@ -645,21 +645,38 @@ def _parse_xml_tool_calls(content: str) -> list[dict] | None:
 
 
 def _inject_xml_tools_deep(messages: list[dict], tools: list[dict]) -> list[dict]:
-    """Inject XML tool prompt into messages for Hermes-3 models."""
+    """Inject XML tool prompt into messages for Hermes-3 models.
+
+    Consecutive ``tool`` role messages (from parallel tool execution) are
+    merged into a single ``user`` message so the API never receives
+    consecutive user messages.
+    """
     xml_prompt = _build_xml_tools_prompt(tools)
     out: list[dict] = []
     injected = False
+    pending_tool_responses: list[str] = []
+
+    def _flush() -> None:
+        if pending_tool_responses:
+            out.append({"role": "user", "content": "\n".join(pending_tool_responses)})
+            pending_tool_responses.clear()
+
     for m in messages:
         role = m.get("role", "user")
         if role == "system" and not injected:
+            _flush()
             out.append({"role": "system", "content": xml_prompt + "\n\n" + (m.get("content", "") or "")})
             injected = True
         elif role == "tool":
-            out.append({"role": "user", "content": f"<tool_response>\n{m.get('content', '')}\n</tool_response>"})
+            pending_tool_responses.append(f"<tool_response>\n{m.get('content', '')}\n</tool_response>")
         elif role == "assistant" and m.get("tool_calls"):
+            _flush()
             out.append({"role": "assistant", "content": m.get("content", "") or ""})
         else:
+            _flush()
             out.append(m)
+
+    _flush()
     if not injected:
         out.insert(0, {"role": "system", "content": xml_prompt})
     return out

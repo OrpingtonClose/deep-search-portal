@@ -98,23 +98,35 @@ def _inject_xml_tools(messages: list[dict], tools: list[dict]) -> list[dict]:
     out: list[dict] = []
     system_injected = False
 
+    pending_tool_responses: list[str] = []
+
+    def _flush_tool_responses() -> None:
+        """Merge accumulated <tool_response> blocks into one user message."""
+        if pending_tool_responses:
+            out.append({
+                "role": "user",
+                "content": "\n".join(pending_tool_responses),
+            })
+            pending_tool_responses.clear()
+
     for m in messages:
         role = m.get("role", "user")
         if role == "system" and not system_injected:
+            _flush_tool_responses()
             out.append({
                 "role": "system",
                 "content": xml_prompt + "\n\n" + (m.get("content", "") or ""),
             })
             system_injected = True
         elif role == "tool":
-            # Convert tool responses to user messages with XML wrapper
-            tc_id = m.get("tool_call_id", "unknown")
+            # Accumulate tool responses — they will be merged into a single
+            # user message when a non-tool message arrives (or at the end).
             content = m.get("content", "") or ""
-            out.append({
-                "role": "user",
-                "content": f"<tool_response>\n{content}\n</tool_response>",
-            })
+            pending_tool_responses.append(
+                f"<tool_response>\n{content}\n</tool_response>"
+            )
         elif role == "assistant" and m.get("tool_calls"):
+            _flush_tool_responses()
             # Strip native tool_calls from assistant messages — the XML
             # model already emitted <tool_call> tags in its content.
             out.append({
@@ -122,7 +134,10 @@ def _inject_xml_tools(messages: list[dict], tools: list[dict]) -> list[dict]:
                 "content": m.get("content", "") or "",
             })
         else:
+            _flush_tool_responses()
             out.append(m)
+
+    _flush_tool_responses()
 
     if not system_injected:
         out.insert(0, {"role": "system", "content": xml_prompt})

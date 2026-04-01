@@ -176,7 +176,7 @@ VERITAS_HALLUCINATION_THRESHOLD = float(os.getenv("VERITAS_HALLUCINATION_THRESHO
 # Commercial search APIs
 COMMERCIAL_SEARCH_ENABLED = os.getenv("COMMERCIAL_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes")
 BRIGHT_DATA_SERP_ZONE = os.getenv("BRIGHT_DATA_SERP_ZONE", "mcp_unlocker")
-MODERATION_MODEL = os.getenv("MODERATION_MODEL", "grok-3-fast")
+MODERATION_MODEL = os.getenv("MODERATION_MODEL", SUBAGENT_MODEL)
 
 log.info(
     f"Config: synthesis_model={UPSTREAM_MODEL}, subagent_model={SUBAGENT_MODEL}, "

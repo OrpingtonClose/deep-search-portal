@@ -63,6 +63,13 @@ log = setup_logging("deep-research", LOG_DIR)
 UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://api.mistral.ai/v1")
 UPSTREAM_KEY = require_env("UPSTREAM_KEY")
 UPSTREAM_MODEL = os.getenv("UPSTREAM_MODEL", "mistral-large-latest")
+
+# XML tool calling models (same set as persistent research proxy)
+_XML_TOOL_CALLING_MODELS: set[str] = {
+    m.strip()
+    for m in os.getenv("XML_TOOL_CALLING_MODELS", "venice-uncensored,hermes-3-llama-3.1-405b").split(",")
+    if m.strip()
+}
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
 LISTEN_PORT = env_int("DEEP_RESEARCH_PORT", 9200, minimum=1)
 MAX_AGENT_TURNS = env_int("MAX_AGENT_TURNS", 15, minimum=1)
@@ -591,6 +598,90 @@ LANGCHAIN_TOOLS: list[dict] = [
 _deep_request_configs: dict[str, dict] = {}
 
 
+def _build_xml_tools_prompt(tools: list[dict]) -> str:
+    """Build Hermes-3 XML tool calling system prompt."""
+    schemas = []
+    for t in tools:
+        fn = t.get("function", t)
+        schemas.append({"name": fn["name"], "description": fn.get("description", ""), "parameters": fn.get("parameters", {})})
+    tools_json = json.dumps(schemas, indent=2)
+    return (
+        "You are a function calling AI model. You are provided with function "
+        "signatures within <tools></tools> XML tags. You may call one or more "
+        "functions to assist with the user query.\n\n"
+        f"<tools>\n{tools_json}\n</tools>\n\n"
+        "For each function call return a valid JSON object inside "
+        "<tool_call></tool_call> XML tags like this:\n"
+        '<tool_call>\n{"name": "function_name", "arguments": {"arg": "value"}}\n</tool_call>\n\n'
+        "You may call multiple tools. After receiving <tool_response> results, "
+        "analyze them and either call more tools or provide your final answer."
+    )
+
+
+_XML_TC_PATTERN = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+
+
+def _parse_xml_tool_calls(content: str) -> list[dict] | None:
+    """Parse <tool_call> XML blocks into OpenAI-format tool call dicts."""
+    matches = _XML_TC_PATTERN.findall(content)
+    if not matches:
+        return None
+    calls = []
+    for raw in matches:
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        name = obj.get("name", "")
+        if not name:
+            continue
+        args = obj.get("arguments", {})
+        calls.append({
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args) if isinstance(args, dict) else str(args)},
+        })
+    return calls or None
+
+
+def _inject_xml_tools_deep(messages: list[dict], tools: list[dict]) -> list[dict]:
+    """Inject XML tool prompt into messages for Hermes-3 models.
+
+    Consecutive ``tool`` role messages (from parallel tool execution) are
+    merged into a single ``user`` message so the API never receives
+    consecutive user messages.
+    """
+    xml_prompt = _build_xml_tools_prompt(tools)
+    out: list[dict] = []
+    injected = False
+    pending_tool_responses: list[str] = []
+
+    def _flush() -> None:
+        if pending_tool_responses:
+            out.append({"role": "user", "content": "\n".join(pending_tool_responses)})
+            pending_tool_responses.clear()
+
+    for m in messages:
+        role = m.get("role", "user")
+        if role == "system" and not injected:
+            _flush()
+            out.append({"role": "system", "content": xml_prompt + "\n\n" + (m.get("content", "") or "")})
+            injected = True
+        elif role == "tool":
+            pending_tool_responses.append(f"<tool_response>\n{m.get('content', '')}\n</tool_response>")
+        elif role == "assistant" and m.get("tool_calls"):
+            _flush()
+            out.append({"role": "assistant", "content": m.get("content", "") or ""})
+        else:
+            _flush()
+            out.append(m)
+
+    _flush()
+    if not injected:
+        out.insert(0, {"role": "system", "content": xml_prompt})
+    return out
+
+
 async def call_llm(messages: list[dict], req_id: str, turn: int, include_tools: bool = True) -> dict:
     """Call the upstream LLM via LangChain ChatOpenAI (fires callbacks).
 
@@ -599,11 +690,13 @@ async def call_llm(messages: list[dict], req_id: str, turn: int, include_tools: 
     or  {"error": str}
     """
     llm = _get_deep_llm()
+    use_xml = include_tools and UPSTREAM_MODEL in _XML_TOOL_CALLING_MODELS
 
-    if include_tools:
+    if include_tools and not use_xml:
         llm = llm.bind_tools(LANGCHAIN_TOOLS)
 
-    lc_messages = _dicts_to_lc_messages(messages)
+    msgs = _inject_xml_tools_deep(messages, NATIVE_TOOLS) if use_xml else messages
+    lc_messages = _dicts_to_lc_messages(msgs)
     config = _deep_request_configs.get(req_id, {})
 
     _mistral_throttle = get_throttler("mistral")
@@ -617,7 +710,9 @@ async def call_llm(messages: list[dict], req_id: str, turn: int, include_tools: 
 
             # Extract tool_calls in OpenAI format for backward compat
             tool_calls_out = None
-            if ai_msg.tool_calls:
+            if use_xml:
+                tool_calls_out = _parse_xml_tool_calls(content)
+            elif ai_msg.tool_calls:
                 tool_calls_out = [
                     {
                         "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),

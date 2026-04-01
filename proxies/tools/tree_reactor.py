@@ -387,8 +387,10 @@ Findings:
 
 Output ONLY valid JSON:
 {{"entities": [
-    {{"name": "exact entity name", "type": "vendor|product|person|organization|website|service", "fact_index": 0, "search_queries": ["entity_name review", "entity_name reddit"]}}
+    {{"name": "exact entity name", "type": "vendor|product|person|organization|website|service|forum_thread", "fact_index": 0, "search_queries": ["entity_name review", "entity_name reddit"], "source_url": "the URL where this entity was found (if any)"}}
 ]}}
+
+IMPORTANT: Always include the source_url if the finding mentions a URL for the entity (website, forum thread, product page). This URL will be visited directly for procurement verification.
 
 If no concrete entities need verification, return: {{"entities": []}}"""
 
@@ -442,44 +444,88 @@ def _spawn_verification_nodes(
     parent_node: ResearchNode,
     existing_questions: list[str],
     req_id: str,
+    intent_type: str = "informational",
+    core_need: str = "",
 ) -> list[ResearchNode]:
     """Create verification ResearchNodes for concrete entities.
 
     Each entity gets a dedicated tree node that will cross-reference it
     across forums, reviews, and social media.  These nodes get high
     pressure so the tree prioritizes them.
+
+    For transactional queries, vendor/website/forum_thread entities get
+    **procurement verification** nodes that visit the actual URL with
+    fetch_webpage to confirm product availability, pricing, and shipping.
     """
     children: list[ResearchNode] = []
+    is_transactional = intent_type == "transactional"
+
     for ent in entities:
         name = ent.get("name", "").strip()
         ent_type = ent.get("type", "entity")
+        source_url = ent.get("source_url", "").strip()
         if not name:
             continue
 
-        # Build verification question
-        question = (
-            f'Verify "{name}": search for independent mentions, reviews, '
-            f"complaints, or discussions about this {ent_type} across "
-            f"Reddit, forums, social media, and review sites"
-        )
+        # For transactional queries, vendor/website/forum entities get
+        # procurement verification: visit the URL, check product listing
+        if is_transactional and ent_type in (
+            "vendor", "website", "service", "forum_thread",
+        ):
+            if source_url:
+                question = (
+                    f'Visit {name} at {source_url} using fetch_webpage. '
+                    f'Check if the site actually lists the product the user needs '
+                    f'({core_need[:100]}). Look for: product availability, price, '
+                    f'shipping options to the target destination, payment methods. '
+                    f'Then search for "{name}" reviews and complaints to assess legitimacy.'
+                )
+            else:
+                question = (
+                    f'Find the actual website for "{name}" using searxng_search, '
+                    f'then visit it with fetch_webpage. Check if it actually lists '
+                    f'the product the user needs ({core_need[:100]}). Verify: '
+                    f'product availability, price, shipping, payment methods. '
+                    f'Also search for "{name}" reviews and scam reports.'
+                )
+            context = (
+                f"Procurement verification for {ent_type} '{name}'. "
+                f"The user needs to BUY something — finding this name is just a lead. "
+                f"You MUST visit the actual site with fetch_webpage and confirm the product "
+                f"is listed and purchasable. A name without site verification is worthless."
+            )
+            # Procurement verification gets highest pressure (0.95)
+            pressure = _compute_pressure(
+                0.95, parent_node.depth + 1, parent_node.pressure,
+            )
+        else:
+            # Standard reputation verification (non-transactional or non-vendor entities)
+            question = (
+                f'Verify "{name}": search for independent mentions, reviews, '
+                f"complaints, or discussions about this {ent_type} across "
+                f"Reddit, forums, social media, and review sites"
+            )
+            context = (
+                f"Cross-reference {ent_type} '{name}' found in parent research. "
+                f"Search queries to try: {', '.join(ent.get('search_queries', []))}"
+            )
+            pressure = _compute_pressure(
+                0.85, parent_node.depth + 1, parent_node.pressure,
+            )
 
         # Skip if we already have a similar question
         if any(
-            name.lower() in eq.lower() and "verify" in eq.lower()
+            name.lower() in eq.lower() and ("verify" in eq.lower() or "visit" in eq.lower())
             for eq in existing_questions
         ):
             continue
 
-        # Verification nodes get high pressure (0.85) and inherit
-        # parent depth + 1 so they can still spawn further branches
-        # based on what the verification discovers
         child = ResearchNode(
             id=f"{req_id}-verify-{uuid.uuid4().hex[:6]}",
             question=question,
-            context=f"Cross-reference {ent_type} '{name}' found in parent research. "
-                    f"Search queries to try: {', '.join(ent.get('search_queries', []))}",
+            context=context,
             depth=parent_node.depth + 1,
-            pressure=_compute_pressure(0.85, parent_node.depth + 1, parent_node.pressure),
+            pressure=pressure,
             parent_id=parent_node.id,
         )
         children.append(child)
@@ -946,6 +992,8 @@ async def tree_research_reactor(
                             if entities:
                                 raw_verify = _spawn_verification_nodes(
                                     entities, node, all_questions, req_id,
+                                    intent_type=comprehension.intent_type,
+                                    core_need=comprehension.core_need,
                                 )
                                 # Filter verification nodes through the
                                 # question registry too

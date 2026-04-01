@@ -15,22 +15,49 @@ fi
 CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN not set}"
 
 # Model API keys — read from .env, with sensible defaults
-# Priority: XAI_API_KEY (Grok, uncensored) > MISTRAL_API_KEY (fallback)
-UPSTREAM_KEY="${UPSTREAM_KEY:-${XAI_API_KEY:-${MISTRAL_API_KEY:?No LLM API key set (need UPSTREAM_KEY, XAI_API_KEY, or MISTRAL_API_KEY)}}}"
-UPSTREAM_BASE="${UPSTREAM_BASE:-https://api.x.ai/v1}"
-UPSTREAM_MODEL="${UPSTREAM_MODEL:-grok-3-fast}"
-SUBAGENT_MODEL="${SUBAGENT_MODEL:-grok-3-fast}"
+# Priority: VENICE_API_KEY (uncensored) > XAI_API_KEY (Grok) > MISTRAL_API_KEY (fallback)
+# See docs/model-evaluation-april-2026.md for the full evaluation.
+# The base URL and model defaults are set to match whichever key was resolved.
+if [ -n "${UPSTREAM_KEY:-}" ]; then
+    # Explicit UPSTREAM_KEY — user controls UPSTREAM_BASE themselves
+    UPSTREAM_BASE="${UPSTREAM_BASE:-https://api.venice.ai/api/v1}"
+    UPSTREAM_MODEL="${UPSTREAM_MODEL:-olafangensan-glm-4.7-flash-heretic}"
+    SUBAGENT_MODEL="${SUBAGENT_MODEL:-qwen3.5-9b}"
+elif [ -n "${VENICE_API_KEY:-}" ]; then
+    UPSTREAM_KEY="$VENICE_API_KEY"
+    UPSTREAM_BASE="${UPSTREAM_BASE:-https://api.venice.ai/api/v1}"
+    # miro-long:  synthesis, final answers — uncensored + tool calling + strong reasoning
+    UPSTREAM_MODEL="${UPSTREAM_MODEL:-olafangensan-glm-4.7-flash-heretic}"
+    # miro-short: sub-tasks, planning, verification — fast + tool calling + cheap
+    SUBAGENT_MODEL="${SUBAGENT_MODEL:-qwen3.5-9b}"
+elif [ -n "${XAI_API_KEY:-}" ]; then
+    UPSTREAM_KEY="$XAI_API_KEY"
+    UPSTREAM_BASE="${UPSTREAM_BASE:-https://api.x.ai/v1}"
+    UPSTREAM_MODEL="${UPSTREAM_MODEL:-grok-3-fast}"
+    SUBAGENT_MODEL="${SUBAGENT_MODEL:-grok-3-fast}"
+elif [ -n "${MISTRAL_API_KEY:-}" ]; then
+    UPSTREAM_KEY="$MISTRAL_API_KEY"
+    UPSTREAM_BASE="${UPSTREAM_BASE:-https://api.mistral.ai/v1}"
+    UPSTREAM_MODEL="${UPSTREAM_MODEL:-mistral-large-latest}"
+    SUBAGENT_MODEL="${SUBAGENT_MODEL:-mistral-small-latest}"
+else
+    echo "FATAL: No LLM API key set (need UPSTREAM_KEY, VENICE_API_KEY, XAI_API_KEY, or MISTRAL_API_KEY)" >&2
+    exit 1
+fi
+# Export derived variables so screen-launched proxies (which re-source .env
+# independently) inherit them even when .env only has e.g. VENICE_API_KEY.
+export UPSTREAM_KEY UPSTREAM_BASE UPSTREAM_MODEL SUBAGENT_MODEL
 VENICE_API_KEY="${VENICE_API_KEY:-}"
 XAI_API_KEY="${XAI_API_KEY:-}"
 OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
 SEARCH_BACKEND="${SEARCH_BACKEND:-legacy}"
 
 # Warn if API keys are missing (services will fail to authenticate)
-if [ -z "$XAI_API_KEY" ]; then
-    echo "WARNING: XAI_API_KEY not set — deep-research, persistent-research, and miroflow-sprint will fail"
-fi
 if [ -z "$VENICE_API_KEY" ]; then
-    echo "WARNING: VENICE_API_KEY not set — swarm proxy will fail"
+    echo "WARNING: VENICE_API_KEY not set — persistent-research, miroflow-sprint, and swarm proxy will fail"
+fi
+if [ -z "$XAI_API_KEY" ]; then
+    echo "WARNING: XAI_API_KEY not set — deep-research and xAI native proxy will fall back to MISTRAL_API_KEY"
 fi
 
 # Data-source credential warnings
@@ -199,14 +226,16 @@ if ! pgrep -f "deep_research_proxy.py" > /dev/null; then
 fi
 wait_for_health "http://localhost:9200/health" "Deep Research Proxy" 15
 
-# --- Persistent Deep Research Proxy (Subagent Map-Reduce + AoT) — Grok via xAI direct API ---
+# --- Persistent Deep Research Proxy (Subagent Map-Reduce + AoT) — Venice AI (uncensored) ---
+# miro-long:  olafangensan-glm-4.7-flash-heretic (UNCENSORED, thought=6/6, 82.4 tok/s, native tool calling)
+# miro-short: qwen3.5-9b (thought=6/6, 147.5 tok/s, native tool calling, $0.1/M)
 if ! pgrep -f "persistent_deep_research_proxy.py" > /dev/null; then
     screen -dmS persistent-research bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && PERSISTENT_RESEARCH_PORT=9300 python3 persistent_deep_research_proxy.py 2>&1 | tee /var/log/persistent_research_proxy.log"
     echo "Persistent Deep Research Proxy starting..."
 fi
 wait_for_health "http://localhost:9300/health" "Persistent Deep Research Proxy" 15
 
-# --- MiroFlow Sprint Proxy (quick 2-round variant) — Grok via xAI direct API ---
+# --- MiroFlow Sprint Proxy (quick 2-round variant) — Venice AI (uncensored) ---
 if ! pgrep -f "miroflow_sprint_proxy.py" > /dev/null; then
     screen -dmS miroflow-sprint bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && MIROFLOW_SPRINT_PORT=9400 python3 miroflow_sprint_proxy.py 2>&1 | tee /var/log/miroflow_sprint_proxy.log"
     echo "MiroFlow Sprint Proxy starting..."

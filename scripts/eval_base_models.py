@@ -906,7 +906,7 @@ def generate_markdown(all_results: list[dict[str, Any]]) -> str:
         uncensored_bonus = 2.0 if r.get("censorship_verdict") == "UNCENSORED" else (
             1.0 if r.get("censorship_verdict") == "SEMI-PASS" else 0.5
         )
-        val = r.get("value_score") or 1.0
+        val = r.get("value_score") if r.get("value_score") is not None else 1.0
         return tp * uncensored_bonus * min(val, 50)  # cap value to prevent outliers
 
     ranked = sorted(valid, key=composite_score, reverse=True)[:10]
@@ -1113,7 +1113,10 @@ async def main() -> None:
         models = registry[surface]
 
         # Filter to only failed models if retrying
-        if args.retry_failed and surface in failed_models:
+        if args.retry_failed:
+            if surface not in failed_models:
+                print(f"\n[SKIP] {surface}: no failed models to retry")
+                continue
             models = [
                 m for m in models if m["model"] in failed_models[surface]
             ]

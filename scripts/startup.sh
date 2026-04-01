@@ -44,6 +44,9 @@ else
     echo "FATAL: No LLM API key set (need UPSTREAM_KEY, VENICE_API_KEY, XAI_API_KEY, or MISTRAL_API_KEY)" >&2
     exit 1
 fi
+# Export derived variables so screen-launched proxies (which re-source .env
+# independently) inherit them even when .env only has e.g. VENICE_API_KEY.
+export UPSTREAM_KEY UPSTREAM_BASE UPSTREAM_MODEL SUBAGENT_MODEL
 VENICE_API_KEY="${VENICE_API_KEY:-}"
 XAI_API_KEY="${XAI_API_KEY:-}"
 OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"

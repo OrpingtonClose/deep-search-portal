@@ -1,41 +1,16 @@
-# =============================================================================
 # Deep Search Portal - LibreChat Configuration
-#
-# Models are organized into groups:
-#   Simple       - Go-to defaults: Grok 4.20 + multi-model consortiums
-#   Miro         - Miro research engines (deep, quick, focused, swarm)
-#   Grok         - All individual Grok models (text, code, image)
-#   Experimental - Mistral thinking, extra consortium tiers, tier chooser, wiki
-#
-# Proxy services (same VM or reachable via HTTP):
-#   Thinking Proxy:           port 9100
-#   Deep Research Proxy:      port 9200
-#   Persistent Research:      port 9300
-#   MiroFlow Sprint:          port 9400
-#   Swarm Proxy:              port 9500
-#   G0DM0D3 Proxy:            port 9600
-#   xAI Native Proxy:         port 9700
-#   Persistent Wiki:          port 9800
-#   Sprint Wiki:              port 9850
-#   Tier Chooser Proxy:       port 9900
-# =============================================================================
-
+# Groups: Simple, Miro, Experimental, Raw—Grok, Raw—OpenAI, Raw—Anthropic, Raw—Google, Raw—DeepSeek, Raw—Other
 version: 1.3.5
 cache: true
 
-# ---------------------------------------------------------------------------
-# Model Specs - what the user sees in the dropdown
-# ---------------------------------------------------------------------------
 modelSpecs:
   enforce: true
   prioritize: true
   list:
-    # =======================================================================
-    #  SIMPLE - Grok 4.20 + multi-model consortiums (race across providers)
-    # =======================================================================
+    # ====== SIMPLE ======
     - name: "xai-grok-420-multiagent"
-      label: "Grok 4.20"
-      description: "xAI's most powerful model. Coordinates parallel reasoning with built-in web and X/Twitter search. 2M token context."
+      label: "Grok 4.20 Multi-Agent"
+      description: "xAI most powerful model. Coordinates parallel reasoning with built-in web and X/Twitter search. 2M token context."
       group: "Simple"
       default: true
       preset:
@@ -44,7 +19,7 @@ modelSpecs:
 
     - name: "ultraplinian-fast"
       label: "Consortium Fast"
-      description: "Races the fastest models from multiple providers and picks the best answer. Quick results, unfiltered."
+      description: "Races the fastest models from multiple providers. Quick results, unfiltered."
       group: "Simple"
       preset:
         endpoint: "G0DM0D3"
@@ -52,7 +27,7 @@ modelSpecs:
 
     - name: "godmode-classic"
       label: "Consortium Regular"
-      description: "Races 5 top models (Claude, Grok, Gemini, GPT-4, Hermes 405B) across different providers. Balanced speed and quality."
+      description: "Races 5 top models (Claude, Grok, Gemini, GPT-4, Hermes 405B). Balanced speed and quality."
       group: "Simple"
       preset:
         endpoint: "G0DM0D3"
@@ -60,208 +35,16 @@ modelSpecs:
 
     - name: "ultraplinian-power"
       label: "Consortium Powerful"
-      description: "Races the top 30 most capable models from all providers. Slower but gets the strongest possible answer."
+      description: "Races the top 30 most capable models. Slower but strongest possible answer."
       group: "Simple"
       preset:
         endpoint: "G0DM0D3"
         model: "ultraplinian-power"
 
-    # =======================================================================
-    #  MIRO - Miro research engines
-    # =======================================================================
-    - name: "deep-researcher"
-      label: "Miro Deep"
-      description: "Full Miro research engine. Builds a knowledge net from web, forums, archives, academic databases, and dark web. Detailed report. 10-30 minutes."
-      group: "Miro"
-      preset:
-        endpoint: "Persistent MiroFlow"
-        model: "persistent-miroflow"
-
-    - name: "quick-researcher"
-      label: "Miro Quick"
-      description: "Same Miro engine capped at 2 rounds. Useful results in 2-5 minutes when you need answers fast."
-      group: "Miro"
-      preset:
-        endpoint: "MiroFlow Sprint"
-        model: "miroflow-sprint"
-
-    - name: "single-agent-research"
-      label: "Miro Focused"
-      description: "Single-agent Miro research following one line of inquiry for up to 15 steps. Best for targeted questions."
-      group: "Miro"
-      preset:
-        endpoint: "Deep Research"
-        model: "miroflow"
-
-    - name: "swarm-ingest"
-      label: "Miro Swarm"
-      description: "Upload large documents and a swarm of Miro agents digests them through collaborative discussion. Ask questions about the content afterward."
-      group: "Miro"
-      preset:
-        endpoint: "Swarm Deep Search"
-        model: "swarm-miroflow"
-
-    # =======================================================================
-    #  GROK - All individual Grok models (text, code, image generation)
-    # =======================================================================
-
-    # --- Grok 4.20 ---
-    - name: "xai-grok-420-reasoning"
-      label: "Grok 4.20 Reasoning"
-      description: "Extended thinking mode with 2M context and native web + X/Twitter search. Best for complex analysis."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-4.20-0309-reasoning"
-
-    - name: "xai-grok-420-nonreasoning"
-      label: "Grok 4.20 Direct"
-      description: "Same architecture without the thinking step. Faster for straightforward questions. 2M context."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-4.20-0309-non-reasoning"
-
-    # --- Grok 4.1 Fast ---
-    - name: "xai-grok-41-fast-reasoning"
-      label: "Grok 4.1 Fast (Thinking)"
-      description: "Fast reasoning at 1/10th the cost of Grok 4.20. Best balance of speed, intelligence, and price."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-4-1-fast-reasoning"
-
-    - name: "xai-grok-41-fast-nonreasoning"
-      label: "Grok 4.1 Fast (Direct)"
-      description: "Fastest Grok 4 variant. No reasoning overhead, 2M context, very low cost."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-4-1-fast-non-reasoning"
-
-    # --- Grok 4 ---
-    - name: "xai-grok-4-reasoning"
-      label: "Grok 4 (Thinking)"
-      description: "Grok 4 with extended reasoning. Step-by-step problem solving, 2M context."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-4-fast-reasoning"
-
-    - name: "xai-grok-4-nonreasoning"
-      label: "Grok 4 (Direct)"
-      description: "Grok 4 without reasoning. Fast and capable, 2M context."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-4-fast-non-reasoning"
-
-    - name: "xai-grok-4-0709"
-      label: "Grok 4 (July 2025)"
-      description: "Original Grok 4 release. Strong at math, coding, and analytical tasks. 2M context."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-4-0709"
-
-    # --- Grok 3 ---
-    - name: "xai-grok-3"
-      label: "Grok 3"
-      description: "Full Grok 3. Excellent tool calling, 131K context, lower censorship than most frontier models."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-3"
-
-    - name: "xai-grok-3-fast"
-      label: "Grok 3 Fast"
-      description: "Fast, cheap, proven uncensored. The engine behind Miro research subagents."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-3-fast"
-
-    - name: "xai-grok-3-mini"
-      label: "Grok 3 Mini"
-      description: "Compact reasoning model with adjustable thinking depth. Quick logic puzzles and math at minimal cost."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-3-mini"
-
-    # --- Specialist ---
-    - name: "xai-grok-code"
-      label: "Grok Code"
-      description: "Purpose-built for code generation, debugging, and software engineering."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-code-fast-1"
-
-    - name: "xai-imagine"
-      label: "Grok Imagine"
-      description: "AI image generation from text prompts. Multiple aspect ratios. $0.02 per image."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-imagine-image"
-
-    - name: "xai-imagine-pro"
-      label: "Grok Imagine Pro"
-      description: "Premium image generation with higher quality and detail. $0.07 per image."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-imagine-image-pro"
-
-    # --- Race modes ---
-    - name: "xai-race-fast"
-      label: "Grok Race (Fast)"
-      description: "Races 3 fastest Grok models - Grok 3 Fast, Grok 4.1 Fast, Grok Code - picks the best."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-race-fast"
-
-    - name: "xai-race-smart"
-      label: "Grok Race (Smart)"
-      description: "Races 3 smartest Grok reasoning models - Grok 3, Grok 4.1, Grok 4.20 - picks the deepest."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-race-smart"
-
-    - name: "xai-race-all"
-      label: "Grok Race (All)"
-      description: "Races ALL 8 Grok text models at once and returns the highest-scoring response."
-      group: "Grok"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-race-all"
-
-    # =======================================================================
-    #  EXPERIMENTAL - Mistral thinking, extra consortium tiers, tier chooser, wiki
-    # =======================================================================
-    - name: "thinking-chat"
-      label: "Mistral Thinking"
-      description: "Mistral Large with visible reasoning. Good for step-by-step explanations. May refuse sensitive topics."
-      group: "Experimental"
-      preset:
-        endpoint: "Mistral Thinking"
-        model: "mistral-large-thinking"
-
-    - name: "ultraplinian-ultra"
-      label: "Consortium Ultra"
-      description: "Races all 55 available models from every provider simultaneously. Very slow but maximally thorough."
-      group: "Experimental"
-      preset:
-        endpoint: "G0DM0D3"
-        model: "ultraplinian-ultra"
-
     - name: "ultraplinian-smart"
       label: "Consortium Smart"
       description: "Races the 20 smartest models. Favours intelligence over speed."
-      group: "Experimental"
+      group: "Simple"
       preset:
         endpoint: "G0DM0D3"
         model: "ultraplinian-smart"
@@ -269,20 +52,117 @@ modelSpecs:
     - name: "ultraplinian-standard"
       label: "Consortium Standard"
       description: "Races a balanced set of 15 models. Good default uncensored option."
-      group: "Experimental"
+      group: "Simple"
       preset:
         endpoint: "G0DM0D3"
         model: "ultraplinian-standard"
 
+    - name: "ultraplinian-ultra"
+      label: "Consortium Ultra"
+      description: "Races all 55 available models simultaneously. Very slow but maximally thorough."
+      group: "Simple"
+      preset:
+        endpoint: "G0DM0D3"
+        model: "ultraplinian-ultra"
+
     - name: "ultraplinian-research"
       label: "Consortium Researcher"
-      description: "Queries many uncensored models from different providers in parallel and merges their research outputs."
-      group: "Experimental"
+      description: "Queries many uncensored models in parallel and merges their research outputs."
+      group: "Simple"
       preset:
         endpoint: "G0DM0D3"
         model: "ultraplinian-research"
 
-    # --- Wiki variants (research + live encyclopedia) ---
+    - name: "xai-race-fast"
+      label: "Grok Race (Fast)"
+      description: "Races 3 fastest Grok models - Grok 3 Fast, Grok 4.1 Fast, Grok Code."
+      group: "Simple"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-race-fast"
+
+    - name: "xai-race-smart"
+      label: "Grok Race (Smart)"
+      description: "Races 3 smartest Grok reasoning models - Grok 3, Grok 4.1, Grok 4.20."
+      group: "Simple"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-race-smart"
+
+    - name: "xai-race-all"
+      label: "Grok Race (All)"
+      description: "Races ALL 8 Grok text models at once and returns the highest-scoring response."
+      group: "Simple"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-race-all"
+
+    - name: "tier-race-quick"
+      label: "Tier Race (Quick)"
+      description: "Races 6 fast models from Google, xAI, DeepSeek, OpenAI, Mistral, Qwen. Cheapest tier."
+      group: "Simple"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-race-quick"
+
+    - name: "tier-race-medium"
+      label: "Tier Race (Medium)"
+      description: "Races 8 balanced models including Claude Sonnet 4.6, Gemini 3 Pro, GPT-5.4, Grok 4.1."
+      group: "Simple"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-race-medium"
+
+    - name: "tier-race-full-throttle"
+      label: "Tier Race (Full Throttle)"
+      description: "Races 7 flagship models including Claude Opus 4.6, GPT-5, Grok 4.20, DeepSeek R1. Maximum intelligence."
+      group: "Simple"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-race-full-throttle"
+
+    # ====== MIRO ======
+    - name: "deep-researcher"
+      label: "Miro Deep"
+      description: "Full research engine. Builds a knowledge net from web, forums, archives, academic databases, dark web. 10-30 min."
+      group: "Miro"
+      preset:
+        endpoint: "Persistent MiroFlow"
+        model: "persistent-miroflow"
+
+    - name: "quick-researcher"
+      label: "Miro Quick"
+      description: "Same engine capped at 2 rounds. Useful results in 2-5 minutes."
+      group: "Miro"
+      preset:
+        endpoint: "MiroFlow Sprint"
+        model: "miroflow-sprint"
+
+    - name: "single-agent-research"
+      label: "Miro Focused"
+      description: "Single-agent research following one line of inquiry for up to 15 steps."
+      group: "Miro"
+      preset:
+        endpoint: "Deep Research"
+        model: "miroflow"
+
+    - name: "swarm-ingest"
+      label: "Miro Swarm"
+      description: "Upload large documents and a swarm of agents digests them through collaborative discussion."
+      group: "Miro"
+      preset:
+        endpoint: "Swarm Deep Search"
+        model: "swarm-miroflow"
+
+    # ====== EXPERIMENTAL ======
+    - name: "thinking-chat"
+      label: "Mistral Thinking"
+      description: "Mistral Large with visible reasoning. Good for step-by-step explanations."
+      group: "Experimental"
+      preset:
+        endpoint: "Mistral Thinking"
+        model: "mistral-large-thinking"
+
     - name: "deep-researcher-wiki"
       label: "Miro Deep + Wiki"
       description: "Same as Miro Deep but also builds a live knowledge encyclopedia as research progresses."
@@ -293,109 +173,192 @@ modelSpecs:
 
     - name: "quick-researcher-wiki"
       label: "Miro Quick + Wiki"
-      description: "Same as Miro Quick but also builds a live knowledge encyclopedia. Fast 2-5 minute research with an incrementally constructed wiki article."
+      description: "Same as Miro Quick but also builds a live knowledge encyclopedia."
       group: "Experimental"
       preset:
         endpoint: "MiroFlow Sprint Wiki"
         model: "miroflow-sprint-wiki"
 
-    # --- Tier Chooser (multi-provider race by intelligence tier) ---
-    - name: "tier-race-quick"
-      label: "Tier Race (Quick)"
-      description: "Races 6 fast models from Google, xAI, DeepSeek, OpenAI, Mistral, Qwen. Returns the best answer. Cheapest and fastest tier."
-      group: "Experimental"
+    # ====== RAW — Grok ======
+    - name: "xai-grok-420-reasoning"
+      label: "Grok 4.20 Reasoning"
+      description: "Extended thinking with 2M context and native web + X/Twitter search."
+      group: "Raw — Grok"
       preset:
-        endpoint: "Tier Chooser"
-        model: "tier-race-quick"
+        endpoint: "xAI Native"
+        model: "xai-grok-4.20-0309-reasoning"
 
-    - name: "tier-race-medium"
-      label: "Tier Race (Medium)"
-      description: "Races 8 balanced models including Claude Sonnet 4.6, Gemini 3 Pro, GPT-5.4, Grok 4.1 Reasoning, GLM-5. Best daily-driver tier."
-      group: "Experimental"
+    - name: "xai-grok-420-nonreasoning"
+      label: "Grok 4.20 Direct"
+      description: "Same architecture without thinking. Faster for straightforward questions."
+      group: "Raw — Grok"
       preset:
-        endpoint: "Tier Chooser"
-        model: "tier-race-medium"
+        endpoint: "xAI Native"
+        model: "xai-grok-4.20-0309-non-reasoning"
 
-    - name: "tier-race-full-throttle"
-      label: "Tier Race (Full Throttle)"
-      description: "Races 7 flagship models including Claude Opus 4.6, GPT-5, Grok 4.20 Reasoning, DeepSeek R1, GLM-4.7. Maximum intelligence."
-      group: "Experimental"
+    - name: "xai-grok-41-fast-reasoning"
+      label: "Grok 4.1 Fast (Thinking)"
+      description: "Fast reasoning at 1/10th the cost of Grok 4.20."
+      group: "Raw — Grok"
       preset:
-        endpoint: "Tier Chooser"
-        model: "tier-race-full-throttle"
+        endpoint: "xAI Native"
+        model: "xai-grok-4-1-fast-reasoning"
 
-    - name: "tier-gemini-flash"
-      label: "Tier - Gemini 2.5 Flash"
-      description: "Google Gemini 2.5 Flash. Ultra-fast, 1M context, multimodal. Direct to Google API."
-      group: "Experimental"
+    - name: "xai-grok-41-fast-nonreasoning"
+      label: "Grok 4.1 Fast (Direct)"
+      description: "Fastest Grok 4 variant. No reasoning overhead, 2M context."
+      group: "Raw — Grok"
       preset:
-        endpoint: "Tier Chooser"
-        model: "tier-google/gemini-2.5-flash"
+        endpoint: "xAI Native"
+        model: "xai-grok-4-1-fast-non-reasoning"
 
-    - name: "tier-deepseek-chat"
-      label: "Tier - DeepSeek Chat"
-      description: "DeepSeek V3. Cheapest strong model available. Direct to DeepSeek API."
-      group: "Experimental"
+    - name: "xai-grok-4-reasoning"
+      label: "Grok 4 (Thinking)"
+      description: "Grok 4 with extended reasoning. Step-by-step problem solving."
+      group: "Raw — Grok"
       preset:
-        endpoint: "Tier Chooser"
-        model: "tier-deepseek/deepseek-chat"
+        endpoint: "xAI Native"
+        model: "xai-grok-4-fast-reasoning"
 
-    - name: "tier-claude-sonnet"
-      label: "Tier - Claude Sonnet 4-6"
-      description: "Anthropic Claude Sonnet 4-6. Frequently the practical winner in blind tests. Direct to Anthropic API."
-      group: "Experimental"
+    - name: "xai-grok-4-nonreasoning"
+      label: "Grok 4 (Direct)"
+      description: "Grok 4 without reasoning. Fast and capable, 2M context."
+      group: "Raw — Grok"
       preset:
-        endpoint: "Tier Chooser"
-        model: "tier-anthropic/claude-sonnet-4-6"
+        endpoint: "xAI Native"
+        model: "xai-grok-4-fast-non-reasoning"
 
+    - name: "xai-grok-4-0709"
+      label: "Grok 4 (July 2025)"
+      description: "Original Grok 4 release. Strong at math, coding, and analytical tasks."
+      group: "Raw — Grok"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-grok-4-0709"
+
+    - name: "xai-grok-3"
+      label: "Grok 3"
+      description: "Full Grok 3. Excellent tool calling, 131K context."
+      group: "Raw — Grok"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-grok-3"
+
+    - name: "xai-grok-3-fast"
+      label: "Grok 3 Fast"
+      description: "Fast, cheap, proven uncensored. The engine behind Miro research subagents."
+      group: "Raw — Grok"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-grok-3-fast"
+
+    - name: "xai-grok-3-mini"
+      label: "Grok 3 Mini"
+      description: "Compact reasoning model with adjustable thinking depth."
+      group: "Raw — Grok"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-grok-3-mini"
+
+    - name: "xai-grok-code"
+      label: "Grok Code"
+      description: "Purpose-built for code generation, debugging, and software engineering."
+      group: "Raw — Grok"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-grok-code-fast-1"
+
+    - name: "xai-imagine"
+      label: "Grok Imagine"
+      description: "AI image generation from text prompts. $0.02 per image."
+      group: "Raw — Grok"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-grok-imagine-image"
+
+    - name: "xai-imagine-pro"
+      label: "Grok Imagine Pro"
+      description: "Premium image generation with higher quality. $0.07 per image."
+      group: "Raw — Grok"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-grok-imagine-image-pro"
+
+    # ====== RAW — OpenAI ======
     - name: "tier-gpt54"
-      label: "Tier - GPT-5.4"
-      description: "OpenAI GPT-5.4 Chat. Strong all-rounder. Direct to OpenAI API."
-      group: "Experimental"
+      label: "GPT-5.4"
+      description: "OpenAI GPT-5.4 Chat. Strong all-rounder. Direct to OpenAI API via Tier Chooser."
+      group: "Raw — OpenAI"
       preset:
         endpoint: "Tier Chooser"
         model: "tier-openai/gpt-5.4"
 
-    - name: "tier-claude-opus"
-      label: "Tier - Claude Opus 4-6"
-      description: "Anthropic Claude Opus 4-6. Reasoning king with max-effort thinking. Direct to Anthropic API."
-      group: "Experimental"
-      preset:
-        endpoint: "Tier Chooser"
-        model: "tier-anthropic/claude-opus-4-6"
-
-    - name: "tier-grok-420"
-      label: "Tier - Grok 4.20 Reasoning"
-      description: "xAI Grok 4.20 with extended thinking. 2M context, web+X search. Direct to xAI API."
-      group: "Experimental"
-      preset:
-        endpoint: "Tier Chooser"
-        model: "tier-x-ai/grok-4.20-0309-reasoning"
-
-    - name: "tier-deepseek-r1"
-      label: "Tier - DeepSeek R1"
-      description: "DeepSeek Reasoner (R1). Math and coding standout with chain-of-thought reasoning. Direct to DeepSeek API."
-      group: "Experimental"
-      preset:
-        endpoint: "Tier Chooser"
-        model: "tier-deepseek/deepseek-reasoner"
-
     - name: "tier-gpt5"
-      label: "Tier - GPT-5"
-      description: "OpenAI GPT-5. Flagship model, highest capability ceiling. Direct to OpenAI API."
-      group: "Experimental"
+      label: "GPT-5"
+      description: "OpenAI GPT-5. Flagship model, highest capability ceiling."
+      group: "Raw — OpenAI"
       preset:
         endpoint: "Tier Chooser"
         model: "tier-openai/gpt-5"
 
-# ---------------------------------------------------------------------------
-# Backend endpoint wiring (users don't see this directly)
-# ---------------------------------------------------------------------------
+    # ====== RAW — Anthropic ======
+    - name: "tier-claude-sonnet"
+      label: "Claude Sonnet 4-6"
+      description: "Anthropic Claude Sonnet 4-6. Frequently the practical winner in blind tests."
+      group: "Raw — Anthropic"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-anthropic/claude-sonnet-4-6"
+
+    - name: "tier-claude-opus"
+      label: "Claude Opus 4-6"
+      description: "Anthropic Claude Opus 4-6. Reasoning king with max-effort thinking."
+      group: "Raw — Anthropic"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-anthropic/claude-opus-4-6"
+
+    # ====== RAW — Google ======
+    - name: "tier-gemini-flash"
+      label: "Gemini 2.5 Flash"
+      description: "Google Gemini 2.5 Flash. Ultra-fast, 1M context, multimodal."
+      group: "Raw — Google"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-google/gemini-2.5-flash"
+
+    # ====== RAW — DeepSeek ======
+    - name: "tier-deepseek-chat"
+      label: "DeepSeek Chat"
+      description: "DeepSeek V3. Cheapest strong model available."
+      group: "Raw — DeepSeek"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-deepseek/deepseek-chat"
+
+    - name: "tier-deepseek-r1"
+      label: "DeepSeek R1"
+      description: "DeepSeek Reasoner (R1). Math and coding standout with chain-of-thought reasoning."
+      group: "Raw — DeepSeek"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-deepseek/deepseek-reasoner"
+
+    # ====== RAW — Other ======
+    - name: "tier-grok-420"
+      label: "Grok 4.20 (via Tier Chooser)"
+      description: "xAI Grok 4.20 with extended thinking. 2M context. Routed through Tier Chooser."
+      group: "Raw — Other"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-x-ai/grok-4.20-0309-reasoning"
+
+# ── Backend endpoint wiring ──
 endpoints:
   custom:
     - name: "Mistral Thinking"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9100/v1"
+      baseURL: "http://localhost:9100/v1"
       models:
         default:
           - "mistral-large-thinking"
@@ -413,7 +376,7 @@ endpoints:
 
     - name: "Persistent MiroFlow"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9300/v1"
+      baseURL: "http://localhost:9300/v1"
       models:
         default:
           - "persistent-miroflow"
@@ -432,7 +395,7 @@ endpoints:
 
     - name: "MiroFlow Sprint"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9400/v1"
+      baseURL: "http://localhost:9400/v1"
       models:
         default:
           - "miroflow-sprint"
@@ -451,7 +414,7 @@ endpoints:
 
     - name: "Persistent MiroFlow Wiki"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9800/v1"
+      baseURL: "http://localhost:9800/v1"
       models:
         default:
           - "persistent-miroflow-wiki"
@@ -461,8 +424,8 @@ endpoints:
       titleEndpoint: "Mistral Thinking"
       titleMethod: "completion"
       summarize: false
-      maxContextTokens: 1000000
       artifacts: true
+      maxContextTokens: 1000000
       dropParams:
         - "stop"
         - "user"
@@ -471,7 +434,7 @@ endpoints:
 
     - name: "MiroFlow Sprint Wiki"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9850/v1"
+      baseURL: "http://localhost:9850/v1"
       models:
         default:
           - "miroflow-sprint-wiki"
@@ -481,8 +444,8 @@ endpoints:
       titleEndpoint: "Mistral Thinking"
       titleMethod: "completion"
       summarize: false
-      maxContextTokens: 1000000
       artifacts: true
+      maxContextTokens: 1000000
       dropParams:
         - "stop"
         - "user"
@@ -491,7 +454,7 @@ endpoints:
 
     - name: "Deep Research"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9200/v1"
+      baseURL: "http://localhost:9200/v1"
       models:
         default:
           - "miroflow"
@@ -510,7 +473,7 @@ endpoints:
 
     - name: "Swarm Deep Search"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9500/v1"
+      baseURL: "http://localhost:9500/v1"
       models:
         default:
           - "swarm-miroflow"
@@ -529,7 +492,7 @@ endpoints:
 
     - name: "G0DM0D3"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9600/v1"
+      baseURL: "http://localhost:9600/v1"
       models:
         default:
           - "godmode-classic"
@@ -555,7 +518,7 @@ endpoints:
 
     - name: "xAI Native"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9700/v1"
+      baseURL: "http://localhost:9700/v1"
       models:
         default:
           - "xai-grok-4.20-0309-reasoning"
@@ -591,15 +554,24 @@ endpoints:
 
     - name: "Tier Chooser"
       apiKey: "not-needed"
-      baseURL: "http://host.docker.internal:9900/v1"
+      baseURL: "http://localhost:9900/v1"
       models:
         default:
           - "tier-race-quick"
           - "tier-race-medium"
           - "tier-race-full-throttle"
+          - "tier-openai/gpt-5.4"
+          - "tier-openai/gpt-5"
+          - "tier-anthropic/claude-sonnet-4-6"
+          - "tier-anthropic/claude-opus-4-6"
+          - "tier-google/gemini-2.5-flash"
+          - "tier-deepseek/deepseek-chat"
+          - "tier-deepseek/deepseek-reasoner"
+          - "tier-x-ai/grok-4.20-0309-reasoning"
         fetch: true
       titleConvo: true
       titleModel: "tier-race-quick"
+      titleMethod: "completion"
       summarize: false
       forcePrompt: false
       maxContextTokens: 2000000

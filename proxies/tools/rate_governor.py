@@ -86,6 +86,8 @@ _SELF_THROTTLED_TOOLS: set[str] = {
     "wayback_fetch",
     # Onion fetch throttles via get_throttler("tor") internally
     "onion_fetch",
+    # Note: Sicry tools are NOT in _SELF_THROTTLED_TOOLS — the governor
+    # enforces the "sicry" per-provider bucket (1 RPS / 3 burst / 3 concurrent).
     # Grok deep search throttles via get_throttler("xai") internally
     "grok_deep_search",
     # Search gateway delegates to sub-tools that all self-throttle
@@ -144,6 +146,11 @@ TOOL_PROVIDER_MAP: dict[str, str] = {
     "fetch_webpage": "web_fetch",
     # Tor / onion fetch
     "onion_fetch": "tor",
+    # Sicry dark web tools (all route through Tor)
+    "sicry_search": "sicry",
+    "sicry_fetch": "sicry",
+    "sicry_check_tor": "sicry",
+    "sicry_renew_identity": "sicry",
     # Knowledge engine (local, but still throttled)
     "knowledge_graph_search": "knowledge_engine",
     "knowledge_discover": "knowledge_engine",
@@ -160,6 +167,7 @@ _EXTRA_PROVIDER_DEFAULTS: dict[str, tuple[float, int, int]] = {
     "archiveorg": (2.0, 5, 5),
     "rdap": (2.0, 5, 5),
     "youtube": (3.0, 5, 5),
+    "sicry": (1.0, 3, 3),  # Conservative — Tor circuits are slow
 }
 
 

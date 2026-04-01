@@ -659,12 +659,12 @@ async def _synthesize_responses(
     context window) to combine the best information from every response.
     Returns the synthesised text, or empty string on failure.
     """
-    # Build the labelled responses block — highest scoring first
+    # Build the responses block — all models presented equally, no ranking
     response_parts = []
-    for r in sorted(valid_results, key=lambda x: x["score"], reverse=True):
+    for r in valid_results:
         short = r["model"].split("/")[-1]
         response_parts.append(
-            f"--- {short} (score={r['score']}) ---\n{r['content']}\n"
+            f"--- {short} ---\n{r['content']}\n"
         )
     responses_text = "\n".join(response_parts)
 
@@ -751,7 +751,7 @@ async def run_tier_race(
         elif result["is_refusal"]:
             status = "REFUSAL"
         else:
-            status = f"score={result['score']}"
+            status = "OK"
         short_model = result["model"].split("/")[-1]
         yield _chunk("", reasoning=f"  [{completed}/{len(models)}] {short_model}: {status}\n")
 
@@ -774,19 +774,17 @@ async def run_tier_race(
     # --- Persist ALL results to Neo4j (fire-and-forget) ---
     asyncio.create_task(_store_race_results_neo4j(req_id, user_query, tier, results))
 
-    best = max(valid, key=lambda r: r["score"])
-    short_winner = best["model"].split("/")[-1]
-    avg_score = sum(r["score"] for r in valid) / len(valid)
     refusal_count = sum(1 for r in results if r["is_refusal"] and not r.get("is_empty"))
     empty_count = sum(1 for r in results if r.get("is_empty"))
+    model_names = ", ".join(r["model"].split("/")[-1] for r in valid)
 
     yield _chunk("", reasoning=(
         f"\nResults: {len(valid)} valid / {refusal_count} refused / "
         f"{empty_count} error\n"
-        f"Best: {short_winner} (score={best['score']}, avg={avg_score:.0f})\n"
+        f"Valid: {model_names}\n"
     ))
 
-    # --- Synthesise the richest answer from all valid responses ---
+    # --- Synthesise the richest answer from ALL valid responses ---
     if len(valid) == 1:
         # Only one valid response — return it directly, no synthesis needed
         yield _chunk("", reasoning="Single valid response — returning directly.\n")
@@ -795,18 +793,19 @@ async def run_tier_race(
         return
 
     yield _chunk("", reasoning=(
-        f"Synthesising comprehensive answer from {len(valid)} model responses "
+        f"Synthesising comprehensive answer from {len(valid)} responses "
         f"(via {SYNTHESIS_MODEL.split('/')[-1]})...\n"
     ))
 
     synthesised = await _synthesize_responses(user_query, valid, req_id)
     if synthesised:
-        yield _chunk("", reasoning="Synthesis complete — returning merged answer.\n")
+        yield _chunk("", reasoning="Synthesis complete.\n")
         yield _chunk(synthesised, finish_reason="stop")
     else:
-        # Synthesis failed — fall back to the single best-scored response
-        yield _chunk("", reasoning="Synthesis failed — falling back to best individual response.\n")
-        yield _chunk(best["content"], finish_reason="stop")
+        # Synthesis failed — return the longest response as a reasonable fallback
+        fallback = max(valid, key=lambda r: len(r["content"]))
+        yield _chunk("", reasoning="Synthesis failed — returning longest response as fallback.\n")
+        yield _chunk(fallback["content"], finish_reason="stop")
     yield "data: [DONE]\n\n"
 
 

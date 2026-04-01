@@ -303,20 +303,20 @@ modelSpecs:
 
     # ====== RAW — Anthropic ======
     - name: "tier-claude-sonnet"
-      label: "Claude Sonnet 4-6"
-      description: "Anthropic Claude Sonnet 4-6. Frequently the practical winner in blind tests."
+      label: "Claude Sonnet 4.6"
+      description: "Anthropic Claude Sonnet 4.6. Frequently the practical winner in blind tests."
       group: "Raw — Anthropic"
       preset:
         endpoint: "Tier Chooser"
-        model: "tier-anthropic/claude-sonnet-4-6"
+        model: "tier-anthropic/claude-sonnet-4.6"
 
     - name: "tier-claude-opus"
-      label: "Claude Opus 4-6"
-      description: "Anthropic Claude Opus 4-6. Reasoning king with max-effort thinking."
+      label: "Claude Opus 4.6"
+      description: "Anthropic Claude Opus 4.6. Reasoning king with max-effort thinking."
       group: "Raw — Anthropic"
       preset:
         endpoint: "Tier Chooser"
-        model: "tier-anthropic/claude-opus-4-6"
+        model: "tier-anthropic/claude-opus-4.6"
 
     # ====== RAW — Google ======
     - name: "tier-gemini-flash"
@@ -342,7 +342,7 @@ modelSpecs:
       group: "Raw — DeepSeek"
       preset:
         endpoint: "Tier Chooser"
-        model: "tier-deepseek/deepseek-reasoner"
+        model: "tier-deepseek/deepseek-r1"
 
     # ====== RAW — Other ======
     - name: "tier-grok-420"
@@ -351,7 +351,7 @@ modelSpecs:
       group: "Raw — Other"
       preset:
         endpoint: "Tier Chooser"
-        model: "tier-x-ai/grok-4.20-0309-reasoning"
+        model: "tier-x-ai/grok-4.20"
 
 # ── Backend endpoint wiring ──
 endpoints:
@@ -562,12 +562,12 @@ endpoints:
           - "tier-race-full-throttle"
           - "tier-openai/gpt-5.4"
           - "tier-openai/gpt-5"
-          - "tier-anthropic/claude-sonnet-4-6"
-          - "tier-anthropic/claude-opus-4-6"
+          - "tier-anthropic/claude-sonnet-4.6"
+          - "tier-anthropic/claude-opus-4.6"
           - "tier-google/gemini-2.5-flash"
           - "tier-deepseek/deepseek-chat"
-          - "tier-deepseek/deepseek-reasoner"
-          - "tier-x-ai/grok-4.20-0309-reasoning"
+          - "tier-deepseek/deepseek-r1"
+          - "tier-x-ai/grok-4.20"
         fetch: true
       titleConvo: true
       titleModel: "mistral-large-thinking"

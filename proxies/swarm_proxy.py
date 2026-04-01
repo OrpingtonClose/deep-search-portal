@@ -1717,6 +1717,11 @@ async def _handle_query(
             reasoning_content=content,
         )
 
+    # Yield an initial empty reasoning_content data chunk immediately so
+    # LibreChat's stream handler receives a valid ``data:`` line within
+    # its timeout window before any async delays.
+    yield reasoning_sse("")
+
     raw_query = extract_user_text(messages)
     parsed_q = parse_attachments(raw_query)
     user_query = parsed_q.prompt if parsed_q.has_attachments else raw_query
@@ -1885,6 +1890,11 @@ async def _handle_corpus_submission(
             model_id=model_id,
             reasoning_content=content,
         )
+
+    # Yield an initial empty reasoning_content data chunk immediately so
+    # LibreChat's stream handler receives a valid ``data:`` line within
+    # its timeout window before any async delays.
+    yield reasoning_sse("")
 
     yield reasoning_sse(f"**[Corpus Received]** {len(text):,} characters\n")
     yield reasoning_sse(f"Title: {title}...\n")

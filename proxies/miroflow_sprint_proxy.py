@@ -45,6 +45,7 @@ os.environ.setdefault(
 
 # ── Now safe to import everything from the tools/ package ─────────────────
 
+import time  # noqa: E402
 import uuid  # noqa: E402
 
 from fastapi import Request  # noqa: E402
@@ -54,6 +55,7 @@ from shared import (  # noqa: E402
     create_app,
     extract_user_text_with_attachments,
     is_utility_request,
+    make_sse_chunk,
     parse_attachments,
     register_standard_routes,
     stream_passthrough,

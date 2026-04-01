@@ -333,7 +333,10 @@ New findings from this round:
 Are the new findings substantially different from what we already know? Do they add new vendors, new sources, new concrete details, or new perspectives?
 
 Respond with:
-NOVEL: [yes/no]
+NOVEL: [yes/partial/no]
+- yes = findings contain new vendors, sources, or concrete details not in known facts
+- partial = findings overlap significantly but add some minor new details or angles
+- no = findings are redundant, no meaningful new information
 REASON: [one sentence explaining why]"""
 
 
@@ -706,9 +709,10 @@ async def run_subagent(
                                 )
                                 if "error" not in novelty_result:
                                     novelty_content = novelty_result.get("content", "").lower()
-                                    novel_match = re.search(r'novel:\s*(yes|no)', novelty_content)
-                                    if novel_match and novel_match.group(1) == "no":
-                                        novelty = 0.0
+                                    novel_match = re.search(r'novel:\s*(yes|partial|no)', novelty_content)
+                                    if novel_match:
+                                        label = novel_match.group(1)
+                                        novelty = {"yes": 1.0, "partial": 0.15, "no": 0.0}.get(label, 1.0)
                                     else:
                                         novelty = 1.0
                             except Exception:

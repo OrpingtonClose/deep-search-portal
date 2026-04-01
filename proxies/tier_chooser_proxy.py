@@ -6,8 +6,8 @@ Provides Quick / Medium / Full Throttle tiers. Each tier races its models
 in parallel, scores responses, and returns the best. Individual model
 access is also supported.
 
-All models route to their author's native API. Only Anthropic models
-fall back to OpenRouter (Anthropic's API is not OpenAI-compatible).
+All models route to their author's native API. Anthropic models use
+Anthropic's OpenAI-compatible endpoint (https://api.anthropic.com/v1/).
 
 Port: 9900 (configurable via TIER_CHOOSER_PORT)
 """
@@ -71,9 +71,7 @@ KNOWLEDGE_NAMESPACE = os.getenv("TIER_CHOOSER_NAMESPACE", "tier-chooser")
 
 PROVIDER_REGISTRY: dict[str, dict[str, str]] = {
     "openai":       {"base_url": "https://api.openai.com/v1",                                    "key_env": "OPENAI_API_KEY"},
-    # NOTE: Anthropic is NOT listed here — its API is not OpenAI-compatible
-    # (uses /v1/messages, x-api-key header, different body format).
-    # Anthropic models always route through OpenRouter.
+    "anthropic":    {"base_url": "https://api.anthropic.com/v1/",                                  "key_env": "ANTHROPIC_API_KEY"},
     "google":       {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai",       "key_env": "GEMINI_API_KEY"},
     "x-ai":         {"base_url": "https://api.x.ai/v1",                                          "key_env": "XAI_API_KEY"},
     "deepseek":     {"base_url": "https://api.deepseek.com",                                     "key_env": "DEEPSEEK_API_KEY"},

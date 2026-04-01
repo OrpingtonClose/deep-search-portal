@@ -731,29 +731,29 @@ You are Icarus, and you WANT to burn your wings. You have received atomic resear
 
 {prior_knowledge_text}"""
 
-CRITIC_PROMPT = """You are a research quality critic. Your job is to review a draft answer and identify weak sections that need improvement.
+CRITIC_PROMPT = """You are a research quality critic. Review the draft answer and identify weak sections.
 
-Review the draft for:
+Check for:
 1. Claims without adequate source support
 2. Logical gaps or missing perspectives
 3. Sections marked [NEEDS VERIFICATION]
-4. Contradictions that weren't properly resolved
-5. Areas where serendipitous connections could be better explained
-6. Missing context that would make the answer more useful
-7. FEARMONGERING: emotional language designed to scare rather than inform (e.g. "you could die", "extremely dangerous"). Flag these as type "fearmongering" — risks should be stated with data, not drama.
-8. VALUE JUDGEMENTS: moralizing about the user's intentions or choices. Flag these as type "value_judgement".
-9. VAGUE REFERENCES: saying "some forums" or "certain vendors" without naming them specifically. Flag these as type "vague_reference" — the user wants names, URLs, specifics.
+4. Contradictions that weren't resolved
+5. FEARMONGERING: emotional scare language instead of data-backed risk statements
+6. VALUE JUDGEMENTS: moralizing about the user's intentions
+7. VAGUE REFERENCES: "some forums" or "certain vendors" without naming specifics
 
-Output ONLY a JSON object:
-{
-  "overall_quality": 0.7,
-  "issues": [
-    {"section": "section heading or quote", "type": "unsupported_claim|logical_gap|needs_verification|contradiction|missing_context|fearmongering|value_judgement|vague_reference", "description": "what's wrong", "search_query": "suggested search to fix this"}
-  ],
-  "strengths": ["list of things done well"]
-}
+Respond with:
+OVERALL_QUALITY: [0.0-1.0]
 
-Output ONLY valid JSON, no markdown fences."""
+ISSUES:
+For each issue, write:
+- SECTION: [section heading or quote]
+  TYPE: [unsupported_claim/logical_gap/needs_verification/contradiction/missing_context/fearmongering/value_judgement/vague_reference]
+  DESCRIPTION: [what's wrong]
+  SEARCH_QUERY: [suggested search to fix this]
+
+STRENGTHS:
+- [list each strength on its own line]"""
 
 REVISION_PROMPT = """You are an expert revision agent. Today is: {date}
 
@@ -1073,6 +1073,10 @@ async def synthesize_with_revision(
 
     if "error" not in critic_result:
         critic_content = critic_result.get("content", "")
+
+        # Parse critic response — try JSON first (backward compat), then NL
+        issues: list[dict] = []
+        overall_quality = 0.8
         try:
             cleaned = critic_content.strip()
             if cleaned.startswith("```"):
@@ -1081,31 +1085,52 @@ async def synthesize_with_revision(
             critic_data = json.loads(cleaned)
             issues = critic_data.get("issues", [])
             overall_quality = critic_data.get("overall_quality", 0.8)
-
-            if issues and overall_quality < 0.85:
-                issues_text = json.dumps(issues, indent=2)
-
-                # --- Phase 3: Targeted micro-research on weak points ---
-                search_queries = [
-                    issue.get("search_query", "")
-                    for issue in issues[:3]
-                    if issue.get("search_query")
-                ]
-
-                if search_queries:
-                    search_tasks = [tool_searxng_search(q) for q in search_queries]
-                    micro_search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
-
-                    micro_results = []
-                    for q, sr in zip(search_queries, micro_search_results):
-                        if isinstance(sr, str) and not sr.startswith("Search error"):
-                            micro_results.append(f"**Search: {q}**\n{sr[:2000]}")
-
-                    if micro_results:
-                        additional_findings = "\n\n".join(micro_results)
-
         except (json.JSONDecodeError, ValueError):
-            pass
+            # Natural language parsing
+            quality_match = re.search(r'OVERALL_QUALITY:\s*([\d.]+)', critic_content)
+            if quality_match:
+                overall_quality = float(quality_match.group(1))
+            # Parse SECTION: / TYPE: / DESCRIPTION: / SEARCH_QUERY: blocks
+            issue_blocks = re.split(r'(?:^|\n)\s*-\s*SECTION:\s*', critic_content)
+            for block in issue_blocks[1:]:
+                block = block.strip()
+                section_line = block.split("\n")[0].strip()
+                type_match = re.search(r'TYPE:\s*(\S+)', block)
+                desc_match = re.search(r'DESCRIPTION:\s*(.+)', block)
+                query_match = re.search(r'SEARCH_QUERY:\s*(.+)', block)
+                if section_line:
+                    issues.append({
+                        "section": section_line,
+                        "type": type_match.group(1).strip() if type_match else "logical_gap",
+                        "description": desc_match.group(1).strip() if desc_match else section_line,
+                        "search_query": query_match.group(1).strip() if query_match else "",
+                    })
+
+        if issues and overall_quality < 0.85:
+            issues_text = "\n".join(
+                f"- {issue.get('section', '?')}: {issue.get('description', '?')} "
+                f"(type: {issue.get('type', '?')})"
+                for issue in issues
+            )
+
+            # --- Phase 3: Targeted micro-research on weak points ---
+            search_queries = [
+                issue.get("search_query", "")
+                for issue in issues[:3]
+                if issue.get("search_query")
+            ]
+
+            if search_queries:
+                search_tasks = [tool_searxng_search(q) for q in search_queries]
+                micro_search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
+
+                micro_results = []
+                for q, sr in zip(search_queries, micro_search_results):
+                    if isinstance(sr, str) and not sr.startswith("Search error"):
+                        micro_results.append(f"**Search: {q}**\n{sr[:2000]}")
+
+                if micro_results:
+                    additional_findings = "\n\n".join(micro_results)
 
     # --- Phase 4: Final Revision ---
     revision_prompt = REVISION_PROMPT.format(
@@ -1887,21 +1912,20 @@ Synthesised report (first 3000 chars):
 Number of research conditions gathered: {n_conditions}
 Research iterations completed: {iterations}
 
-Output ONLY valid JSON:
-{
-  "is_complete": true,
-  "completeness_score": 0.85,
-  "gaps": [
-    {"description": "gap description", "search_query": "specific query to fill this gap"}
-  ]
-}
-
 Rules:
-- is_complete = true if the report adequately answers the query (score >= 0.7)
-- is_complete = false ONLY if there are CRITICAL gaps that would significantly change the answer
+- COMPLETE if the report adequately answers the query
+- INCOMPLETE ONLY if there are CRITICAL gaps that would significantly change the answer
 - Do NOT flag minor gaps or nice-to-haves — only critical missing information
 - Maximum 3 gaps
-- Output ONLY valid JSON, no markdown fences"""
+
+Respond with:
+COMPLETE: [yes/no]
+COMPLETENESS_SCORE: [0.0-1.0]
+
+GAPS: (only if incomplete)
+For each gap:
+- GAP: [description]
+  SEARCH_QUERY: [specific query to fill this gap]"""
 
 
 async def _detect_incompleteness(
@@ -1937,16 +1961,37 @@ async def _detect_incompleteness(
         )
         if "error" not in result:
             content = result.get("content", "").strip()
-            if content.startswith("```"):
-                content = re.sub(r'^```(?:json)?\s*', '', content)
-                content = re.sub(r'\s*```$', '', content)
-            data = json.loads(content)
-            is_complete = data.get("is_complete", True)
-            gaps = data.get("gaps", [])
-            gap_queries = [
-                g.get("search_query", "") for g in gaps[:3] if g.get("search_query")
-            ]
-            return is_complete, gap_queries
+
+            # Try JSON first (backward compat)
+            try:
+                cleaned = content
+                if cleaned.startswith("```"):
+                    cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+                    cleaned = re.sub(r'\s*```$', '', cleaned)
+                data = json.loads(cleaned)
+                is_complete = data.get("is_complete", True)
+                gaps = data.get("gaps", [])
+                gap_queries = [
+                    g.get("search_query", "") for g in gaps[:3] if g.get("search_query")
+                ]
+                return is_complete, gap_queries
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+            # Natural language parsing
+            complete_match = re.search(r'COMPLETE:\s*(yes|no)', content, re.IGNORECASE)
+            is_complete = True
+            if complete_match:
+                is_complete = complete_match.group(1).lower() == 'yes'
+
+            gap_queries: list[str] = []
+            gap_blocks = re.split(r'(?:^|\n)\s*-\s*GAP:\s*', content)
+            for block in gap_blocks[1:]:
+                query_match = re.search(r'SEARCH_QUERY:\s*(.+)', block)
+                if query_match:
+                    gap_queries.append(query_match.group(1).strip())
+            return is_complete, gap_queries[:3]
+
     except Exception as e:
         log.warning(f"[{req_id}] Incompleteness detection failed (non-fatal): {e}")
 

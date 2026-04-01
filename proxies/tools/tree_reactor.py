@@ -97,10 +97,12 @@ PRESSURE RULES:
 Other rules:
 - Generate 0-5 questions maximum
 - Each question MUST be semantically DISTINCT from all questions in the research net
-- Output ONLY valid JSON, no markdown fences
 
-Output format:
-{{"sub_questions": [{{"question": "...", "context": "...", "pressure": 0.8, "strategy": "lateral"}}]}}"""
+For each question, write:
+QUESTION: [specific, searchable question]
+CONTEXT: [one sentence on why this matters]
+PRESSURE: [0.0-1.0 importance score]
+STRATEGY: [deepen/verify/lateral/contrarian/historical/cross-domain]"""
 
 
 # ============================================================================
@@ -242,26 +244,39 @@ async def _spawn_sub_questions(
         return []
 
     content = result.get("content", "")
+
+    # Parse sub-questions from JSON (backward compat) or natural language
+    sub_questions: list[dict] = []
     try:
         cleaned = content.strip()
         if cleaned.startswith("```"):
             cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
             cleaned = re.sub(r'\s*```$', '', cleaned)
         data = json.loads(cleaned)
+        sub_questions = data.get("sub_questions", [])
     except (json.JSONDecodeError, ValueError):
-        json_match = re.search(r'\{[^{}]*"sub_questions"\s*:\s*\[.*?\]\s*\}', content, re.DOTALL)
-        if json_match:
-            try:
-                data = json.loads(json_match.group())
-            except (json.JSONDecodeError, ValueError):
-                return []
-        else:
-            return []
+        # Natural language parsing: QUESTION: / CONTEXT: / PRESSURE: / STRATEGY: blocks
+        q_blocks = re.split(r'(?:^|\n)\s*QUESTION:\s*', content)
+        for block in q_blocks:
+            block = block.strip()
+            if not block:
+                continue
+            question_line = block.split("\n")[0].strip()
+            ctx_match = re.search(r'CONTEXT:\s*(.+)', block)
+            pressure_match = re.search(r'PRESSURE:\s*([\d.]+)', block)
+            strategy_match = re.search(r'STRATEGY:\s*(\w+)', block)
+            if question_line:
+                sub_questions.append({
+                    "question": question_line,
+                    "context": ctx_match.group(1).strip() if ctx_match else "",
+                    "pressure": float(pressure_match.group(1)) if pressure_match else 0.5,
+                    "strategy": strategy_match.group(1).strip() if strategy_match else "deepen",
+                })
 
     children: list[ResearchNode] = []
     connected_count = 0
 
-    for sq in data.get("sub_questions", []):
+    for sq in sub_questions:
         question = sq.get("question", "").strip()
         if not question:
             continue
@@ -345,14 +360,15 @@ Do NOT include: general concepts, countries, well-known companies (Google, Amazo
 Findings:
 {findings_text}
 
-Output ONLY valid JSON:
-{{"entities": [
-    {{"name": "exact entity name", "type": "vendor|product|person|organization|website|service|forum_thread", "fact_index": 0, "search_queries": ["entity_name review", "entity_name reddit"], "source_url": "the URL where this entity was found (if any)"}}
-]}}
+For each entity, write:
+ENTITY: [exact entity name]
+TYPE: [vendor/product/person/organization/website/service/forum_thread]
+SOURCE_URL: [the URL where this entity was found, if any]
+SEARCH_QUERIES: [query1], [query2]
 
-IMPORTANT: Always include the source_url if the finding mentions a URL for the entity (website, forum thread, product page). This URL will be visited directly for procurement verification.
+IMPORTANT: Always include the source_url if the finding mentions a URL for the entity. This URL will be visited directly for verification.
 
-If no concrete entities need verification, return: {{"entities": []}}"""
+If no concrete entities need verification, write: NO ENTITIES"""
 
 
 async def _extract_entities_for_verification(
@@ -388,15 +404,46 @@ async def _extract_entities_for_verification(
         return []
 
     content = result.get("content", "").strip()
+
+    # Try JSON first (backward compat)
     try:
-        if content.startswith("```"):
-            content = re.sub(r'^```(?:json)?\s*', '', content)
-            content = re.sub(r'\s*```$', '', content)
-        data = json.loads(content)
+        cleaned = content
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+            cleaned = re.sub(r'\s*```$', '', cleaned)
+        data = json.loads(cleaned)
+        entities = data.get("entities", [])
+        if isinstance(entities, list):
+            return entities
     except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Natural language parsing
+    if "NO ENTITIES" in content.upper():
         return []
 
-    return data.get("entities", [])
+    entities: list[dict] = []
+    ent_blocks = re.split(r'(?:^|\n)\s*ENTITY:\s*', content)
+    for block in ent_blocks:
+        block = block.strip()
+        if not block:
+            continue
+        name = block.split("\n")[0].strip()
+        type_match = re.search(r'TYPE:\s*(\w+)', block)
+        url_match = re.search(r'SOURCE_URL:\s*(\S+)', block)
+        queries_match = re.search(r'SEARCH_QUERIES:\s*(.+)', block)
+        if name:
+            search_queries = []
+            if queries_match:
+                search_queries = [q.strip().strip('[]') for q in queries_match.group(1).split(',') if q.strip()]
+            entities.append({
+                "name": name,
+                "type": type_match.group(1).strip() if type_match else "entity",
+                "source_url": url_match.group(1).strip() if url_match else "",
+                "search_queries": search_queries,
+            })
+
+    return entities
 
 
 def _spawn_verification_nodes(
@@ -732,9 +779,9 @@ async def tree_research_reactor(
                 f"find DEEP, RARE knowledge — practitioner experiences, community "
                 f"discussions, enforcement data, obscure archives.\n\n"
                 f"Query: {user_query}\n\n"
-                f"Output ONLY valid JSON:\n"
-                f'{{"angles": [{{"question": "specific searchable question", '
-                f'"context": "why this angle matters"}}]}}'
+                f"For each angle, write:\n"
+                f"ANGLE: [specific searchable question]\n"
+                f"CONTEXT: [why this angle matters]"
             )
             seed_result = await call_llm(
                 [{"role": "user", "content": seed_prompt}],
@@ -742,14 +789,27 @@ async def tree_research_reactor(
             )
             if "error" not in seed_result:
                 seed_content = seed_result.get("content", "").strip()
-                if seed_content.startswith("```"):
-                    seed_content = re.sub(r'^```(?:json)?\s*', '', seed_content)
-                    seed_content = re.sub(r'\s*```$', '', seed_content)
-                seed_data = json.loads(seed_content)
-                for angle in seed_data.get("angles", [])[:5]:
-                    q = angle.get("question", "").strip()
-                    if q and q.lower() != user_query.lower():
-                        seed_angles.append((q, angle.get("context", "")))
+                # Try JSON first (backward compat)
+                try:
+                    if seed_content.startswith("```"):
+                        seed_content = re.sub(r'^```(?:json)?\s*', '', seed_content)
+                        seed_content = re.sub(r'\s*```$', '', seed_content)
+                    seed_data = json.loads(seed_content)
+                    for angle in seed_data.get("angles", [])[:5]:
+                        q = angle.get("question", "").strip()
+                        if q and q.lower() != user_query.lower():
+                            seed_angles.append((q, angle.get("context", "")))
+                except (json.JSONDecodeError, ValueError):
+                    # Natural language parsing
+                    angle_blocks = re.split(r'(?:^|\n)\s*ANGLE:\s*', seed_content)
+                    for block in angle_blocks:
+                        block = block.strip()
+                        if not block:
+                            continue
+                        q = block.split("\n")[0].strip()
+                        ctx_match = re.search(r'CONTEXT:\s*(.+)', block)
+                        if q and q.lower() != user_query.lower():
+                            seed_angles.append((q, ctx_match.group(1).strip() if ctx_match else ""))
 
         # Create seed nodes from the angles — use prompt-distance
         # scoring instead of uniform 0.9 pressure so questions closer

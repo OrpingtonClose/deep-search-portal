@@ -367,7 +367,9 @@ endpoints:
           - "persistent-miroflow-wiki"
         fetch: true
       titleConvo: true
-      titleModel: "persistent-miroflow-wiki"
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
       summarize: false
       maxContextTokens: 1000000
       artifacts: true
@@ -385,7 +387,9 @@ endpoints:
           - "miroflow-sprint-wiki"
         fetch: true
       titleConvo: true
-      titleModel: "miroflow-sprint-wiki"
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
       summarize: false
       maxContextTokens: 1000000
       artifacts: true

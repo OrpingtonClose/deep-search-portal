@@ -17,12 +17,33 @@ CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN not 
 # Model API keys — read from .env, with sensible defaults
 # Priority: VENICE_API_KEY (uncensored) > XAI_API_KEY (Grok) > MISTRAL_API_KEY (fallback)
 # See docs/model-evaluation-april-2026.md for the full evaluation.
-UPSTREAM_KEY="${UPSTREAM_KEY:-${VENICE_API_KEY:-${XAI_API_KEY:-${MISTRAL_API_KEY:?No LLM API key set (need UPSTREAM_KEY, VENICE_API_KEY, XAI_API_KEY, or MISTRAL_API_KEY)}}}}"
-UPSTREAM_BASE="${UPSTREAM_BASE:-https://api.venice.ai/api/v1}"
-# miro-long:  synthesis, final answers — uncensored + tool calling + strong reasoning
-UPSTREAM_MODEL="${UPSTREAM_MODEL:-olafangensan-glm-4.7-flash-heretic}"
-# miro-short: sub-tasks, planning, verification — fast + tool calling + cheap
-SUBAGENT_MODEL="${SUBAGENT_MODEL:-qwen3.5-9b}"
+# The base URL and model defaults are set to match whichever key was resolved.
+if [ -n "${UPSTREAM_KEY:-}" ]; then
+    # Explicit UPSTREAM_KEY — user controls UPSTREAM_BASE themselves
+    UPSTREAM_BASE="${UPSTREAM_BASE:-https://api.venice.ai/api/v1}"
+    UPSTREAM_MODEL="${UPSTREAM_MODEL:-olafangensan-glm-4.7-flash-heretic}"
+    SUBAGENT_MODEL="${SUBAGENT_MODEL:-qwen3.5-9b}"
+elif [ -n "${VENICE_API_KEY:-}" ]; then
+    UPSTREAM_KEY="$VENICE_API_KEY"
+    UPSTREAM_BASE="${UPSTREAM_BASE:-https://api.venice.ai/api/v1}"
+    # miro-long:  synthesis, final answers — uncensored + tool calling + strong reasoning
+    UPSTREAM_MODEL="${UPSTREAM_MODEL:-olafangensan-glm-4.7-flash-heretic}"
+    # miro-short: sub-tasks, planning, verification — fast + tool calling + cheap
+    SUBAGENT_MODEL="${SUBAGENT_MODEL:-qwen3.5-9b}"
+elif [ -n "${XAI_API_KEY:-}" ]; then
+    UPSTREAM_KEY="$XAI_API_KEY"
+    UPSTREAM_BASE="${UPSTREAM_BASE:-https://api.x.ai/v1}"
+    UPSTREAM_MODEL="${UPSTREAM_MODEL:-grok-3-fast}"
+    SUBAGENT_MODEL="${SUBAGENT_MODEL:-grok-3-fast}"
+elif [ -n "${MISTRAL_API_KEY:-}" ]; then
+    UPSTREAM_KEY="$MISTRAL_API_KEY"
+    UPSTREAM_BASE="${UPSTREAM_BASE:-https://api.mistral.ai/v1}"
+    UPSTREAM_MODEL="${UPSTREAM_MODEL:-mistral-large-latest}"
+    SUBAGENT_MODEL="${SUBAGENT_MODEL:-mistral-small-latest}"
+else
+    echo "FATAL: No LLM API key set (need UPSTREAM_KEY, VENICE_API_KEY, XAI_API_KEY, or MISTRAL_API_KEY)" >&2
+    exit 1
+fi
 VENICE_API_KEY="${VENICE_API_KEY:-}"
 XAI_API_KEY="${XAI_API_KEY:-}"
 OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"

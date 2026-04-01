@@ -586,8 +586,8 @@ class TestConfigToggles:
         assert isinstance(pdr.COMMERCIAL_SEARCH_ENABLED, bool)
 
     def test_moderation_model_default(self):
-        """MODERATION_MODEL defaults to mistral-small-latest."""
-        assert pdr.MODERATION_MODEL == "mistral-small-latest"
+        """MODERATION_MODEL defaults to grok-3-fast (xAI direct API, no provider prefix)."""
+        assert pdr.MODERATION_MODEL == "grok-3-fast"
 
 
 # ============================================================================

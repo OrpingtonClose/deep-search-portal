@@ -11,7 +11,9 @@ Two modes:
   - ULTRAPLINIAN: Multi-model evaluation across 5 tiers (12-59 models) with
     composite scoring. DEPTH_DIRECTIVE anti-hedge system prompt injected.
 
-All models route through OpenRouter (https://openrouter.ai/api/v1).
+Models route directly to their native provider APIs when the corresponding
+API key is configured. Falls back to OpenRouter for open-weight models
+and any provider without a direct key set.
 """
 
 import asyncio
@@ -58,6 +60,58 @@ MODEL_TIMEOUT = int(os.getenv("GODMODE_MODEL_TIMEOUT", "60"))
 
 if not OPENROUTER_KEY:
     log.warning("OPENROUTER_API_KEY not set — G0DM0D3 proxy will fail on model calls")
+
+# ---------------------------------------------------------------------------
+# Provider Registry — route models to their native APIs
+# ---------------------------------------------------------------------------
+# Maps the provider prefix (before the "/" in model IDs) to:
+#   base_url: the provider's native OpenAI-compatible chat/completions endpoint
+#   key_env:  the environment variable holding the API key
+#
+# If a provider's key is not set, falls back to OpenRouter.
+# Providers with no direct API (open-weight hosts) always use OpenRouter.
+
+PROVIDER_REGISTRY: dict[str, dict[str, str]] = {
+    "openai":       {"base_url": "https://api.openai.com/v1",                                    "key_env": "OPENAI_API_KEY"},
+    # NOTE: Anthropic is NOT listed here — its API is not OpenAI-compatible
+    # (uses /v1/messages, x-api-key header, different body format).
+    # Anthropic models always route through OpenRouter.
+    "google":       {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai",       "key_env": "GEMINI_API_KEY"},
+    "x-ai":         {"base_url": "https://api.x.ai/v1",                                          "key_env": "XAI_API_KEY"},
+    "deepseek":     {"base_url": "https://api.deepseek.com",                                     "key_env": "DEEPSEEK_API_KEY"},
+    "perplexity":   {"base_url": "https://api.perplexity.ai",                                    "key_env": "PERPLEXITY_API_KEY"},
+    "mistralai":    {"base_url": "https://api.mistral.ai/v1",                                    "key_env": "MISTRAL_NATIVE_API_KEY"},
+    "qwen":         {"base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",       "key_env": "DASHSCOPE_API_KEY"},
+    "moonshotai":   {"base_url": "https://api.moonshot.cn/v1",                                   "key_env": "MOONSHOT_API_KEY"},
+    "cohere":       {"base_url": "https://api.cohere.com/compatibility/v1",                      "key_env": "COHERE_API_KEY"},
+    "minimax":      {"base_url": "https://api.minimax.chat/v1",                                  "key_env": "MINIMAX_API_KEY"},
+    "groq":         {"base_url": "https://api.groq.com/openai/v1",                               "key_env": "GROQ_API_KEY"},
+    "stepfun":      {"base_url": "https://api.stepfun.com/v1",                                   "key_env": "STEPFUN_API_KEY"},
+    "z-ai":         {"base_url": "https://open.bigmodel.cn/api/paas/v4",                         "key_env": "ZHIPU_API_KEY"},
+    "nvidia":       {"base_url": "https://integrate.api.nvidia.com/v1",                          "key_env": "NVIDIA_API_KEY"},
+    # Open-weight providers — no direct API, always use OpenRouter:
+    # "meta-llama", "nousresearch", "xiaomi" are NOT listed here.
+}
+
+
+def resolve_provider(model: str) -> tuple[str, str, str]:
+    """Resolve a model ID to (base_url, api_key, native_model_name).
+
+    For models whose provider prefix is in PROVIDER_REGISTRY and whose
+    API key env var is set, returns the native endpoint.
+    Otherwise falls back to OpenRouter (keeping the full model ID).
+    """
+    parts = model.split("/", 1)
+    if len(parts) == 2:
+        prefix, model_name = parts
+        entry = PROVIDER_REGISTRY.get(prefix)
+        if entry:
+            key = os.environ.get(entry["key_env"], "")
+            if key:
+                return entry["base_url"], key, model_name
+    # Fallback: OpenRouter with full model ID
+    return OPENROUTER_BASE, OPENROUTER_KEY, model
+
 
 log.info(
     f"Config: openrouter={OPENROUTER_BASE}, port={LISTEN_PORT}, "
@@ -305,9 +359,11 @@ ULTRAPLINIAN_MODELS = [
     "qwen/qwq-32b",
     "mistralai/codestral-2508",
     "mistralai/devstral-medium",
+    # DEEP RESEARCH & REASONING TIER (60)
+    "x-ai/grok-4.20-0309-reasoning",      # Grok 4.20 thinking + web/X search
 ]
 
-TIER_SIZES = {"fast": 12, "standard": 28, "smart": 41, "power": 52, "ultra": 59}
+TIER_SIZES = {"fast": 12, "standard": 28, "smart": 41, "power": 52, "ultra": 59, "research": 60}
 
 
 def get_tier_models(tier: str) -> list[str]:
@@ -565,10 +621,10 @@ def score_response(content: str, query: str) -> dict:
 
 
 # ============================================================================
-# OpenRouter API call helpers
+# Model API call helpers (native provider routing with OpenRouter fallback)
 # ============================================================================
 
-async def call_openrouter(
+async def call_model(
     model: str,
     messages: list[dict],
     *,
@@ -576,26 +632,32 @@ async def call_openrouter(
     max_tokens: int = 4096,
     req_id: str = "",
 ) -> str:
-    """Call a single model via OpenRouter and return the full response text."""
+    """Call a single model via its native API (or OpenRouter fallback)."""
+    base_url, api_key, native_model = resolve_provider(model)
+    is_openrouter = (base_url == OPENROUTER_BASE)
+
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://deep-search.uk",
-        "X-Title": "Deep Search G0DM0D3 Proxy",
     }
+    if is_openrouter:
+        headers["HTTP-Referer"] = "https://deep-search.uk"
+        headers["X-Title"] = "Deep Search G0DM0D3 Proxy"
+
     body = {
-        "model": model,
+        "model": native_model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": False,
     }
 
+    provider_label = "OpenRouter" if is_openrouter else base_url.split("//")[1].split("/")[0]
     client = http_client()
     try:
         resp = await asyncio.wait_for(
             client.post(
-                f"{OPENROUTER_BASE}/chat/completions",
+                f"{base_url}/chat/completions",
                 json=body,
                 headers=headers,
             ),
@@ -603,7 +665,7 @@ async def call_openrouter(
         )
         if resp.status_code != 200:
             error_text = resp.text[:500]
-            log.warning(f"[{req_id}] OpenRouter {model} returned {resp.status_code}: {error_text}")
+            log.warning(f"[{req_id}] {provider_label} {model} returned {resp.status_code}: {error_text}")
             return ""
 
         data = resp.json()
@@ -613,14 +675,18 @@ async def call_openrouter(
         return choices[0].get("message", {}).get("content", "")
 
     except asyncio.TimeoutError:
-        log.warning(f"[{req_id}] OpenRouter {model} timed out after {MODEL_TIMEOUT}s")
+        log.warning(f"[{req_id}] {provider_label} {model} timed out after {MODEL_TIMEOUT}s")
         return ""
     except Exception as e:
-        log.error(f"[{req_id}] OpenRouter {model} error: {e}")
+        log.error(f"[{req_id}] {provider_label} {model} error: {e}")
         return ""
 
 
-async def stream_openrouter(
+# Backward-compatible alias
+call_openrouter = call_model
+
+
+async def stream_model(
     model: str,
     messages: list[dict],
     *,
@@ -628,33 +694,39 @@ async def stream_openrouter(
     max_tokens: int = 4096,
     req_id: str = "",
 ) -> AsyncGenerator[str, None]:
-    """Stream a single model's response via OpenRouter, yielding content deltas."""
+    """Stream a single model's response via its native API (or OpenRouter fallback)."""
+    base_url, api_key, native_model = resolve_provider(model)
+    is_openrouter = (base_url == OPENROUTER_BASE)
+
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://deep-search.uk",
-        "X-Title": "Deep Search G0DM0D3 Proxy",
     }
+    if is_openrouter:
+        headers["HTTP-Referer"] = "https://deep-search.uk"
+        headers["X-Title"] = "Deep Search G0DM0D3 Proxy"
+
     body = {
-        "model": model,
+        "model": native_model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": True,
     }
 
+    provider_label = "OpenRouter" if is_openrouter else base_url.split("//")[1].split("/")[0]
     client = http_client()
     try:
         async with client.stream(
             "POST",
-            f"{OPENROUTER_BASE}/chat/completions",
+            f"{base_url}/chat/completions",
             json=body,
             headers=headers,
             timeout=MODEL_TIMEOUT,
         ) as resp:
             if resp.status_code != 200:
                 error_text = (await resp.aread()).decode("utf-8", errors="replace")[:500]
-                log.warning(f"[{req_id}] OpenRouter stream {model} error {resp.status_code}: {error_text}")
+                log.warning(f"[{req_id}] {provider_label} stream {model} error {resp.status_code}: {error_text}")
                 return
 
             async for line in resp.aiter_lines():
@@ -672,7 +744,11 @@ async def stream_openrouter(
                 except json.JSONDecodeError:
                     pass
     except Exception as e:
-        log.error(f"[{req_id}] OpenRouter stream {model} exception: {e}")
+        log.error(f"[{req_id}] {provider_label} stream {model} exception: {e}")
+
+
+# Backward-compatible alias
+stream_openrouter = stream_model
 
 
 def inject_query(template: str, query: str) -> str:
@@ -875,6 +951,7 @@ def build_model_list() -> list[dict]:
             "smart": "SMART",
             "power": "POWER",
             "ultra": "ULTRA",
+            "research": "DEEP RESEARCH",
         }
         models.append({
             "id": f"ultraplinian-{tier_key}",
@@ -928,6 +1005,23 @@ async def list_models():
         "object": "list",
         "data": build_model_list(),
     })
+
+
+@app.get("/v1/providers")
+async def list_providers():
+    """Show which providers have native API keys configured."""
+    status = {}
+    for prefix, entry in PROVIDER_REGISTRY.items():
+        key = os.environ.get(entry["key_env"], "")
+        status[prefix] = {
+            "native": bool(key),
+            "base_url": entry["base_url"] if key else OPENROUTER_BASE,
+            "key_env": entry["key_env"],
+        }
+    # Providers that always use OpenRouter
+    for prefix in ["meta-llama", "nousresearch", "xiaomi"]:
+        status[prefix] = {"native": False, "base_url": OPENROUTER_BASE, "key_env": None}
+    return {"providers": status}
 
 
 @app.post("/v1/chat/completions")
@@ -1070,9 +1164,9 @@ async def _stream_single_model(
             "content": f"You are a helpful, knowledgeable AI assistant.{DEPTH_DIRECTIVE}",
         })
 
-    # Stream directly from OpenRouter
+    # Stream from native provider API (or OpenRouter fallback)
     full_content = ""
-    async for delta in stream_openrouter(
+    async for delta in stream_model(
         model, enhanced_messages,
         temperature=0.7, max_tokens=4096, req_id=req_id,
     ):

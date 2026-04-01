@@ -84,6 +84,7 @@ class SubagentResult:
     error: str = ""
     novelty_history: list[float] = field(default_factory=list)
     spawned_children: int = 0
+    duration_secs: float = 0.0
 
 
 @dataclass

@@ -11,14 +11,29 @@ import re
 # ============================================================================
 
 _TRUST_TIERS: list[tuple[re.Pattern, float]] = [
+    # Tier 1: Academic / Government — highest trust
     (re.compile(r'\.edu(/|$)', re.IGNORECASE), 0.9),
     (re.compile(r'\.gov(/|$)', re.IGNORECASE), 0.9),
     (re.compile(r'(arxiv\.org|pubmed|ncbi\.nlm\.nih|doi\.org|springer\.com|nature\.com|science\.org|ieee\.org|acm\.org)', re.IGNORECASE), 0.9),
+    (re.compile(r'(sciencedirect\.com|wiley\.com|tandfonline\.com|jstor\.org|researchgate\.net|semanticscholar\.org|scholar\.google)', re.IGNORECASE), 0.85),
+    (re.compile(r'(who\.int|ema\.europa\.eu|fda\.gov|nih\.gov|cdc\.gov|europa\.eu)', re.IGNORECASE), 0.9),
+    # Tier 2: Major news outlets — high trust
     (re.compile(r'(reuters\.com|apnews\.com|bbc\.co\.uk|bbc\.com|nytimes\.com|washingtonpost\.com|theguardian\.com|economist\.com)', re.IGNORECASE), 0.7),
     (re.compile(r'(cnn\.com|foxnews\.com|nbcnews\.com|abcnews\.go\.com|bloomberg\.com|ft\.com)', re.IGNORECASE), 0.6),
+    (re.compile(r'(techcrunch\.com|arstechnica\.com|wired\.com|theverge\.com|vice\.com)', re.IGNORECASE), 0.6),
+    # Tier 3: Reference / encyclopedia — moderate-high trust
+    (re.compile(r'(wikipedia\.org|wikimedia\.org|wikidata\.org)', re.IGNORECASE), 0.6),
+    (re.compile(r'(britannica\.com|investopedia\.com|mayoclinic\.org|webmd\.com|drugs\.com)', re.IGNORECASE), 0.65),
+    # Tier 4: Blog / newsletter platforms — moderate trust
     (re.compile(r'(medium\.com|substack\.com|wordpress\.com|blogspot\.com)', re.IGNORECASE), 0.4),
+    # Tier 5: Community / discussion — lower trust but high signal for underground topics
     (re.compile(r'(reddit\.com|quora\.com|stackexchange\.com|stackoverflow\.com|news\.ycombinator\.com)', re.IGNORECASE), 0.3),
-    (re.compile(r'(wikipedia\.org)', re.IGNORECASE), 0.6),
+    (re.compile(r'(4chan\.org|4plebs\.org|archived\.moe|arch\.b4k\.co|warosu\.org)', re.IGNORECASE), 0.2),
+    (re.compile(r'(t\.me|telegram\.org|discord\.com|discord\.gg)', re.IGNORECASE), 0.2),
+    # Tier 6: Known bodybuilding / steroid forums — domain-specific trust
+    (re.compile(r'(eroids\.com|meso-?rx\.com|thinksteroids\.com|evolutionary\.org|steroidology\.com|ugbodybuilding\.com|sfd\.pl)', re.IGNORECASE), 0.35),
+    # Tier 7: E-commerce / marketplace — moderate for product sourcing
+    (re.compile(r'(amazon\.|ebay\.|allegro\.pl|olx\.pl|alibaba\.com|aliexpress\.com)', re.IGNORECASE), 0.45),
 ]
 
 
@@ -70,5 +85,3 @@ def serendipity_score(fact: str, query: str, known_facts: list[str]) -> float:
     surprise = min(max(surprise, 0.05), 1.0)
 
     return (relevance * novelty * surprise) ** (1.0 / 3.0)
-
-

@@ -11,7 +11,7 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-KNOWLEDGE_ENGINE_URL = os.getenv("KNOWLEDGE_ENGINE_URL", "http://localhost:9400")
+KNOWLEDGE_ENGINE_URL = os.getenv("KNOWLEDGE_ENGINE_URL", "http://localhost:9850")
 
 _client: httpx.AsyncClient | None = None
 

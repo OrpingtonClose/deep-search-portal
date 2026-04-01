@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 import uuid
@@ -19,12 +20,15 @@ import social_media_scrapers
 from shared import http_client
 
 from .config import (
+    SUBAGENT_MODEL,
+    _live_collectors,
+    _output_queues,
     log,
 )
 from .llm import _request_configs
 from .rate_governor import governed_request
 from .search_cache import cache_get, cache_put
-from .tool_health import record_outcome
+from .tool_health import get_monitor, record_outcome
 from .search_tools import (
     tool_news_search,
 )
@@ -50,6 +54,7 @@ from .search_tools2 import (
     tool_scholar_search,
     tool_substack_search,
     tool_telegram_search,
+    tool_onion_fetch,
     tool_darknet_market_search,
     tool_facebook_search,
     tool_discord_search,
@@ -62,6 +67,14 @@ from .search_tools2 import (
     tool_youtube_transcript,
     tool_youtube_video_metadata,
     tool_youtube_video_analyze,
+)
+from .grok_search import tool_grok_deep_search
+from .search_gateway import gateway_search
+from .sicry_tools import (
+    tool_sicry_search,
+    tool_sicry_fetch,
+    tool_sicry_check_tor,
+    tool_sicry_renew_identity,
 )
 
 
@@ -100,6 +113,7 @@ _RARE_SOURCE_TOOLS = {
     "forum_search", "telegram_search", "darknet_market_search",
     "twitter_search", "substack_search", "youtube_search",
     "youtube_transcript", "youtube_video_metadata", "youtube_video_analyze",
+    "sicry_search", "sicry_fetch",
 }
 
 
@@ -368,6 +382,8 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
             arguments.get("query", ""),
             arguments.get("platform", ""),
         )
+    elif tool_name == "onion_fetch":
+        return await tool_onion_fetch(arguments.get("url", ""))
     elif tool_name == "darknet_market_search":
         return await tool_darknet_market_search(arguments.get("query", ""))
     elif tool_name == "facebook_search":
@@ -403,6 +419,37 @@ async def _execute_tool_inner(tool_name: str, arguments: dict) -> str:
             arguments.get("url", ""),
             arguments.get("question", ""),
         )
+    elif tool_name == "grok_deep_search":
+        return await tool_grok_deep_search(
+            arguments.get("query", ""),
+            search_type=arguments.get("search_type", "both"),
+            instructions=arguments.get("instructions", ""),
+        )
+    elif tool_name == "search_gateway":
+        return await gateway_search(
+            arguments.get("query", ""),
+            sources=arguments.get("sources", "all"),
+            search_type=arguments.get("search_type", "both"),
+            max_results_per_source=arguments.get("max_results_per_source", 10),
+            req_id="",
+        )
+    elif tool_name == "create_knowledge_wiki":
+        return await tool_create_knowledge_wiki(
+            req_id=arguments.get("_req_id", ""),
+            topic=arguments.get("topic", ""),
+        )
+    elif tool_name == "sicry_search":
+        return await tool_sicry_search(
+            arguments.get("query", ""),
+            max_results=arguments.get("max_results", 20),
+            engines=arguments.get("engines"),
+        )
+    elif tool_name == "sicry_fetch":
+        return await tool_sicry_fetch(arguments.get("url", ""))
+    elif tool_name == "sicry_check_tor":
+        return await tool_sicry_check_tor()
+    elif tool_name == "sicry_renew_identity":
+        return await tool_sicry_renew_identity()
     else:
         return f"[TOOL_ERROR] Unknown tool: {tool_name}. This tool does not exist in the system."
 
@@ -414,13 +461,15 @@ _CACHEABLE_TOOLS = {
     "pubmed_search", "wikipedia_search", "archiveorg_search",
     "forum_search", "scholar_search", "substack_search",
     "youtube_search", "youtube_transcript", "youtube_video_metadata",
-    "twitter_search", "telegram_search", "darknet_market_search",
+    "twitter_search", "telegram_search", "onion_fetch", "darknet_market_search",
     "facebook_search", "discord_search", "signal_search",
     "whatsapp_search", "crunchbase_search", "trustpilot_search",
     "whois_lookup", "wayback_fetch",
     "social_media_search", "reddit_search", "instagram_search",
     "tiktok_search", "linkedin_search",
     "chan_4plebs_search", "chan_b4k_search", "chan_warosu_search",
+    "grok_deep_search", "search_gateway",
+    "sicry_search",  # sicry_fetch/check_tor/renew_identity are NOT cached (operational/mutating)
 }
 
 # Tools that involve long-running local computation (e.g. WhisperX GPU
@@ -433,7 +482,12 @@ _UNGOVERNED_HEAVY_TOOLS: set[str] = {
 
 # Tools that access the internet (governed by rate limiter).
 # Excludes heavy local-compute tools that would starve the global semaphore.
-_GOVERNED_TOOLS = (_CACHEABLE_TOOLS | {"fetch_webpage"}) - _UNGOVERNED_HEAVY_TOOLS
+# Sicry operational tools (fetch/check_tor/renew_identity) are NOT cacheable
+# but still need rate governing to avoid overwhelming Tor circuits.
+_GOVERNED_TOOLS = (
+    (_CACHEABLE_TOOLS | {"fetch_webpage", "sicry_fetch", "sicry_check_tor", "sicry_renew_identity"})
+    - _UNGOVERNED_HEAVY_TOOLS
+)
 
 
 def _extract_query_for_cache(tool_name: str, arguments: dict) -> str:
@@ -483,11 +537,13 @@ async def execute_tool(
         except Exception:
             pass
 
-    # --- Step 1: Check cache for search tools ---
+    # --- Step 0: Open trace span ---
     tool_span = langfuse_config.start_span(
         req_id, f"tool:{tool_name}",
         input={"arguments": input_str},
     )
+
+    # --- Step 1: Check cache FIRST — cached results bypass circuit breaker ---
     if tool_name in _CACHEABLE_TOOLS:
         query_str = _extract_query_for_cache(tool_name, arguments)
         cached = cache_get(tool_name, query_str)
@@ -501,13 +557,49 @@ async def execute_tool(
                     pass
             return cached
 
-    # --- Step 2: Execute with rate governor ---
+    # --- Step 2: Circuit breaker — skip tools that are consistently failing ---
+    # Runs AFTER cache check so cached results are still served for degraded tools.
+    # Uses a half-open probe: after TOOL_HEALTH_RECOVERY_SECS of being blocked,
+    # one call is allowed through.  If it succeeds, record_outcome(success=True)
+    # resets consecutive_failures and the tool returns to healthy.
+    _RECOVERY_SECS = int(os.environ.get("TOOL_HEALTH_RECOVERY_SECS", "120"))
+    monitor = get_monitor()
+    tool_status = monitor.get_tool_status(tool_name)
+    if tool_status.get("status") == "degraded":
+        last_err_t = tool_status.get("last_error_time") or 0.0
+        elapsed = time.time() - last_err_t
+        if elapsed < _RECOVERY_SECS:
+            # Still in cooldown — block the call
+            streak = tool_status.get("consecutive_failures", 0)
+            blocked_msg = (
+                f"[TOOL_BLOCKED] {tool_name} is currently degraded "
+                f"({streak} consecutive failures, recovery probe in "
+                f"{int(_RECOVERY_SECS - elapsed)}s). "
+                f"Last error: {(tool_status.get('last_error') or 'unknown')[:200]}"
+            )
+            log.warning(f"[{req_id}] Circuit breaker blocked {tool_name}: {streak} failures, {int(elapsed)}s/{_RECOVERY_SECS}s cooldown")
+            langfuse_config.end_span(tool_span, output={"circuit_breaker": "blocked", "streak": streak}, level="WARNING")
+            for cb in callbacks:
+                try:
+                    cb.on_tool_end(blocked_msg, run_id=run_id)
+                except Exception:
+                    pass
+            return blocked_msg
+        else:
+            # Cooldown expired — allow one probe call through
+            log.info(f"[{req_id}] Circuit breaker half-open probe for {tool_name} after {int(elapsed)}s cooldown")
+
+    # --- Step 3: Execute with rate governor ---
+    # Inject req_id so stateful tools (e.g. create_knowledge_wiki) can
+    # look up per-request registries without changing _execute_tool_inner's
+    # signature.  The key is stripped before JSON-serialization elsewhere.
+    arguments_with_ctx = {**arguments, "_req_id": req_id}
     try:
         if tool_name in _GOVERNED_TOOLS:
             async with governed_request(tool_name):
-                result = await _execute_tool_inner(tool_name, arguments)
+                result = await _execute_tool_inner(tool_name, arguments_with_ctx)
         else:
-            result = await _execute_tool_inner(tool_name, arguments)
+            result = await _execute_tool_inner(tool_name, arguments_with_ctx)
     except Exception as e:
         error_str = str(e)
         record_outcome(tool_name, success=False, error=error_str)
@@ -519,7 +611,7 @@ async def execute_tool(
                 pass
         return f"Tool error ({tool_name}): {error_str}"
 
-    # --- Step 3: Record health outcome ---
+    # --- Step 4: Record health outcome ---
     result_prefix = result[:80]
     is_error = (
         result_prefix.lower().startswith("error")
@@ -535,7 +627,7 @@ async def execute_tool(
     else:
         record_outcome(tool_name, success=True)
 
-    # --- Step 4: Store in cache ---
+    # --- Step 5: Store in cache ---
     if tool_name in _CACHEABLE_TOOLS and not is_error:
         query_str = _extract_query_for_cache(tool_name, arguments)
         cache_put(tool_name, query_str, result)
@@ -664,6 +756,187 @@ async def tool_knowledge_discover(arguments: dict) -> str:
 
     except Exception as e:
         return f"Knowledge discovery error: {e}"
+
+
+# ============================================================================
+# Knowledge Wiki Tool
+# ============================================================================
+
+_WIKI_TOOL_PROMPT = """You are an encyclopedia author. Your job is to write a structured, Wikipedia-style HTML article from research findings.
+
+## Your Task
+Write the BODY of an encyclopedia article about: {query}
+
+You will receive the current research state: a list of atomic findings grouped by research angle, each with confidence scores, verification status, source domains, entities, and cross-references.
+
+## Output Rules
+1. Write ONLY the inner HTML body content (no <html>, <head>, <body>, or <style> tags — those are added by the scaffold).
+2. Use semantic HTML: <h2> for major sections, <h3> for subsections, <p> for prose, <ul>/<ol> for lists.
+3. Write real encyclopedia prose — synthesize findings into coherent narratives, don't just list facts.
+4. Include inline citations as superscript links: <sup><a href="URL">[N]</a></sup> using the source index numbers provided.
+5. When confidence is notably low (<40%) on a claim, note it parenthetically (e.g., "(unverified)" or "(low confidence)").
+6. Organize by topic/theme, not mechanically by research angle — merge related angles into coherent sections.
+7. Include a "Current Limitations" paragraph at the end noting what is still being researched or has low coverage.
+8. Keep it concise but substantive — aim for quality over quantity.
+{progress_note}
+
+## Research Findings
+{conditions_text}
+
+## Activity Context
+- Research phase: {phase}
+- Active investigations: {active_questions}
+- Total sources checked: {sources_count}
+
+Write the HTML article body now."""
+
+
+async def tool_create_knowledge_wiki(
+    req_id: str = "",
+    topic: str = "",
+) -> str:
+    """Build a knowledge wiki from accumulated research findings.
+
+    Reads the LiveFindingsCollector for the current request, invokes
+    an LLM agent to write encyclopedia prose, wraps it in the HTML
+    scaffold, and emits it as a LibreChat artifact via the output queue.
+
+    Returns a short confirmation string to the calling subagent.
+    """
+    from .llm import call_llm
+
+    # Look up the live collector for this request
+    collector = _live_collectors.get(req_id)
+    if collector is None:
+        return (
+            "[WIKI] No active research session found. "
+            "The knowledge wiki tool can only be used during an active "
+            "research pipeline."
+        )
+
+    # Read current conditions
+    conditions = await collector.all_conditions()
+    if len(conditions) < 3:
+        return (
+            f"[WIKI] Only {len(conditions)} findings so far — need at "
+            f"least 3 to produce a useful wiki. Continue researching "
+            f"and call this tool again later."
+        )
+
+    # Lazy import knowledge_wiki to avoid circular deps
+    from knowledge_wiki import (
+        format_conditions_for_agent,
+        wrap_agent_prose_as_wiki,
+        _build_source_index,
+        _group_by_angle,
+    )
+
+    conditions_text = format_conditions_for_agent(conditions)
+    url_to_num, _ = _build_source_index(conditions)
+    by_angle = _group_by_angle(conditions)
+
+    # Build activity context from the collector
+    activity = await collector.get_activity_context()
+    active_qs = activity.get("active_questions", [])
+    active_qs_str = (
+        ", ".join(active_qs[:5]) if active_qs else "none currently"
+    )
+    phase = activity.get("phase", "researching")
+
+    user_query = topic or collector.user_query
+
+    # Substitute {conditions_text} LAST — it contains arbitrary
+    # web-scraped text that may include literal placeholder strings.
+    prompt = _WIKI_TOOL_PROMPT.replace(
+        "{query}", user_query
+    ).replace(
+        "{phase}", phase
+    ).replace(
+        "{active_questions}", active_qs_str
+    ).replace(
+        "{sources_count}", str(activity.get("sources_count", 0))
+    ).replace(
+        "{progress_note}", (
+            "\n9. This is a LIVE snapshot — research is ongoing. "
+            "Write what you can from what is available now."
+        )
+    ).replace(
+        "{conditions_text}", conditions_text[:12000]
+    )
+
+    messages = [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": (
+            f"Write the encyclopedia article body HTML for: "
+            f"{user_query}\n\n"
+            f"You have {len(conditions)} research findings from "
+            f"{len(by_angle)} angles across {len(url_to_num)} sources."
+        )},
+    ]
+
+    result = await call_llm(
+        messages, req_id,
+        model=SUBAGENT_MODEL,
+        max_tokens=8192,
+        temperature=0.3,
+    )
+
+    if "error" in result:
+        return f"[WIKI] LLM error generating wiki: {result['error'][:200]}"
+
+    prose_html = result.get("content", "").strip()
+    if not prose_html:
+        return "[WIKI] LLM returned empty content — try again later."
+
+    # Strip markdown code fences if the LLM wrapped its output
+    if prose_html.startswith("```"):
+        prose_html = re.sub(r'^```(?:html)?\s*', '', prose_html)
+        prose_html = re.sub(r'\s*```$', '', prose_html)
+
+    wiki_html = wrap_agent_prose_as_wiki(
+        prose_html=prose_html,
+        query=user_query,
+        condition_count=len(conditions),
+        source_count=len(url_to_num),
+        angle_count=len(by_angle),
+        in_progress=True,
+    )
+
+    # Emit as LibreChat artifact via the output queue if available
+    queue_entry = _output_queues.get(req_id)
+    if queue_entry is not None:
+        output_queue, chunk_fn = queue_entry
+        safe_title = (
+            user_query[:60]
+            .replace('\\', '').replace('\n', ' ').replace('\r', ' ')
+            .replace('"', "'").replace('}', '').replace('{', '').strip()
+        )
+        artifact_block = (
+            f"\n\n:::artifact{{identifier=\"knowledge-wiki-{req_id[:8]}\" "
+            f"type=\"text/html\" "
+            f"title=\"Knowledge Base: {safe_title}\"}}"
+            f"\n{wiki_html}\n"
+            f":::\n\n"
+        )
+        # Emit as a single put to prevent interleaving with
+        # concurrent artifact emissions (wiki agent loop).
+        await output_queue.put(chunk_fn(artifact_block))
+        log.info(
+            "[%s] Wiki tool: emitted %d-char article (%d conditions, %d angles)",
+            req_id, len(wiki_html), len(conditions), len(by_angle),
+        )
+    else:
+        log.warning(
+            "[%s] Wiki tool: no output queue — artifact not emitted to SSE stream",
+            req_id,
+        )
+
+    return (
+        f"[WIKI] Knowledge encyclopedia generated successfully. "
+        f"{len(conditions)} findings from {len(by_angle)} research angles "
+        f"across {len(url_to_num)} sources. The wiki article has been "
+        f"emitted as an interactive artifact in the side pane."
+    )
 
 
 async def execute_tools_parallel(

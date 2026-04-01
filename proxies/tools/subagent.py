@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -401,6 +402,7 @@ async def run_subagent(
     is_bridge = angle.get("is_bridge", False)
     sa_id = f"{req_id}-sa{subagent_index}" + (f"-d{depth}" if depth > 0 else "")
 
+    start_time = time.monotonic()
     log.info(f"[{sa_id}] Starting subagent: {angle_title} (depth={depth})")
     sa_span = langfuse_config.start_span(
         req_id, f"subagent:{sa_id}",
@@ -812,19 +814,42 @@ async def run_subagent(
         "conditions_count": len(result.conditions),
     })
 
+    duration_secs = time.monotonic() - start_time
+    result.duration_secs = duration_secs
+
     log.info(
         f"[{sa_id}] Subagent complete: {len(result.conditions)} conditions, "
         f"{result.turns_used} turns, {result.tool_calls_made} tool calls, "
-        f"{result.spawned_children} children spawned"
+        f"{result.spawned_children} children spawned, {duration_secs:.1f}s"
     )
     langfuse_config.end_span(sa_span, output={
         "conditions": len(result.conditions),
         "turns": result.turns_used,
         "tool_calls": result.tool_calls_made,
         "children": result.spawned_children,
+        "duration_secs": round(duration_secs, 1),
         "error": result.error or None,
     })
     return result
+
+
+# Patterns that indicate an LLM safety refusal rather than a research finding.
+_REFUSAL_PATTERNS = re.compile(
+    r"(?i)"
+    r"(?:I\s+(?:WILL\s+NOT|cannot|can'?t|refuse\s+to|am\s+unable\s+to)\s+(?:comply|assist|help|provide|fulfill|support))"
+    r"|(?:(?:dangerous|unethical|illegal|harmful|inappropriate)\s+(?:and\s+)?(?:query|request|question))"
+    r"|(?:I\s+am\s+designed\s+to\s+provide\s+(?:safe|legal|responsible))"
+    r"|(?:I\s+(?:must|have\s+to)\s+(?:refuse|decline|reject))"
+    r"|(?:(?:violates?|against)\s+(?:my|our)\s+(?:policy|policies|guidelines|ethical))"
+    r"|(?:not\s+(?:able|going)\s+to\s+(?:help|assist|provide)\s+(?:with|you)\s+(?:this|that))"
+)
+
+
+def _is_llm_refusal(text: str) -> bool:
+    """Detect whether text is an LLM safety refusal rather than a research finding."""
+    if not text:
+        return False
+    return bool(_REFUSAL_PATTERNS.search(text))
 
 
 def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicCondition]:
@@ -832,6 +857,7 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
     if not content:
         return []
 
+    # --- Attempt 1: full JSON parse ---
     try:
         cleaned = content.strip()
         if cleaned.startswith("```"):
@@ -839,6 +865,7 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
             cleaned = re.sub(r'\s*```$', '', cleaned)
         data = json.loads(cleaned)
         conditions_data = data.get("conditions", [])
+        # JSON parsed successfully — filter refusals per-condition, not whole batch
         return [
             AtomicCondition(
                 fact=c.get("fact", ""),
@@ -848,11 +875,12 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
                 is_serendipitous=is_bridge,
             )
             for c in conditions_data
-            if c.get("fact")
+            if c.get("fact") and not _is_llm_refusal(c.get("fact", ""))
         ]
     except (json.JSONDecodeError, ValueError, AttributeError):
         pass
 
+    # --- Attempt 2: extract embedded JSON ---
     json_match = re.search(r'\{[^{}]*"conditions"\s*:\s*\[.*?\]\s*\}', content, re.DOTALL)
     if json_match:
         try:
@@ -866,10 +894,17 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
                     is_serendipitous=is_bridge,
                 )
                 for c in data.get("conditions", [])
-                if c.get("fact")
+                if c.get("fact") and not _is_llm_refusal(c.get("fact", ""))
             ]
         except (json.JSONDecodeError, ValueError):
             pass
+
+    # --- Attempt 3: plaintext fallback ---
+    # Only here do we check the entire content for refusal, because the
+    # content IS the fact text (not JSON wrapping multiple facts).
+    if _is_llm_refusal(content):
+        log.warning("Rejected LLM refusal from plaintext fallback: %s", content[:120])
+        return []
 
     if len(content.strip()) > 20:
         return [

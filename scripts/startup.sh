@@ -12,9 +12,36 @@ if [ -f /opt/.env ]; then
     set -a; source /opt/.env; set +a
 fi
 
-MISTRAL_API_KEY="${MISTRAL_API_KEY:?MISTRAL_API_KEY not set}"
 CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN not set}"
 
+# Model API keys — read from .env, with sensible defaults
+# Priority: XAI_API_KEY (Grok, uncensored) > MISTRAL_API_KEY (fallback)
+UPSTREAM_KEY="${UPSTREAM_KEY:-${XAI_API_KEY:-${MISTRAL_API_KEY:?No LLM API key set (need UPSTREAM_KEY, XAI_API_KEY, or MISTRAL_API_KEY)}}}"
+UPSTREAM_BASE="${UPSTREAM_BASE:-https://api.x.ai/v1}"
+UPSTREAM_MODEL="${UPSTREAM_MODEL:-grok-3-fast}"
+SUBAGENT_MODEL="${SUBAGENT_MODEL:-grok-3-fast}"
+VENICE_API_KEY="${VENICE_API_KEY:-}"
+XAI_API_KEY="${XAI_API_KEY:-}"
+OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
+SEARCH_BACKEND="${SEARCH_BACKEND:-legacy}"
+
+# Warn if API keys are missing (services will fail to authenticate)
+if [ -z "$XAI_API_KEY" ]; then
+    echo "WARNING: XAI_API_KEY not set — deep-research, persistent-research, and miroflow-sprint will fail"
+fi
+if [ -z "$VENICE_API_KEY" ]; then
+    echo "WARNING: VENICE_API_KEY not set — swarm proxy will fail"
+fi
+
+# Data-source credential warnings
+BRIGHT_DATA_API_KEY="${BRIGHT_DATA_API_KEY:-}"
+APIFY_API_TOKEN="${APIFY_API_TOKEN:-}"
+if [ -z "$BRIGHT_DATA_API_KEY" ]; then
+    echo "WARNING: BRIGHT_DATA_API_KEY not set — Reddit, Twitter, and commercial SERP search will be unavailable"
+fi
+if [ -z "$APIFY_API_TOKEN" ]; then
+    echo "WARNING: APIFY_API_TOKEN not set — Reddit/Instagram/TikTok/LinkedIn Apify fallback will be unavailable"
+fi
 # --- Helper: wait for an HTTP endpoint to become healthy ---
 wait_for_health() {
     local url="$1"
@@ -34,7 +61,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in godmode-proxy swarm-proxy persistent-research deep-research thinking-proxy cftunnel searxng; do
+    for session in xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -44,6 +71,62 @@ cleanup() {
     echo "All services stopped."
 }
 trap cleanup SIGTERM SIGINT
+
+# --- Neo4j (knowledge graph database — MUST start before Knowledge Engine and proxies) ---
+NEO4J_BOLT_PORT="${NEO4J_BOLT_PORT:-7687}"
+NEO4J_HTTP_PORT="${NEO4J_HTTP_PORT:-7474}"
+if ! pgrep -f "org.neo4j.server" > /dev/null; then
+    if command -v neo4j > /dev/null 2>&1; then
+        neo4j start 2>&1 || echo "WARNING: neo4j start failed"
+        echo "Neo4j starting..."
+    else
+        echo "ERROR: Neo4j is NOT installed. Install it with:"
+        echo "  apt-get install -y openjdk-21-jre-headless && apt-get install -y neo4j"
+        echo "  → Prior knowledge retrieval will return empty"
+        echo "  → Condition persistence will fail"
+        echo "  → Cross-session knowledge accumulation is disabled"
+    fi
+fi
+wait_for_health "http://localhost:${NEO4J_HTTP_PORT}" "Neo4j" 30 || true
+
+# --- Knowledge Engine (Neo4j API layer — MUST start before proxies) ---
+KE_PORT="${KE_PORT:-9850}"  # Note: 9400 is taken by MiroFlow Sprint
+if ! pgrep -f "knowledge_engine.main" > /dev/null; then
+    REPO_DIR="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)}"
+    if [ -d "$REPO_DIR/services/knowledge-engine" ]; then
+        screen -dmS knowledge-engine bash -c "set -a; source /opt/.env 2>/dev/null; set +a; export KE_PORT=${KE_PORT}; cd $REPO_DIR/services/knowledge-engine && python3 -c \"
+import uvicorn
+from knowledge_engine.main import app
+uvicorn.run(app, host='0.0.0.0', port=${KE_PORT})
+\" 2>&1 | tee /var/log/knowledge-engine.log"
+        echo "Knowledge Engine starting on port ${KE_PORT}..."
+    else
+        echo "WARNING: Knowledge Engine not found at $REPO_DIR/services/knowledge-engine"
+    fi
+fi
+wait_for_health "http://localhost:${KE_PORT}/health" "Knowledge Engine" 30 || true
+
+# --- Tor Daemon (required for Sicry dark web search + onion_fetch) ---
+if ! pgrep -f "tor " > /dev/null 2>&1 && ! pgrep -x "tor" > /dev/null 2>&1; then
+    if command -v tor > /dev/null 2>&1; then
+        tor --RunAsDaemon 1 --SocksPort 9050 --ControlPort 9051 --CookieAuthentication 1 2>&1 || echo "WARNING: Tor daemon failed to start"
+        echo "Tor daemon starting on SOCKS5 :9050, ControlPort :9051..."
+        sleep 3
+    else
+        echo "WARNING: Tor is NOT installed. Dark web search (Sicry) will be unavailable."
+        echo "  → Install with: apt-get install -y tor"
+    fi
+fi
+
+# --- Sicry (dark web search engine — clone if not present) ---
+SICRY_PATH="${SICRY_PATH:-/opt/sicry/sicry.py}"
+if [ ! -f "$SICRY_PATH" ]; then
+    echo "Cloning Sicry dark web search engine..."
+    git clone --depth 1 https://github.com/JacobJandon/Sicry.git "$(dirname "$SICRY_PATH")" 2>/dev/null || echo "WARNING: Failed to clone Sicry"
+    if [ -f "$(dirname "$SICRY_PATH")/requirements.txt" ]; then
+        pip3 install -q -r "$(dirname "$SICRY_PATH")/requirements.txt" 2>/dev/null || true
+    fi
+fi
 
 # --- SearXNG ---
 if ! pgrep -f "searx.webapp" > /dev/null; then
@@ -73,40 +156,82 @@ if ! pgrep -f "cloudflared tunnel" > /dev/null; then
     echo "Cloudflare tunnel started"
 fi
 
-# --- Thinking Proxy (Mistral Direct API) ---
+# --- LiteLLM Proxy (LLM routing + cost tracking) ---
+if [ "${SEARCH_BACKEND:-legacy}" = "mcp" ]; then
+    if ! pgrep -f "litellm" > /dev/null; then
+        screen -dmS litellm bash -c "litellm --config /opt/deep-search-portal/config/litellm_config.yaml --port ${LITELLM_PORT:-4000} 2>&1 | tee /var/log/litellm.log"
+        echo "LiteLLM Proxy starting..."
+    fi
+    wait_for_health "http://localhost:${LITELLM_PORT:-4000}/health" "LiteLLM Proxy" 30
+fi
+
+# --- MCP Search Servers + Dispatcher (only when SEARCH_BACKEND=mcp) ---
+if [ "${SEARCH_BACKEND:-legacy}" = "mcp" ]; then
+    REPO_DIR="${REPO_ROOT:-/opt/deep-search-portal}"
+
+    # Start MCP SearXNG server
+    if ! pgrep -f "mcp_searxng" > /dev/null; then
+        screen -dmS mcp-searxng bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd ${REPO_DIR}/mcp_servers/searxng && python3 server.py 2>&1 | tee /var/log/mcp_searxng.log"
+        echo "MCP SearXNG server starting on port 9814..."
+    fi
+    sleep 2
+
+    # Start Search Dispatcher (LangGraph router)
+    if ! pgrep -f "search_dispatcher" > /dev/null; then
+        screen -dmS search-dispatcher bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd ${REPO_DIR}/services/search_dispatcher && python3 main.py 2>&1 | tee /var/log/search_dispatcher.log"
+        echo "Search Dispatcher starting on port ${MCP_DISPATCHER_PORT:-9801}..."
+    fi
+    wait_for_health "http://localhost:${MCP_DISPATCHER_PORT:-9801}/health" "Search Dispatcher" 15
+fi
+
+# --- Thinking Proxy (stays on Mistral — override global xAI defaults) ---
 pip3 install fastapi uvicorn httpx -q
 if ! pgrep -f "thinking_proxy.py" > /dev/null; then
-    screen -dmS thinking-proxy bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export UPSTREAM_MODEL='mistral-large-latest' && export THINKING_PROXY_PORT='9100' && python3 /opt/thinking_proxy.py 2>&1 | tee /var/log/thinking_proxy.log"
+    screen -dmS thinking-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && UPSTREAM_BASE='https://api.mistral.ai/v1' UPSTREAM_KEY=\"${MISTRAL_API_KEY:-}\" UPSTREAM_MODEL='mistral-large-latest' THINKING_PROXY_PORT=9100 python3 thinking_proxy.py 2>&1 | tee /var/log/thinking_proxy.log"
     echo "Thinking Proxy starting..."
 fi
 wait_for_health "http://localhost:9100/health" "Thinking Proxy" 15
 
-# --- Deep Research Proxy (MiroFlow) ---
+# --- Deep Research Proxy (MiroFlow) — Grok via xAI direct API ---
 if ! pgrep -f "deep_research_proxy.py" > /dev/null; then
-    screen -dmS deep-research bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export UPSTREAM_MODEL='mistral-large-latest' && export SEARXNG_URL='http://localhost:8888' && export MOJEEK_API_KEY='${MOJEEK_API_KEY:-}' && export BRAVE_SEARCH_API_KEY='${BRAVE_SEARCH_API_KEY:-}' && export DEEP_RESEARCH_PORT='9200' && python3 /opt/deep_research_proxy.py 2>&1 | tee /var/log/deep_research_proxy.log"
+    screen -dmS deep-research bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && DEEP_RESEARCH_PORT=9200 python3 deep_research_proxy.py 2>&1 | tee /var/log/deep_research_proxy.log"
     echo "Deep Research Proxy starting..."
 fi
 wait_for_health "http://localhost:9200/health" "Deep Research Proxy" 15
 
-# --- Persistent Deep Research Proxy (Subagent Map-Reduce + AoT) ---
+# --- Persistent Deep Research Proxy (Subagent Map-Reduce + AoT) — Grok via xAI direct API ---
 if ! pgrep -f "persistent_deep_research_proxy.py" > /dev/null; then
-    screen -dmS persistent-research bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export UPSTREAM_MODEL='mistral-large-latest' && export SUBAGENT_MODEL='mistral-small-latest' && export SEARXNG_URL='http://localhost:8888' && export MOJEEK_API_KEY='${MOJEEK_API_KEY:-}' && export BRAVE_SEARCH_API_KEY='${BRAVE_SEARCH_API_KEY:-}' && export PERSISTENT_RESEARCH_PORT='9300' && python3 /opt/persistent_deep_research_proxy.py 2>&1 | tee /var/log/persistent_research_proxy.log"
+    screen -dmS persistent-research bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && PERSISTENT_RESEARCH_PORT=9300 python3 persistent_deep_research_proxy.py 2>&1 | tee /var/log/persistent_research_proxy.log"
     echo "Persistent Deep Research Proxy starting..."
 fi
 wait_for_health "http://localhost:9300/health" "Persistent Deep Research Proxy" 15
 
-# --- Swarm Deep Search Proxy ---
+# --- MiroFlow Sprint Proxy (quick 2-round variant) — Grok via xAI direct API ---
+if ! pgrep -f "miroflow_sprint_proxy.py" > /dev/null; then
+    screen -dmS miroflow-sprint bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && MIROFLOW_SPRINT_PORT=9400 python3 miroflow_sprint_proxy.py 2>&1 | tee /var/log/miroflow_sprint_proxy.log"
+    echo "MiroFlow Sprint Proxy starting..."
+fi
+wait_for_health "http://localhost:9400/health" "MiroFlow Sprint Proxy" 15
+
+# --- Swarm Deep Search Proxy — Venice AI (uncensored, override global xAI defaults) ---
 if ! pgrep -f "swarm_proxy.py" > /dev/null; then
-    screen -dmS swarm-proxy bash -c "export UPSTREAM_BASE='https://api.mistral.ai/v1' && export UPSTREAM_KEY='${MISTRAL_API_KEY}' && export SWARM_SYNTHESIS_MODEL='mistral-large-latest' && export SWARM_WORKER_MODEL='mistral-small-latest' && export SWARM_PROXY_PORT='9500' && python3 /opt/swarm_proxy.py 2>&1 | tee /var/log/swarm_proxy.log"
+    screen -dmS swarm-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && UPSTREAM_BASE='https://api.venice.ai/api/v1' UPSTREAM_KEY=\"${VENICE_API_KEY:-${MISTRAL_API_KEY:-}}\" UPSTREAM_MODEL='venice-uncensored' SWARM_SYNTHESIS_MODEL='venice-uncensored' SWARM_WORKER_MODEL='venice-uncensored' SWARM_PROXY_PORT=9500 python3 swarm_proxy.py 2>&1 | tee /var/log/swarm_proxy.log"
     echo "Swarm Deep Search Proxy starting..."
 fi
 wait_for_health "http://localhost:9500/health" "Swarm Deep Search Proxy" 15
 
-# --- G0DM0D3 Proxy (OpenRouter multi-model) ---
+# --- G0DM0D3 Proxy (multi-provider native routing) ---
 if ! pgrep -f "godmode_proxy.py" > /dev/null; then
-    screen -dmS godmode-proxy bash -c "export OPENROUTER_API_KEY='${OPENROUTER_API_KEY:-}' && export GODMODE_PROXY_PORT='9600' && python3 /opt/godmode_proxy.py 2>&1 | tee /var/log/godmode_proxy.log"
+    screen -dmS godmode-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && GODMODE_PROXY_PORT=9600 python3 godmode_proxy.py 2>&1 | tee /var/log/godmode_proxy.log"
     echo "G0DM0D3 Proxy starting..."
 fi
 wait_for_health "http://localhost:9600/health" "G0DM0D3 Proxy" 15
+
+# --- xAI Native Proxy (direct xAI API access + race modes) ---
+if ! pgrep -f "xai_native_proxy.py" > /dev/null; then
+    screen -dmS xai-native-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && XAI_PROXY_PORT=9700 python3 xai_native_proxy.py 2>&1 | tee /var/log/xai_native_proxy.log"
+    echo "xAI Native Proxy starting..."
+fi
+wait_for_health "http://localhost:9700/health" "xAI Native Proxy" 15
 
 echo "All services started. Portal: ${DOMAIN_CLIENT:-https://deep-search.uk}"

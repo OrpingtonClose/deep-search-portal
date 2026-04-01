@@ -921,6 +921,248 @@ NATIVE_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "onion_fetch",
+            "description": (
+                "Fetch a .onion page or any webpage through the Tor network. "
+                "Routes through a local Tor SOCKS proxy for anonymous access. "
+                "Use this for: (1) accessing .onion darknet sites directly, "
+                "(2) accessing clearnet sites that block datacenter IPs, "
+                "(3) accessing geo-restricted content. Tor connections are "
+                "slow (10-30s) — use sparingly and only when other fetch "
+                "methods fail or when .onion access is needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": (
+                            "The URL to fetch. Can be a .onion address "
+                            "(e.g. http://example.onion/path) or a regular "
+                            "clearnet URL (e.g. https://blocked-site.com)"
+                        ),
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grok_deep_search",
+            "description": (
+                "Perform a deep web + X/Twitter search using Grok 4.20's built-in "
+                "search capabilities. This is a HIGH-QUALITY search tool that "
+                "autonomously performs multiple web searches and X/Twitter searches, "
+                "returning cited results with URLs. Use this as the PRIMARY search "
+                "tool for any query — it often finds results that SearXNG misses, "
+                "especially for recent events, social media discussions, and "
+                "controversial/sensitive topics. Returns structured results with "
+                "citations and source URLs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query — be specific and detailed",
+                    },
+                    "search_type": {
+                        "type": "string",
+                        "enum": ["web", "x", "both"],
+                        "description": (
+                            "Type of search: 'web' for web only, 'x' for "
+                            "X/Twitter only, 'both' for both (default: both)"
+                        ),
+                    },
+                    "instructions": {
+                        "type": "string",
+                        "description": (
+                            "Optional instructions for the search agent — e.g. "
+                            "'focus on forum discussions', 'find vendor reviews', "
+                            "'look for recent news from the last week'"
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_gateway",
+            "description": (
+                "Unified search API gateway that fans out to ALL available search "
+                "backends simultaneously: Grok deep search (web + X/Twitter), "
+                "Apify (Reddit, Twitter, Telegram, Discord), SearXNG, forums, "
+                "academic sources (PubMed, arXiv, Scholar), and archives "
+                "(Archive.org, Wayback Machine). Results are deduplicated by URL "
+                "and merged with trust scores. Use this for comprehensive multi-source "
+                "research that requires breadth across many platforms."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query",
+                    },
+                    "sources": {
+                        "type": "string",
+                        "description": (
+                            "Comma-separated source categories to query. Options: "
+                            "'all' (default), 'grok', 'searxng', 'social', "
+                            "'community', 'academic', 'archive', 'video', 'darkweb'"
+                        ),
+                    },
+                    "search_type": {
+                        "type": "string",
+                        "enum": ["web", "x", "both"],
+                        "description": "Search type for Grok backend (default: both)",
+                    },
+                    "max_results_per_source": {
+                        "type": "integer",
+                        "description": "Max results per source category (default: 10)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_knowledge_wiki",
+            "description": (
+                "Build a structured, Wikipedia-style knowledge encyclopedia from all "
+                "research findings accumulated so far. An LLM agent reads the current "
+                "conditions, synthesizes them into coherent encyclopedia prose with "
+                "inline citations, confidence notes, and thematic organization, then "
+                "emits the result as an interactive HTML artifact in the side pane. "
+                "Call this when you have gathered enough findings to produce a useful "
+                "knowledge base article, or when the user explicitly requests a wiki. "
+                "Each call replaces the previous wiki version."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": (
+                            "Optional focus topic for the wiki. If not provided, "
+                            "covers all research findings for the current query."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    # -----------------------------------------------------------------------
+    # Sicry Dark Web Search Tools (Tor/.onion access via Sicry MCP)
+    # -----------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "sicry_search",
+            "description": (
+                "Search the dark web using 18 Tor search engines simultaneously "
+                "(Ahmia, OnionLand, Tor66, Torgle, etc.) via the Sicry OSINT layer. "
+                "Returns deduplicated results with titles, .onion URLs, and source "
+                "engine names. Use this for researching hidden services, darknet "
+                "markets, underground forums, leaked databases, and any information "
+                "only available on the Tor network. This is a REAL dark web search — "
+                "not a clearnet proxy. Requires Tor daemon running."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query (keywords work best)",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum results to return (default 20)",
+                    },
+                    "engines": {
+                        "type": "string",
+                        "description": (
+                            "Comma-separated engine names to use (optional, default: all 18). "
+                            "Options include: ahmia, torch, onionland, tor66, torgle, etc."
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sicry_fetch",
+            "description": (
+                "Fetch the full text content of any .onion hidden service page "
+                "or clearnet URL routed anonymously through Tor. Returns extracted "
+                "text, title, status code, and links found on the page. Use after "
+                "sicry_search to read the actual content of dark web pages. Also "
+                "useful for fetching clearnet pages anonymously when direct access "
+                "is blocked by geo-restrictions or censorship."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": (
+                            "URL to fetch — supports both .onion addresses "
+                            "(e.g. http://example.onion/page) and clearnet URLs"
+                        ),
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sicry_check_tor",
+            "description": (
+                "Check if the Tor network is accessible and return the current "
+                "exit node IP address. Use this to diagnose connectivity issues "
+                "before attempting dark web searches. If Tor is not active, other "
+                "sicry_* tools will fail."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sicry_renew_identity",
+            "description": (
+                "Rotate the Tor circuit to get a new exit node IP address. "
+                "Use this when a hidden service blocks the current exit node "
+                "or when you want to appear as a different user. Takes ~5-10 "
+                "seconds for the new circuit to establish."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
 ]
 
 

@@ -89,12 +89,35 @@ PROVIDER_REGISTRY: dict[str, dict[str, str]] = {
     # "meta-llama", "nousresearch", "xiaomi" are NOT listed here.
 }
 
+# ---------------------------------------------------------------------------
+# Native Model Name Map — translate OpenRouter names → native API names
+# ---------------------------------------------------------------------------
+# When routing through a provider's native API, the model name after the "/"
+# may differ from what the native API expects.  For example, OpenRouter uses
+# "grok-4.1-fast" but xAI's native API requires "grok-4-1-fast-non-reasoning".
+#
+# Keys:   bare model name as it appears after the prefix (e.g. "grok-4.1-fast")
+# Values: the name the native API actually accepts
+#
+# Models NOT in this map are sent as-is (works when names already match).
+
+NATIVE_MODEL_MAP: dict[str, str] = {
+    # xAI — native API uses versioned names with reasoning/non-reasoning suffix
+    "grok-4.1-fast":       "grok-4-1-fast-non-reasoning",
+    "grok-4":              "grok-4-0709",
+    "grok-4.20":           "grok-4.20-0309-reasoning",
+    # Mistral — native API uses "-latest" aliases, not versioned suffixes
+    "mistral-medium-3.1":  "mistral-medium-latest",
+    "mistral-large-2512":  "mistral-large-latest",
+}
+
 
 def resolve_provider(model: str) -> tuple[str, str, str]:
     """Resolve a model ID to (base_url, api_key, native_model_name).
 
     For models whose provider prefix is in PROVIDER_REGISTRY and whose
-    API key env var is set, returns the native endpoint.
+    API key env var is set, returns the native endpoint.  The bare model
+    name is translated via NATIVE_MODEL_MAP when a mapping exists.
     Otherwise falls back to OpenRouter (keeping the full model ID).
     """
     parts = model.split("/", 1)
@@ -104,7 +127,8 @@ def resolve_provider(model: str) -> tuple[str, str, str]:
         if entry:
             key = os.environ.get(entry["key_env"], "")
             if key:
-                return entry["base_url"], key, model_name
+                native_name = NATIVE_MODEL_MAP.get(model_name, model_name)
+                return entry["base_url"], key, native_name
     # Fallback: OpenRouter with full model ID
     return OPENROUTER_BASE, OPENROUTER_KEY, model
 

@@ -431,7 +431,8 @@ def _build_body(
         "stream": stream,
     }
     # Some models reject custom temperature; omit it so the API uses its default
-    if native_model not in _NO_CUSTOM_TEMPERATURE_MODELS:
+    bare_model = native_model.split("/")[-1]
+    if bare_model not in _NO_CUSTOM_TEMPERATURE_MODELS:
         body["temperature"] = temperature
     # Newer OpenAI models reject max_tokens; use max_completion_tokens
     if provider_prefix in _MAX_COMPLETION_TOKENS_PREFIXES:
@@ -439,7 +440,7 @@ def _build_body(
     else:
         body["max_tokens"] = max_tokens
     # Qwen3 thinking models require enable_thinking=false for non-streaming
-    if not stream and native_model in _THINKING_MODELS:
+    if not stream and bare_model in _THINKING_MODELS:
         body["enable_thinking"] = False
     return body
 

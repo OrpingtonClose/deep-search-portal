@@ -1,12 +1,11 @@
 # =============================================================================
 # Deep Search Portal — LibreChat Configuration
 #
-# Models are organized into four groups:
-#   Powerhouse   — Multi-API convergence models that race or orchestrate
-#                  across providers. Grok 4.20 is the default.
-#   Research     — Deep multi-source research engines with reports
-#   Chat         — Individual models for quick conversation, code, and images
-#   Experimental — Swarm ingestion and niche uncensored tiers
+# Models are organized into groups:
+#   Simple       — Go-to defaults: Grok 4.20 + multi-model consortiums
+#   Miro         — Miro research engines (deep, quick, focused)
+#   Grok         — All individual Grok models (text, code, image)
+#   Experimental — Swarm, extra consortium tiers, older Grok variants
 #
 # Proxy services (same VM or reachable via HTTP):
 #   Thinking Proxy:           port 9100
@@ -29,171 +28,177 @@ modelSpecs:
   prioritize: true
   list:
     # =======================================================================
-    #  POWERHOUSE — Multi-API convergence: race or orchestrate across providers
+    #  SIMPLE — Grok 4.20 + multi-model consortiums (race across providers)
     # =======================================================================
-    - name: "xai-grok-420-reasoning"
-      label: "Grok 4.20 Reasoning"
-      description: "The flagship. xAI's most powerful model with extended thinking, 2M token context, and built-in web + X/Twitter search. Best for complex analysis and deep reasoning."
-      group: "Powerhouse"
-      default: true
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-4.20-0309-reasoning"
-
     - name: "xai-grok-420-multiagent"
-      label: "Grok 4.20 Multi-Agent"
-      description: "Internally coordinates parallel reasoning streams. Excels at problems that benefit from multiple perspectives working together."
-      group: "Powerhouse"
+      label: "Grok 4.20"
+      description: "xAI's most powerful model. Coordinates parallel reasoning with built-in web and X/Twitter search. 2M token context."
+      group: "Simple"
+      default: true
       preset:
         endpoint: "xAI Native"
         model: "xai-grok-4.20-multi-agent-0309"
 
+    - name: "ultraplinian-fast"
+      label: "Consortium Fast"
+      description: "Races the fastest models from multiple providers and picks the best answer. Quick results, unfiltered."
+      group: "Simple"
+      preset:
+        endpoint: "G0DM0D3"
+        model: "ultraplinian-fast"
+
     - name: "godmode-classic"
-      label: "G0DM0D3 Classic"
-      description: "Races 5 top models (Claude, Grok, Gemini, GPT-4, Hermes 405B) across different providers and picks the best unfiltered answer."
-      group: "Powerhouse"
+      label: "Consortium Regular"
+      description: "Races 5 top models (Claude, Grok, Gemini, GPT-4, Hermes 405B) across different providers. Balanced speed and quality."
+      group: "Simple"
       preset:
         endpoint: "G0DM0D3"
         model: "godmode-classic"
 
-    - name: "xai-race-smart"
-      label: "xAI Race (Smartest)"
-      description: "Races the 3 smartest Grok reasoning models simultaneously — Grok 3, Grok 4.1, and Grok 4.20 — and picks the deepest answer."
-      group: "Powerhouse"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-race-smart"
-
-    - name: "xai-race-all"
-      label: "xAI Race (All Models)"
-      description: "Races ALL 8 Grok text models at once and returns the highest-scoring response. Maximally thorough but slower."
-      group: "Powerhouse"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-race-all"
-
-    - name: "xai-race-fast"
-      label: "xAI Race (Fastest)"
-      description: "Races the 3 fastest Grok models — Grok 3 Fast, Grok 4.1 Fast, and Grok Code — for quick best-of-three answers."
-      group: "Powerhouse"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-race-fast"
-
-    - name: "ultraplinian-research"
-      label: "Multi-Model Researcher"
-      description: "Queries many uncensored models from different providers in parallel, merges and scores their research outputs into one comprehensive answer."
-      group: "Powerhouse"
+    - name: "ultraplinian-power"
+      label: "Consortium Powerful"
+      description: "Races the top 30 most capable models from all providers. Slower but gets the strongest possible answer."
+      group: "Simple"
       preset:
         endpoint: "G0DM0D3"
-        model: "ultraplinian-research"
+        model: "ultraplinian-power"
 
     # =======================================================================
-    #  RESEARCH — Deep multi-source investigation with reports
+    #  MIRO — Miro research engines
     # =======================================================================
     - name: "deep-researcher"
-      label: "Deep Researcher"
-      description: "Thorough multi-source investigation. Builds a knowledge net from web, forums, archives, academic databases, and dark web. Produces a detailed report. Takes 10-30 minutes."
-      group: "Research"
+      label: "Miro Deep"
+      description: "Full Miro research engine. Builds a knowledge net from web, forums, archives, academic databases, and dark web. Detailed report. 10-30 minutes."
+      group: "Miro"
       preset:
         endpoint: "Persistent MiroFlow"
         model: "persistent-miroflow"
 
     - name: "quick-researcher"
-      label: "Quick Researcher"
-      description: "Same research engine as Deep Researcher but capped at 2 rounds. Gets you useful results in 2-5 minutes when you need answers fast."
-      group: "Research"
+      label: "Miro Quick"
+      description: "Same Miro engine capped at 2 rounds. Useful results in 2-5 minutes when you need answers fast."
+      group: "Miro"
       preset:
         endpoint: "MiroFlow Sprint"
         model: "miroflow-sprint"
 
     - name: "single-agent-research"
-      label: "Focused Search"
-      description: "Single-agent research that follows one line of inquiry for up to 15 steps. Best for targeted questions where you know exactly what you want."
-      group: "Research"
+      label: "Miro Focused"
+      description: "Single-agent Miro research following one line of inquiry for up to 15 steps. Best for targeted questions."
+      group: "Miro"
       preset:
         endpoint: "Deep Research"
         model: "miroflow"
 
+    - name: "swarm-ingest"
+      label: "Miro Swarm"
+      description: "Upload large documents and a swarm of Miro agents digests them through collaborative discussion. Ask questions about the content afterward."
+      group: "Miro"
+      preset:
+        endpoint: "Swarm Deep Search"
+        model: "swarm-miroflow"
+
     # =======================================================================
-    #  CHAT — Individual models for conversation, code, and images
+    #  GROK — All individual Grok models (text, code, image generation)
     # =======================================================================
+
+    # --- Grok 4.20 ---
+    - name: "xai-grok-420-reasoning"
+      label: "Grok 4.20 Reasoning"
+      description: "Extended thinking mode with 2M context and native web + X/Twitter search. Best for complex analysis."
+      group: "Grok"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-grok-4.20-0309-reasoning"
+
     - name: "xai-grok-420-nonreasoning"
       label: "Grok 4.20 Direct"
-      description: "Same powerful architecture as Grok 4.20 but without the thinking step. Faster responses for straightforward questions. 2M context."
-      group: "Chat"
+      description: "Same architecture without the thinking step. Faster for straightforward questions. 2M context."
+      group: "Grok"
       preset:
         endpoint: "xAI Native"
         model: "xai-grok-4.20-0309-non-reasoning"
 
+    # --- Grok 4.1 Fast ---
     - name: "xai-grok-41-fast-reasoning"
       label: "Grok 4.1 Fast (Thinking)"
-      description: "Fast reasoning model at 1/10th the cost of Grok 4.20. Shows its thinking process. Best balance of speed, intelligence, and price."
-      group: "Chat"
+      description: "Fast reasoning at 1/10th the cost of Grok 4.20. Best balance of speed, intelligence, and price."
+      group: "Grok"
       preset:
         endpoint: "xAI Native"
         model: "xai-grok-4-1-fast-reasoning"
 
     - name: "xai-grok-41-fast-nonreasoning"
       label: "Grok 4.1 Fast (Direct)"
-      description: "Fastest Grok 4 variant. No reasoning overhead, 2M context, very low cost. Ideal for quick answers and high-throughput tasks."
-      group: "Chat"
+      description: "Fastest Grok 4 variant. No reasoning overhead, 2M context, very low cost."
+      group: "Grok"
       preset:
         endpoint: "xAI Native"
         model: "xai-grok-4-1-fast-non-reasoning"
 
-    - name: "xai-grok-3-fast"
-      label: "Grok 3 Fast"
-      description: "Fast, cheap, and proven uncensored. Great tool calling support. The engine behind our research subagents."
-      group: "Chat"
+    # --- Grok 4 ---
+    - name: "xai-grok-4-reasoning"
+      label: "Grok 4 (Thinking)"
+      description: "Grok 4 with extended reasoning. Step-by-step problem solving, 2M context."
+      group: "Grok"
       preset:
         endpoint: "xAI Native"
-        model: "xai-grok-3-fast"
+        model: "xai-grok-4-fast-reasoning"
 
+    - name: "xai-grok-4-nonreasoning"
+      label: "Grok 4 (Direct)"
+      description: "Grok 4 without reasoning. Fast and capable, 2M context."
+      group: "Grok"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-grok-4-fast-non-reasoning"
+
+    - name: "xai-grok-4-0709"
+      label: "Grok 4 (July 2025)"
+      description: "Original Grok 4 release. Strong at math, coding, and analytical tasks. 2M context."
+      group: "Grok"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-grok-4-0709"
+
+    # --- Grok 3 ---
     - name: "xai-grok-3"
       label: "Grok 3"
-      description: "Full Grok 3 model. Excellent tool calling, 131K context. Strong general-purpose model with lower censorship than most frontier models."
-      group: "Chat"
+      description: "Full Grok 3. Excellent tool calling, 131K context, lower censorship than most frontier models."
+      group: "Grok"
       preset:
         endpoint: "xAI Native"
         model: "xai-grok-3"
 
-    - name: "thinking-chat"
-      label: "Mistral Thinking"
-      description: "Mistral Large with visible reasoning. Good for step-by-step explanations. Note: may refuse sensitive topics."
-      group: "Chat"
-      preset:
-        endpoint: "Mistral Thinking"
-        model: "mistral-large-thinking"
-
-    - name: "ultraplinian-fast"
-      label: "Uncensored Fast"
-      description: "Quick unfiltered answers by racing the fastest available models across multiple providers."
-      group: "Chat"
-      preset:
-        endpoint: "G0DM0D3"
-        model: "ultraplinian-fast"
-
-    - name: "xai-grok-code"
-      label: "Grok Code"
-      description: "Purpose-built for code generation, debugging, and software engineering. Optimized for programming languages."
-      group: "Chat"
+    - name: "xai-grok-3-fast"
+      label: "Grok 3 Fast"
+      description: "Fast, cheap, proven uncensored. The engine behind Miro's research subagents."
+      group: "Grok"
       preset:
         endpoint: "xAI Native"
-        model: "xai-grok-code-fast-1"
+        model: "xai-grok-3-fast"
 
     - name: "xai-grok-3-mini"
       label: "Grok 3 Mini"
-      description: "Compact reasoning model with adjustable thinking depth. Good for quick logic puzzles and math at minimal cost."
-      group: "Chat"
+      description: "Compact reasoning model with adjustable thinking depth. Quick logic puzzles and math at minimal cost."
+      group: "Grok"
       preset:
         endpoint: "xAI Native"
         model: "xai-grok-3-mini"
 
+    # --- Specialist ---
+    - name: "xai-grok-code"
+      label: "Grok Code"
+      description: "Purpose-built for code generation, debugging, and software engineering."
+      group: "Grok"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-grok-code-fast-1"
+
     - name: "xai-imagine"
       label: "Grok Imagine"
-      description: "AI image generation from text prompts. Multiple aspect ratios and resolutions. $0.02 per image."
-      group: "Chat"
+      description: "AI image generation from text prompts. Multiple aspect ratios. $0.02 per image."
+      group: "Grok"
       preset:
         endpoint: "xAI Native"
         model: "xai-grok-imagine-image"
@@ -201,64 +206,57 @@ modelSpecs:
     - name: "xai-imagine-pro"
       label: "Grok Imagine Pro"
       description: "Premium image generation with higher quality and detail. $0.07 per image."
-      group: "Chat"
+      group: "Grok"
       preset:
         endpoint: "xAI Native"
         model: "xai-grok-imagine-image-pro"
 
+    # --- Race modes ---
+    - name: "xai-race-fast"
+      label: "Grok Race (Fast)"
+      description: "Races 3 fastest Grok models — Grok 3 Fast, Grok 4.1 Fast, Grok Code — picks the best."
+      group: "Grok"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-race-fast"
+
+    - name: "xai-race-smart"
+      label: "Grok Race (Smart)"
+      description: "Races 3 smartest Grok reasoning models — Grok 3, Grok 4.1, Grok 4.20 — picks the deepest."
+      group: "Grok"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-race-smart"
+
+    - name: "xai-race-all"
+      label: "Grok Race (All)"
+      description: "Races ALL 8 Grok text models at once and returns the highest-scoring response."
+      group: "Grok"
+      preset:
+        endpoint: "xAI Native"
+        model: "xai-race-all"
+
     # =======================================================================
-    #  EXPERIMENTAL — Swarm ingestion and niche uncensored tiers
+    #  EXPERIMENTAL — Extra consortium tiers, Mistral, multi-model research
     # =======================================================================
-    - name: "swarm-ingest"
-      label: "Document Swarm"
-      description: "Upload large documents and let a swarm of agents digest them through collaborative discussion. Ask questions about the content afterward."
+    - name: "thinking-chat"
+      label: "Mistral Thinking"
+      description: "Mistral Large with visible reasoning. Good for step-by-step explanations. May refuse sensitive topics."
       group: "Experimental"
       preset:
-        endpoint: "Swarm Deep Search"
-        model: "swarm-miroflow"
-
-    - name: "xai-grok-4-reasoning"
-      label: "Grok 4 (Thinking)"
-      description: "Grok 4 with extended reasoning. Step-by-step problem solving with 2M token context."
-      group: "Experimental"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-4-fast-reasoning"
-
-    - name: "xai-grok-4-nonreasoning"
-      label: "Grok 4 (Direct)"
-      description: "Grok 4 without reasoning. Fast, capable, 2M context."
-      group: "Experimental"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-4-fast-non-reasoning"
-
-    - name: "xai-grok-4-0709"
-      label: "Grok 4 (July 2025)"
-      description: "Original Grok 4 release with reasoning. 2M context, strong at math, coding, and analytical tasks."
-      group: "Experimental"
-      preset:
-        endpoint: "xAI Native"
-        model: "xai-grok-4-0709"
+        endpoint: "Mistral Thinking"
+        model: "mistral-large-thinking"
 
     - name: "ultraplinian-ultra"
-      label: "Ultra Uncensored"
-      description: "Races all 55 available models simultaneously and picks the best unfiltered answer. Very slow but maximally thorough."
+      label: "Consortium Ultra"
+      description: "Races all 55 available models from every provider simultaneously. Very slow but maximally thorough."
       group: "Experimental"
       preset:
         endpoint: "G0DM0D3"
         model: "ultraplinian-ultra"
 
-    - name: "ultraplinian-power"
-      label: "Power Uncensored"
-      description: "Races the top 30 most capable models. Balance of speed and breadth."
-      group: "Experimental"
-      preset:
-        endpoint: "G0DM0D3"
-        model: "ultraplinian-power"
-
     - name: "ultraplinian-smart"
-      label: "Smart Uncensored"
+      label: "Consortium Smart"
       description: "Races the 20 smartest models. Favours intelligence over speed."
       group: "Experimental"
       preset:
@@ -266,12 +264,20 @@ modelSpecs:
         model: "ultraplinian-smart"
 
     - name: "ultraplinian-standard"
-      label: "Standard Uncensored"
+      label: "Consortium Standard"
       description: "Races a balanced set of 15 models. Good default uncensored option."
       group: "Experimental"
       preset:
         endpoint: "G0DM0D3"
         model: "ultraplinian-standard"
+
+    - name: "ultraplinian-research"
+      label: "Consortium Researcher"
+      description: "Queries many uncensored models from different providers in parallel and merges their research outputs."
+      group: "Experimental"
+      preset:
+        endpoint: "G0DM0D3"
+        model: "ultraplinian-research"
 
 # ---------------------------------------------------------------------------
 # Backend endpoint wiring (users don't see this directly)

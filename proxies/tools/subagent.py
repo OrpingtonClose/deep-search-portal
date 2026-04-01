@@ -975,7 +975,7 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
     conditions: list[AtomicCondition] = []
 
     # Extract URLs mentioned in the text for source attribution
-    url_pattern = re.compile(r'https?://[^\s"\)\]>,;:]+(?<![.!?])')
+    url_pattern = re.compile(r'https?://[^\s"\)\]>,;]+(?::\d+)?[^\s"\)\]>,;:]*(?<![.!?])')
 
     # Split on common delimiters: numbered items, bullet points, blank lines
     # Each chunk becomes one condition (if substantive).
@@ -991,12 +991,25 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
     if not chunks:
         chunks = [content.strip()]
 
+    # Skip preamble: the first chunk is often introductory text like
+    # "Here are the key findings from my research:" — skip it if it
+    # contains no URL and no confidence indicator (it's not a finding).
+    _preamble_skipped = False
     for chunk in chunks:
         chunk = chunk.strip()
         if len(chunk) < 20:
             continue
         if _is_llm_refusal(chunk):
             continue
+        if not _preamble_skipped:
+            _preamble_skipped = True
+            has_url = url_pattern.search(chunk)
+            has_confidence = re.search(r'confidence[:\s]+(?:\d|high|medium|low)', chunk.lower())
+            has_finding_signal = has_url or has_confidence or any(
+                w in chunk.lower() for w in ("found", "confirmed", "verified", "listed", "available", "ships")
+            )
+            if not has_finding_signal and chunk.endswith(":"):
+                continue  # skip preamble like "Here are my findings:"
 
         # Extract first URL as source
         url_match = url_pattern.search(chunk)

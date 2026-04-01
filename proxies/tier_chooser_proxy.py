@@ -152,6 +152,10 @@ ALL_TIER_MODELS: list[str] = []
 for models in TIER_MODELS.values():
     ALL_TIER_MODELS.extend(models)
 
+# prevent GC of fire-and-forget tasks (Python < 3.12 weak-refs)
+# See: https://docs.python.org/3/library/asyncio-task.html#creating-tasks
+_background_tasks: set[asyncio.Task] = set()
+
 # ============================================================================
 # Refusal / Hedge Detection & Response Scoring
 # ============================================================================
@@ -820,7 +824,9 @@ async def run_tier_race(
         return
 
     # --- Persist ALL results to Neo4j (fire-and-forget) ---
-    asyncio.create_task(_store_race_results_neo4j(req_id, user_query, tier, results))
+    _task = asyncio.create_task(_store_race_results_neo4j(req_id, user_query, tier, results))
+    _background_tasks.add(_task)
+    _task.add_done_callback(_background_tasks.discard)
 
     refusal_count = sum(1 for r in results if r["is_refusal"] and not r.get("is_empty"))
     empty_count = sum(1 for r in results if r.get("is_empty"))

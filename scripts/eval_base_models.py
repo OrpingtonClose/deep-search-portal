@@ -543,13 +543,84 @@ async def call_model_streaming(
 # Tool calling detection (non-streaming probe)
 # ---------------------------------------------------------------------------
 
-async def check_tool_calling(
+# XML tool calling system prompt for Venice models (Hermes 3 native format)
+VENICE_XML_TOOL_SYSTEM_PROMPT = """You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions.
+
+Here are the available tools:
+<tools>
+[{"type": "function", "function": {"name": "get_weather", "description": "Get current weather for a city", "parameters": {"type": "object", "properties": {"city": {"type": "string", "description": "City name"}}, "required": ["city"]}}}]
+</tools>
+
+For each function call return ONLY a valid JSON object with the function name and arguments wrapped in <tool_call></tool_call> XML tags like this:
+<tool_call>
+{"name": "example_tool_name", "arguments": {"arg1": "value1", "arg2": 123}}
+</tool_call>"""
+
+
+async def check_tool_calling_xml(
     client: httpx.AsyncClient,
     base_url: str,
     api_key: str,
     model: str,
 ) -> bool | None:
-    """Quick non-streaming check if a model supports tool calling."""
+    """Check if a Venice model supports tool calling via native XML format.
+
+    Venice disables the standard OpenAI `tools` parameter for some models
+    (e.g. hermes-3-llama-3.1-405b), but they still support tool calling
+    via the native Hermes XML format (<tool_call> tags in response).
+    """
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": VENICE_XML_TOOL_SYSTEM_PROMPT},
+            {"role": "user", "content": "What's the weather in Warsaw?"},
+        ],
+        "max_tokens": 200,
+        "temperature": 0.0,
+    }
+
+    try:
+        resp = await client.post(
+            f"{base_url}/chat/completions",
+            json=body,
+            headers=headers,
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            content = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            # Check if the model responded with <tool_call> XML tags
+            if "<tool_call>" in content and "get_weather" in content:
+                return True
+        return False
+    except Exception:
+        return None
+
+
+async def check_tool_calling(
+    client: httpx.AsyncClient,
+    base_url: str,
+    api_key: str,
+    model: str,
+    api_surface: str = "",
+) -> str | bool | None:
+    """Quick non-streaming check if a model supports tool calling.
+
+    Returns:
+        True / "native" — standard OpenAI tools param accepted
+        "xml" — Venice XML-based tool calling works (native Hermes format)
+        False — neither method works
+        None — unclear / error
+    """
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -587,6 +658,13 @@ async def check_tool_calling(
             # Check if error is about tools not being supported
             err = resp.text.lower()
             if "tool" in err or "function" in err:
+                # For Venice models, try XML-based tool calling as fallback
+                if api_surface == "venice":
+                    xml_result = await check_tool_calling_xml(
+                        client, base_url, api_key, model
+                    )
+                    if xml_result is True:
+                        return "xml"  # Supports XML tool calling
                 return False
         return None  # Unclear
     except Exception:
@@ -667,7 +745,7 @@ async def evaluate_model(
             result["tool_calling"] = censor_result["tool_calling"]
         else:
             tool_support = await check_tool_calling(
-                client, base_url, api_key, model
+                client, base_url, api_key, model, api_surface
             )
             result["tool_calling"] = tool_support
 
@@ -856,7 +934,14 @@ def generate_markdown(all_results: list[dict[str, Any]]) -> str:
             censor = r.get("censorship_verdict", "ERROR")
             actionable = r.get("actionable_count", "-")
             tool = r.get("tool_calling")
-            tool_str = "YES" if tool is True else ("NO" if tool is False else "?")
+            if tool is True:
+                tool_str = "YES"
+            elif tool == "xml":
+                tool_str = "XML"
+            elif tool is False:
+                tool_str = "NO"
+            else:
+                tool_str = "?"
             thought = r.get("thought_power", "-")
             math_s = r.get("math_score", "-")
             analysis_s = r.get("analysis_score", "-")

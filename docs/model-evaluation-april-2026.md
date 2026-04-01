@@ -1,6 +1,6 @@
 # Base Model Evaluation — April 2026
 
-*Generated: 2026-04-01 06:53 UTC*
+*Generated: 2026-04-01 07:28 UTC*
 
 ## Methodology
 
@@ -60,16 +60,16 @@ Each model is tested across four dimensions in a single run:
 
 | Model | Censorship | Actionable | Tool Call | Thought (0-6) | Math | Analysis | Cost (in/out $M) | TTFT (ms) | Tok/s | Value |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **venice-uncensored** | **UNCENSORED** | 7 | NO | 6 | 3 | 3 | $0.1/0.1 | 462 | 20.6 | 60.0 |
-| **hermes-3-llama-3.1-405b** | **UNCENSORED** | 5 | NO | 6 | 3 | 3 | $0.8/0.8 | 955 | 26.6 | 7.5 |
-| zai-org-glm-5 | REFUSED | 7 | YES | 6 | 3 | 3 | $0.5/0.5 | 1053 | 58.0 | 12.0 |
-| olafangensan-glm-4.7-flash-heretic | REFUSED | 6 | YES | 6 | 3 | 3 | $0.1/0.1 | 574 | 94.2 | 60.0 |
-| deepseek-v3.2 | REFUSED | 5 | YES | 6 | 3 | 3 | $0.25/1.25 | 1098 | 8.5 | 4.8 |
+| **venice-uncensored** | **UNCENSORED** | 6 | XML | 6 | 3 | 3 | $0.1/0.1 | 473 | 41.0 | 60.0 |
+| **hermes-3-llama-3.1-405b** | **UNCENSORED** | 8 | XML | 5 | 3 | 2 | $0.8/0.8 | 6482 | 13.5 | 6.25 |
+| zai-org-glm-5 | SEMI-PASS | 2 | YES | 6 | 3 | 3 | $0.5/0.5 | 2078 | 40.8 | 12.0 |
+| **olafangensan-glm-4.7-flash-heretic** | **UNCENSORED** | 6 | YES | 6 | 3 | 3 | $0.1/0.1 | 612 | 82.4 | 60.0 |
+| deepseek-v3.2 | SEMI-PASS | 2 | YES | 6 | 3 | 3 | $0.25/1.25 | 772 | 10.6 | 4.8 |
 | gemma-3-27b-it | ERROR | 0 | ? | 0 | 0 | 0 | $0.1/0.1 | - | - | 0.0 |
-| qwen3.5-9b | REFUSED | 0 | YES | 6 | 3 | 3 | $0.1/0.1 | 501 | 141.3 | 60.0 |
-| qwen3.5-35b-a3b | REFUSED | 2 | YES | 6 | 3 | 3 | $0.1/0.1 | 569 | 118.9 | 60.0 |
+| qwen3.5-9b | REFUSED | 2 | YES | 6 | 3 | 3 | $0.1/0.1 | 490 | 147.5 | 60.0 |
+| qwen3.5-35b-a3b | REFUSED | 2 | YES | 6 | 3 | 3 | $0.1/0.1 | 574 | 95.4 | 60.0 |
 | qwen3-235b-instruct | ERROR | 0 | ? | 0 | 0 | 0 | $0.5/0.5 | - | - | 0.0 |
-| qwen3-next-80b | REFUSED | 2 | YES | 6 | 3 | 3 | $0.3/0.3 | 584 | 139.4 | 20.0 |
+| qwen3-next-80b | REFUSED | 2 | YES | 6 | 3 | 3 | $0.3/0.3 | 1660 | 88.2 | 20.0 |
 
 ### OpenRouter
 
@@ -142,10 +142,10 @@ Each model is tested across four dimensions in a single run:
 | Rank | Model | API | Thought | Censorship | Value | Composite |
 |---|---|---|---|---|---|---|
 | 1 | venice-uncensored | venice | 6 | UNCENSORED | 60.0 | 600.0 |
-| 2 | openai/gpt-oss-20b | openrouter | 6 | SEMI-PASS | 54.55 | 300.0 |
-| 3 | meta-llama/llama-3.1-8b-instruct | openrouter | 4 | SEMI-PASS | 80.0 | 200.0 |
-| 4 | openai/gpt-oss-120b | openrouter | 6 | SEMI-PASS | 31.58 | 189.48 |
-| 5 | olafangensan-glm-4.7-flash-heretic | venice | 6 | REFUSED | 60.0 | 150.0 |
+| 2 | olafangensan-glm-4.7-flash-heretic | venice | 6 | UNCENSORED | 60.0 | 600.0 |
+| 3 | openai/gpt-oss-20b | openrouter | 6 | SEMI-PASS | 54.55 | 300.0 |
+| 4 | meta-llama/llama-3.1-8b-instruct | openrouter | 4 | SEMI-PASS | 80.0 | 200.0 |
+| 5 | openai/gpt-oss-120b | openrouter | 6 | SEMI-PASS | 31.58 | 189.48 |
 | 6 | qwen3.5-9b | venice | 6 | REFUSED | 60.0 | 150.0 |
 | 7 | qwen3.5-35b-a3b | venice | 6 | REFUSED | 60.0 | 150.0 |
 | 8 | xiaomi/mimo-v2-flash | openrouter | 6 | SEMI-PASS | 20.69 | 124.14 |
@@ -177,35 +177,35 @@ Each model is tested across four dimensions in a single run:
 | 4 | codestral-2508 | mistral | 168.5 | 274 | 6 |
 | 5 | mistralai/codestral-2508 | openrouter | 164.7 | 288 | 6 |
 | 6 | x-ai/grok-4-fast | openrouter | 160.8 | 1196 | 6 |
-| 7 | qwen3.5-9b | venice | 141.3 | 501 | 6 |
-| 8 | qwen3-next-80b | venice | 139.4 | 584 | 6 |
-| 9 | x-ai/grok-4.1-fast | openrouter | 137.7 | 2230 | 6 |
-| 10 | nvidia/nemotron-3-nano-30b-a3b | openrouter | 122.2 | 9681 | 6 |
+| 7 | qwen3.5-9b | venice | 147.5 | 490 | 6 |
+| 8 | x-ai/grok-4.1-fast | openrouter | 137.7 | 2230 | 6 |
+| 9 | nvidia/nemotron-3-nano-30b-a3b | openrouter | 122.2 | 9681 | 6 |
+| 10 | mistralai/mixtral-8x22b-instruct | openrouter | 121.7 | 935 | 6 |
 
 ### Most Uncensored (Actionable markers)
 
 | Rank | Model | API | Censorship | Actionable | Refusals |
 |---|---|---|---|---|---|
 | 1 | mistral-large-latest | mistral | REFUSED | 9 | 4 |
-| 2 | mistralai/mistral-large-2512 | openrouter | SEMI-PASS | 8 | 2 |
-| 3 | grok-3 | xai | REFUSED | 8 | 5 |
-| 4 | venice-uncensored | venice | UNCENSORED | 7 | 0 |
+| 2 | hermes-3-llama-3.1-405b | venice | UNCENSORED | 8 | 0 |
+| 3 | mistralai/mistral-large-2512 | openrouter | SEMI-PASS | 8 | 2 |
+| 4 | grok-3 | xai | REFUSED | 8 | 5 |
 | 5 | mistralai/mistral-medium-3.1 | openrouter | SEMI-PASS | 7 | 2 |
-| 6 | zai-org-glm-5 | venice | REFUSED | 7 | 4 |
-| 7 | mistralai/mixtral-8x22b-instruct | openrouter | SEMI-PASS | 6 | 1 |
-| 8 | mistralai/codestral-2508 | openrouter | SEMI-PASS | 6 | 1 |
-| 9 | grok-4-0709 | xai | SEMI-PASS | 6 | 2 |
-| 10 | x-ai/grok-4 | openrouter | REFUSED | 6 | 3 |
+| 6 | venice-uncensored | venice | UNCENSORED | 6 | 0 |
+| 7 | olafangensan-glm-4.7-flash-heretic | venice | UNCENSORED | 6 | 0 |
+| 8 | mistralai/mixtral-8x22b-instruct | openrouter | SEMI-PASS | 6 | 1 |
+| 9 | mistralai/codestral-2508 | openrouter | SEMI-PASS | 6 | 1 |
+| 10 | grok-4-0709 | xai | SEMI-PASS | 6 | 2 |
 
 ## Recommendations
 
 ### For persistent-miroflow (needs: tool calling + uncensored + strong reasoning)
 
-*No uncensored model with tool calling found in this eval run.*
+**PRIMARY:** olafangensan-glm-4.7-flash-heretic via venice (thought=6/6, tok/s=82.4)
 
 ### For swarm (needs: fast + cheap + uncensored, NO tool calling required)
 
-**PRIMARY:** hermes-3-llama-3.1-405b via venice (tok/s=26.6, actionable=5)
+**PRIMARY:** olafangensan-glm-4.7-flash-heretic via venice (tok/s=82.4, actionable=6)
 
 ### For synthesis (needs: strong reasoning + large context + uncensored)
 

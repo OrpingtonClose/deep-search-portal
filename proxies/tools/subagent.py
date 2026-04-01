@@ -1020,20 +1020,45 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
         url_match = url_pattern.search(chunk)
         source_url = url_match.group(0) if url_match else ""
 
-        # Infer confidence from language cues
+        # Infer confidence — prefer explicit model-stated confidence over heuristics
         chunk_lower = chunk.lower()
-        if any(w in chunk_lower for w in ("confirmed", "verified", "visited", "in stock", "product page")):
-            confidence = 0.9
-        elif any(w in chunk_lower for w in ("found", "listed", "available", "ships to")):
-            confidence = 0.7
-        elif any(w in chunk_lower for w in ("mentioned", "discussed", "referenced", "suggests")):
-            confidence = 0.5
-        elif any(w in chunk_lower for w in ("speculative", "unverified", "rumor", "unclear")):
-            confidence = 0.3
-        elif any(w in chunk_lower for w in ("[tool_error]", "[access blocked]", "[censorship")):
-            confidence = 0.2
-        else:
-            confidence = 0.5
+        confidence = None
+
+        # 1) Extract explicit confidence if the model provided one
+        explicit_match = re.search(r'confidence[:\s]+([\d.]+)', chunk_lower)
+        if explicit_match:
+            try:
+                val = float(explicit_match.group(1))
+                if 0.0 <= val <= 1.0:
+                    confidence = val
+            except ValueError:
+                pass
+        if confidence is None:
+            # Map categorical confidence labels
+            if "confidence: high" in chunk_lower or "confidence high" in chunk_lower:
+                confidence = 0.8
+            elif "confidence: medium" in chunk_lower or "confidence medium" in chunk_lower:
+                confidence = 0.5
+            elif "confidence: low" in chunk_lower or "confidence low" in chunk_lower:
+                confidence = 0.3
+
+        # 2) Keyword heuristic fallback (only if model didn't state confidence)
+        if confidence is None:
+            if any(w in chunk_lower for w in ("[tool_error]", "[access blocked]", "[censorship")):
+                confidence = 0.2
+            elif any(w in chunk_lower for w in ("speculative", "unverified", "rumor", "unclear")):
+                confidence = 0.3
+            elif re.search(r'\b(?:no|not|nothing|zero|none)\b.{0,20}\b(?:found|available|results?|evidence|vendors?)\b', chunk_lower):
+                # Negative context: "no results found", "not available", "nothing found"
+                confidence = 0.3
+            elif any(w in chunk_lower for w in ("confirmed", "verified", "visited", "in stock", "product page")):
+                confidence = 0.9
+            elif any(w in chunk_lower for w in ("found", "listed", "available", "ships to")):
+                confidence = 0.7
+            elif any(w in chunk_lower for w in ("mentioned", "discussed", "referenced", "suggests")):
+                confidence = 0.5
+            else:
+                confidence = 0.5
 
         conditions.append(AtomicCondition(
             fact=chunk[:500],

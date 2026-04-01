@@ -631,6 +631,56 @@ async def _store_race_results_neo4j(
 
 
 # ============================================================================
+# Tidbits — stream interesting observations from model responses as thoughts
+# ============================================================================
+
+_TIDBITS_PROMPT = """You are an insightful observer analysing multiple AI model responses to the same question. Your job is to provide a brief, engaging stream of interesting tidbits — surprising agreements, notable disagreements, unique angles, or fascinating details that individual models contributed.
+
+Rules:
+- Be concise: 3-6 short bullet points, each one line
+- Use an engaging, conversational tone — like a knowledgeable friend pointing things out
+- Highlight: surprising facts one model found that others missed, interesting disagreements, unexpected angles, particularly clever explanations
+- Use model names (short form) when attributing observations
+- Do NOT summarise the responses — only highlight what's *interesting* about them
+- Do NOT add disclaimers or meta-commentary
+- Use bullet points (•) with no headers"""
+
+
+async def _stream_tidbits(
+    user_query: str,
+    valid_results: list[dict],
+    req_id: str,
+) -> AsyncGenerator[str, None]:
+    """Stream interesting tidbits from model responses as thinking content.
+
+    Calls the SYNTHESIS_MODEL in streaming mode to highlight notable
+    observations about how the models responded differently.
+    """
+    response_parts = []
+    for r in valid_results:
+        short = r["model"].split("/")[-1]
+        # Truncate to keep the tidbits prompt fast
+        snippet = r["content"][:3000]
+        response_parts.append(f"--- {short} ---\n{snippet}\n")
+    responses_text = "\n".join(response_parts)
+
+    messages = [
+        {"role": "system", "content": _TIDBITS_PROMPT},
+        {"role": "user", "content": (
+            f"User question: {user_query}\n\n"
+            f"Model responses:\n{responses_text}\n\n"
+            f"What's interesting about these responses?"
+        )},
+    ]
+
+    async for chunk in stream_model(
+        SYNTHESIS_MODEL, messages,
+        temperature=0.5, max_tokens=1024, req_id=req_id,
+    ):
+        yield chunk
+
+
+# ============================================================================
 # Synthesis — merge all valid responses into the richest possible answer
 # ============================================================================
 
@@ -792,8 +842,15 @@ async def run_tier_race(
         yield "data: [DONE]\n\n"
         return
 
+    # Stream interesting tidbits from the responses as thinking content
     yield _chunk("", reasoning=(
-        f"Synthesising comprehensive answer from {len(valid)} responses "
+        f"\nAnalysing {len(valid)} responses for interesting tidbits...\n\n"
+    ))
+    async for tidbit_chunk in _stream_tidbits(user_query, valid, req_id):
+        yield _chunk("", reasoning=tidbit_chunk)
+
+    yield _chunk("", reasoning=(
+        f"\n\nSynthesising comprehensive answer from {len(valid)} responses "
         f"(via {SYNTHESIS_MODEL.split('/')[-1]})...\n"
     ))
 

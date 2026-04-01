@@ -537,6 +537,7 @@ async def run_subagent(
 
             if "error" in llm_result:
                 err_str = llm_result["error"]
+                recovered = False
                 # Context overflow: trim old tool responses instead of wasting turns
                 if "context_length_exceeded" in str(err_str):
                     trimmed = _trim_tool_responses(agent_messages)
@@ -544,15 +545,37 @@ async def run_subagent(
                         log.info(f"[{sa_id}] Turn {turn}: Context overflow — trimmed {trimmed} old tool responses, retrying")
                         langfuse_config.end_span(turn_span, output={"action": "context_overflow_trim", "trimmed": trimmed})
                         continue  # retry without incrementing consecutive_errors
-                consecutive_errors += 1
-                log.warning(f"[{sa_id}] Turn {turn}: Error: {err_str}")
-                langfuse_config.end_span(turn_span, output={"error": err_str}, level="ERROR")
-                if consecutive_errors >= 3:
-                    result.error = err_str
-                    break
-                agent_messages.append({"role": "assistant", "content": err_str})
-                agent_messages.append({"role": "user", "content": "Error occurred. Try a different approach."})
-                continue
+                    # Trimming didn't help (already trimmed) — try reducing max_tokens
+                    import re as _re
+                    _m = _re.search(r'has (\d+) input tokens', str(err_str))
+                    if _m:
+                        input_toks = int(_m.group(1))
+                        headroom = 32768 - input_toks - 64  # small safety margin
+                        if headroom >= 512:
+                            log.info(f"[{sa_id}] Turn {turn}: Context overflow after trim — reducing max_tokens to {headroom}")
+                            llm_result = await call_llm(
+                                agent_messages, sa_id,
+                                model=SUBAGENT_MODEL,
+                                include_tools=True,
+                                max_tokens=headroom,
+                                temperature=0.3,
+                            )
+                            if "error" not in llm_result:
+                                langfuse_config.end_span(turn_span, output={"action": "context_overflow_reduce_tokens", "max_tokens": headroom})
+                                recovered = True
+                            else:
+                                log.warning(f"[{sa_id}] Turn {turn}: Reduced max_tokens still failed: {llm_result['error']}")
+                                langfuse_config.end_span(turn_span, output={"action": "context_overflow_unrecoverable"}, level="ERROR")
+                if not recovered:
+                    consecutive_errors += 1
+                    log.warning(f"[{sa_id}] Turn {turn}: Error: {err_str}")
+                    langfuse_config.end_span(turn_span, output={"error": err_str}, level="ERROR")
+                    if consecutive_errors >= 3:
+                        result.error = err_str
+                        break
+                    agent_messages.append({"role": "assistant", "content": err_str})
+                    agent_messages.append({"role": "user", "content": "Error occurred. Try a different approach."})
+                    continue
 
             consecutive_errors = 0
             content = llm_result.get("content", "")

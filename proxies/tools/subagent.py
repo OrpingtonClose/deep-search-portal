@@ -995,7 +995,7 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
     conditions: list[AtomicCondition] = []
 
     # Extract URLs mentioned in the text for source attribution
-    url_pattern = re.compile(r'https?://[^\s"\)\]>,]+')
+    url_pattern = re.compile(r'https?://[^\s"\)\]>,;:]+(?<![.!?])')
 
     # Split on common delimiters: numbered items, bullet points, blank lines
     # Each chunk becomes one condition (if substantive).
@@ -1027,7 +1027,7 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
         confidence = None
 
         # 1) Extract explicit confidence if the model provided one
-        explicit_match = re.search(r'confidence[:\s]+([\d.]+)', chunk_lower)
+        explicit_match = re.search(r'confidence[:\s]+(\d+\.?\d*)', chunk_lower)
         if explicit_match:
             try:
                 val = float(explicit_match.group(1))

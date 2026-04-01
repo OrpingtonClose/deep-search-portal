@@ -131,7 +131,7 @@ TIER_MODELS = {
         "anthropic/claude-sonnet-4.6",
         "google/gemini-2.5-pro",
         "openai/gpt-5.4",
-        "x-ai/grok-4.20",
+        "x-ai/grok-4",
         "deepseek/deepseek-v3.2",
         "qwen/qwen3.5-35b-a3b",
         "mistralai/mistral-large-2512",

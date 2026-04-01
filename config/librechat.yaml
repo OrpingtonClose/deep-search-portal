@@ -107,7 +107,7 @@ modelSpecs:
 
     - name: "tier-race-medium"
       label: "Tier Race (Medium)"
-      description: "Races 8 balanced models including Claude Sonnet 4.6, Gemini 2.5 Pro, GPT-5.4, Grok 4.20."
+      description: "Races 8 balanced models including Claude Sonnet 4.6, Gemini 2.5 Pro, GPT-5.4, Grok 4."
       group: "Simple"
       preset:
         endpoint: "Tier Chooser"

@@ -34,9 +34,9 @@ If any of these is wrong, the model silently vanishes. No error is logged.
 |---|---|---|---|
 | Open WebUI | `owui` | 3000 | `/opt/start_openwebui.sh` |
 | SearXNG | `searxng` | 8888 | python -m searx.webapp |
-| Thinking Proxy | `thinking-proxy` | 9100 | `/opt/thinking_proxy.py` |
-| Deep Research Proxy | `deep-research` | 9200 | `/opt/deep_research_proxy.py` |
-| Persistent Proxy | `persistent-proxy` | 9300 | `/opt/persistent_deep_research_proxy.py` |
+| Thinking Proxy | `thinking-proxy` | 9100 | `/opt/deep-search-portal/proxies/thinking_proxy.py` |
+| Deep Research Proxy | `deep-research` | 9200 | `/opt/deep-search-portal/proxies/deep_research_proxy.py` |
+| Persistent Proxy | `persistent-proxy` | 9300 | `/opt/deep-search-portal/proxies/persistent_deep_research_proxy.py` |
 | Cloudflare Tunnel | `cftunnel` | - | cloudflared tunnel run |
 | Knowledge Engine | `knowledge-engine` | - | - |
 | Veritas | `veritas` | - | - |
@@ -159,9 +159,9 @@ python3 /opt/sync_models.py /opt/models.yaml
 | `/opt/startup.sh` | Master startup (all services) |
 | `/opt/.env` | Secrets (API keys, OAuth credentials) |
 | `/opt/openwebui-data/webui.db` | Open WebUI SQLite database |
-| `/opt/thinking_proxy.py` | Thinking proxy (port 9100) |
-| `/opt/persistent_deep_research_proxy.py` | Persistent proxy (port 9300) |
-| `/opt/deep_research_proxy.py` | Deep research proxy (port 9200) |
+| `/opt/deep-search-portal/proxies/thinking_proxy.py` | Thinking proxy (port 9100) |
+| `/opt/deep-search-portal/proxies/persistent_deep_research_proxy.py` | Persistent proxy (port 9300) |
+| `/opt/deep-search-portal/proxies/deep_research_proxy.py` | Deep research proxy (port 9200) |
 
 ## Key Open WebUI internals (for reference)
 

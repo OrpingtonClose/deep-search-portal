@@ -2848,15 +2848,18 @@ async def run_persistent_research(
     # --- Build a checkpointed graph for this request ---
     # Each request gets its own AsyncSqliteSaver connection so that
     # state is persisted to disk after every node execution.
+    # NOTE: AsyncSqliteSaver.from_conn_string() is an async context manager,
+    # so we must use `async with` to get the actual saver instance.
     checkpointer: Any = None
+    _checkpointer_ctx: Any = None  # keep reference to context manager for cleanup
     checkpointed_graph = _persistent_research_graph  # fallback: module-level (no checkpointer)
     try:
         # Ensure the checkpoint DB directory exists
         db_dir = os.path.dirname(_CHECKPOINT_DB_PATH)
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
-        checkpointer = AsyncSqliteSaver.from_conn_string(_CHECKPOINT_DB_PATH)
-        await checkpointer.setup()  # create tables if needed
+        _checkpointer_ctx = AsyncSqliteSaver.from_conn_string(_CHECKPOINT_DB_PATH)
+        checkpointer = await _checkpointer_ctx.__aenter__()
         checkpointed_graph = build_persistent_research_graph(
             checkpointer=checkpointer,
         )
@@ -2871,6 +2874,7 @@ async def run_persistent_research(
             req_id, e,
         )
         checkpointed_graph = _persistent_research_graph
+        _checkpointer_ctx = None
 
     # Start the agentic wiki builder background task (opt-in via env var).
     # Created BEFORE the pipeline producer so it can be passed in and
@@ -2944,10 +2948,10 @@ async def run_persistent_research(
             except asyncio.CancelledError:
                 pass
 
-        # Close the checkpointer connection
-        if checkpointer is not None:
+        # Close the checkpointer connection via context manager
+        if _checkpointer_ctx is not None:
             try:
-                await checkpointer.conn.close()
+                await _checkpointer_ctx.__aexit__(None, None, None)
             except Exception:
                 pass
 

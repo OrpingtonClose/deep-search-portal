@@ -295,15 +295,10 @@ FALLBACK ONLY (use ONLY when primary and secondary return nothing):
 
 {serendipity_instruction}
 
-**ATOMIC CONDITION FORMAT:**
-After gathering information, you must output your findings as atomic conditions.
-When you are done researching, output your findings in this exact JSON format:
-```json
-{{"conditions": [
-    {{"fact": "clear factual statement", "source_url": "url", "confidence": 0.8}},
-    ...
-]}}
-```
+**OUTPUT FORMAT:**
+When you are done researching, write a plain-language summary of everything you found.
+For each finding, state the fact clearly, cite the source URL, and note how confident you are.
+Do NOT use JSON. Just write naturally.
 
 **TOOL USAGE:**
 - You MUST use tools. Never answer from training data alone.
@@ -348,11 +343,12 @@ Whenever you discover a concrete lead — a vendor, website, forum thread, or an
    - Search for the site name + topic to find direct page URLs
 
 **WHEN TO STOP:**
-- You have found 3-10 distinct facts about your angle
+- You have exhausted all promising leads from your tools
 - Additional searches return information you already have (saturation)
 - You have verified key claims across sources
 - Every concrete entity discovered has been cross-referenced via at least 2 source types
-- Every vendor/site/forum lead has been visited with fetch_webpage and content verified"""
+- Every vendor/site/forum lead has been visited with fetch_webpage and content verified
+- There is no minimum or maximum number of findings — report everything useful you found"""
 
 SERENDIPITY_INSTRUCTION = """**SERENDIPITY HUNTING:**
 You are not just looking for direct answers. You are hunting for "happy accidents" --
@@ -366,21 +362,19 @@ When you find a connection that seems:
 Flag it as [SERENDIPITOUS FINDING] and increase your search priority
 for that domain cluster."""
 
-CONDITION_EXTRACTION_PROMPT = """Based on the research you've done so far, extract all key findings as atomic conditions.
+CONDITION_EXTRACTION_PROMPT = """Summarize all key findings from your research so far.
 
-Output ONLY a JSON object with this structure:
-{"conditions": [
-    {"fact": "clear factual statement supported by your research", "source_url": "the URL source", "confidence": 0.9},
-    ...
-]}
+For each finding, write a clear statement of the fact, cite the source URL, and note your confidence level (high/medium/low).
+Write in plain language. Do NOT use JSON.
 
-Rules:
-- Each fact should be a single, clear, verifiable statement
-- Confidence: 0.9 for well-sourced facts, 0.7 for partially verified, 0.5 for single-source, 0.3 for speculative/inferred
-- For speculative findings (reasonable inferences without direct proof), use confidence 0.3-0.4 and note the basis for the inference in the fact text
-- Include the most relevant source URL for each fact
-- Output 3-10 conditions maximum
-- Output ONLY valid JSON, no markdown fences"""
+Focus on:
+- Concrete, verifiable facts you discovered
+- Specific URLs, vendors, sites, forums, and entities you found or visited
+- What you confirmed by actually visiting sites (vs. just seeing a name in search results)
+- Access barriers you hit (blocked, censored, timed out)
+- Speculative inferences (clearly marked as such)
+
+Be thorough — include everything useful, not just 3-10 items."""
 
 GAP_ANALYSIS_PROMPT = """Analyze the current research findings and identify gaps that need deeper investigation.
 
@@ -959,38 +953,28 @@ def _is_llm_refusal(text: str) -> bool:
 
 
 def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicCondition]:
-    """Try to parse atomic conditions from LLM output."""
+    """Parse findings from LLM output into AtomicCondition objects.
+
+    Handles both natural-language summaries (preferred) and legacy JSON
+    format (for backward compatibility with older prompts).
+    """
     if not content:
         return []
 
-    # --- Attempt 1: full JSON parse ---
+    # Reject pure refusals
+    if _is_llm_refusal(content):
+        log.warning("Rejected LLM refusal: %s", content[:120])
+        return []
+
+    # --- Legacy JSON support (backward compat) ---
+    # If the model still outputs JSON despite not being asked to, handle it.
     try:
         cleaned = content.strip()
         if cleaned.startswith("```"):
             cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
             cleaned = re.sub(r'\s*```$', '', cleaned)
         data = json.loads(cleaned)
-        conditions_data = data.get("conditions", [])
-        # JSON parsed successfully — filter refusals per-condition, not whole batch
-        return [
-            AtomicCondition(
-                fact=c.get("fact", ""),
-                source_url=c.get("source_url", ""),
-                confidence=float(c.get("confidence", 0.5)),
-                angle=angle,
-                is_serendipitous=is_bridge,
-            )
-            for c in conditions_data
-            if c.get("fact") and not _is_llm_refusal(c.get("fact", ""))
-        ]
-    except (json.JSONDecodeError, ValueError, AttributeError):
-        pass
-
-    # --- Attempt 2: extract embedded JSON ---
-    json_match = re.search(r'\{[^{}]*"conditions"\s*:\s*\[.*?\]\s*\}', content, re.DOTALL)
-    if json_match:
-        try:
-            data = json.loads(json_match.group())
+        if isinstance(data, dict) and "conditions" in data:
             return [
                 AtomicCondition(
                     fact=c.get("fact", ""),
@@ -1002,25 +986,74 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
                 for c in data.get("conditions", [])
                 if c.get("fact") and not _is_llm_refusal(c.get("fact", ""))
             ]
-        except (json.JSONDecodeError, ValueError):
-            pass
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        pass
 
-    # --- Attempt 3: plaintext fallback ---
-    # Only here do we check the entire content for refusal, because the
-    # content IS the fact text (not JSON wrapping multiple facts).
-    if _is_llm_refusal(content):
-        log.warning("Rejected LLM refusal from plaintext fallback: %s", content[:120])
-        return []
+    # --- Natural language parsing (primary path) ---
+    # The model writes a plain-text summary of findings. We split it into
+    # individual findings by looking for paragraph breaks, numbered lists,
+    # or bullet points — each becomes one AtomicCondition.
+    conditions: list[AtomicCondition] = []
 
-    if len(content.strip()) > 20:
-        return [
-            AtomicCondition(
-                fact=content.strip()[:500],
-                angle=angle,
-                confidence=0.3,
-                is_serendipitous=is_bridge,
-            )
-        ]
+    # Extract URLs mentioned in the text for source attribution
+    url_pattern = re.compile(r'https?://[^\s"\)\]>,]+')
 
-    return []
+    # Split on common delimiters: numbered items, bullet points, blank lines
+    # Each chunk becomes one condition (if substantive).
+    chunks = re.split(
+        r'\n\s*(?:\d+[\.\)]\s+|[-*•]\s+|\n)',
+        content.strip(),
+    )
+    # If no splits found, treat the whole content as one chunk
+    if len(chunks) <= 1:
+        chunks = [p.strip() for p in content.strip().split('\n\n') if p.strip()]
+    if not chunks:
+        chunks = [content.strip()]
+
+    for chunk in chunks:
+        chunk = chunk.strip()
+        if len(chunk) < 20:
+            continue
+        if _is_llm_refusal(chunk):
+            continue
+
+        # Extract first URL as source
+        url_match = url_pattern.search(chunk)
+        source_url = url_match.group(0) if url_match else ""
+
+        # Infer confidence from language cues
+        chunk_lower = chunk.lower()
+        if any(w in chunk_lower for w in ("confirmed", "verified", "visited", "in stock", "product page")):
+            confidence = 0.9
+        elif any(w in chunk_lower for w in ("found", "listed", "available", "ships to")):
+            confidence = 0.7
+        elif any(w in chunk_lower for w in ("mentioned", "discussed", "referenced", "suggests")):
+            confidence = 0.5
+        elif any(w in chunk_lower for w in ("speculative", "unverified", "rumor", "unclear")):
+            confidence = 0.3
+        elif any(w in chunk_lower for w in ("[tool_error]", "[access blocked]", "[censorship")):
+            confidence = 0.2
+        else:
+            confidence = 0.5
+
+        conditions.append(AtomicCondition(
+            fact=chunk[:500],
+            source_url=source_url,
+            confidence=confidence,
+            angle=angle,
+            is_serendipitous=is_bridge,
+        ))
+
+    # If we got no structured chunks but content is substantive, keep it as one condition
+    if not conditions and len(content.strip()) > 20:
+        url_match = url_pattern.search(content)
+        conditions.append(AtomicCondition(
+            fact=content.strip()[:500],
+            source_url=url_match.group(0) if url_match else "",
+            confidence=0.5,
+            angle=angle,
+            is_serendipitous=is_bridge,
+        ))
+
+    return conditions
 

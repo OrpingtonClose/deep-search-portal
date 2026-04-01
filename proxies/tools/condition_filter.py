@@ -1,96 +1,33 @@
 """
-Pre-synthesis condition filter — categorize and prioritize conditions
-so actionable findings always surface first in the synthesis prompt.
+Pre-synthesis condition filter — simple pass-through that preserves all
+findings for synthesis without lossy regex categorization.
 
-Problem addressed: The synthesis LLM reads 800+ conditions where 700 are
-"no results" / errors / negative findings, drowning out the 7 actual
-vendor leads.  By categorizing conditions before feeding them to synthesis,
-we ensure actionable findings are placed first and dominate the LLM's
-attention window.
+Previous version had 239 lines of fragile regex patterns that misclassified
+natural-language findings (e.g., a verified vendor lead containing the word
+"not" would be classified as NEGATIVE).  This version passes all conditions
+through to synthesis and lets the LLM handle prioritization.
 
-Categories (from Kimi's solution, adapted to our AtomicCondition model):
-  PROCUREMENT_VERIFIED — researcher visited vendor site and confirmed product availability
-  ACTIONABLE  — concrete entities, vendors, URLs, prices, contacts, methods
-  CONTEXT     — legal/regulatory, background knowledge, general information
-  NEGATIVE    — "not found", "no evidence", "no results" conclusions
-  ERROR       — [TOOL_ERROR], [ACCESS BLOCKED], [CENSORSHIP DETECTED], tool failures
-
-Usage in the synthesis pipeline:
-    from .condition_filter import categorize_and_prioritize
-    prioritized = categorize_and_prioritize(subagent_results)
-    # prioritized.to_synthesis_text() → PROCUREMENT_VERIFIED first, then ACTIONABLE, then CONTEXT, ...
+The CategorizedConditions dataclass is kept for backward compatibility with
+synthesis.py's `categorize_and_prioritize()` call, but all conditions are
+placed in a single flat list ordered by confidence (highest first).
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 from .models import AtomicCondition, SubagentResult
 
 
 # ---------------------------------------------------------------------------
-# Category detection patterns
-# ---------------------------------------------------------------------------
-
-_ERROR_PATTERNS = re.compile(
-    r"(?i)"
-    r"\[TOOL_ERROR\]"
-    r"|\[ACCESS.BLOCKED\]"
-    r"|\[CENSORSHIP.DETECTED\]"
-    r"|Tool error"
-    r"|Tool failed"
-    r"|Unknown tool:"
-    r"|HTTP\s+[45]\d{2}"
-    r"|timed?\s*out"
-    r"|access tiers exhausted"
-    r"|credentials.*missing"
-    r"|No credentials"
-    r"|search error:"
-)
-
-_NEGATIVE_PATTERNS = re.compile(
-    r"(?i)"
-    r"(?:^|\.\s+)no\s+(?:publicly\s+)?(?:documented|verified|confirmed|available|evidence|results?|data|information|records?|cases?|sources?|vendors?|reports?|listings?)\s+(?:were\s+)?(?:found|identified|available|exist|located|detected|discovered)"
-    r"|does\s+not\s+(?:ship|sell|offer|provide|confirm|list|stock|carry)"
-    r"|not\s+(?:publicly\s+)?available"
-    r"|no\s+public\s+(?:evidence|information|data|records)"
-    r"|could\s+not\s+(?:find|locate|identify|verify|confirm)"
-    r"|(?:zero|0)\s+results"
-    r"|nothing\s+(?:was\s+)?found"
-    r"|no\s+(?:relevant\s+)?(?:matches|hits|listings)"
-)
-
-# Procurement-verified: the researcher actually visited the site and confirmed
-# product availability.  These are the highest-value conditions.
-_PROCUREMENT_VERIFIED_PATTERNS = re.compile(
-    r"(?i)"
-    r"(?:confirmed|verified|listed|available|in.stock)\s+(?:on|at)\s+(?:https?://\S+|the\s+site|the\s+website)"
-    r"|(?:product\s+page|product\s+listing|item\s+listed)"
-    r"|(?:visited|fetched|scraped|checked)\s+(?:the\s+)?(?:site|website|page|URL|vendor).*?(?:confirmed|verified|listed|available|in.stock|product|price|ships)"
-    r"|(?:price\s+(?:is|was|listed|shown|displayed)\s+(?:\$|€|£|PLN|EUR|USD|GBP|\d))"
-    r"|(?:ships?\s+to\s+\w+.*?(?:confirmed|verified|available))"
-    r"|(?:add\s+to\s+cart|checkout|order\s+(?:page|form|button))"
-)
-
-_ACTIONABLE_PATTERNS = re.compile(
-    r"(?i)"
-    r"(?:https?://\S+)"                    # contains a URL
-    r"|(?:\$\d+|\€\d+|PLN\s*\d+|\d+\s*(?:PLN|EUR|USD|GBP))"  # contains pricing
-    r"|(?:ships?\s+(?:to|via|through))"     # shipping information
-    r"|(?:(?:contact|order|buy|purchase)\s+(?:via|through|at|from))"  # purchase instructions
-    r"|(?:Telegram|Discord|Signal|Threema|WhatsApp)\s+(?:group|channel|contact|@)"  # messaging contacts
-    r"|(?:vendor|supplier|seller|shop|store|pharmacy|source)\s*(?::|named|called)"  # vendor names
-    r"|(?:ships?\s+DHL|ships?\s+FedEx|ships?\s+EMS)"  # specific shipping methods
-)
-
-
-# ---------------------------------------------------------------------------
-# Categorized result
+# Categorized result (simplified — no regex categorization)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class CategorizedConditions:
-    """Conditions split into priority categories for synthesis."""
+    """All conditions in a single flat list, ordered by confidence."""
+    all_findings: list[AtomicCondition] = field(default_factory=list)
+
+    # Legacy fields kept for backward compat — always empty
     procurement_verified: list[AtomicCondition] = field(default_factory=list)
     actionable: list[AtomicCondition] = field(default_factory=list)
     context: list[AtomicCondition] = field(default_factory=list)
@@ -99,115 +36,41 @@ class CategorizedConditions:
 
     @property
     def total(self) -> int:
-        return (
-            len(self.procurement_verified) + len(self.actionable)
-            + len(self.context) + len(self.negative) + len(self.errors)
-        )
+        return len(self.all_findings)
 
     def summary_line(self) -> str:
-        return (
-            f"{len(self.procurement_verified)} procurement-verified, "
-            f"{len(self.actionable)} actionable, "
-            f"{len(self.context)} context, "
-            f"{len(self.negative)} negative, "
-            f"{len(self.errors)} errors"
-        )
+        return f"{len(self.all_findings)} total findings"
 
     def to_synthesis_text(self, max_negative: int = 5, max_errors: int = 3) -> str:
-        """Format conditions for the synthesis prompt.
+        """Format all conditions for the synthesis prompt.
 
-        PROCUREMENT-VERIFIED conditions come first (site visited, product confirmed).
-        ACTIONABLE conditions come second (concrete leads).
-        CONTEXT conditions come third (full detail).
-        NEGATIVE conditions are summarized (only top N, rest as count).
-        ERROR conditions are briefly noted (only count + sample).
+        Conditions are listed in confidence order (highest first).
+        No regex-based categorization — synthesis LLM handles prioritization.
         """
+        if not self.all_findings:
+            return ""
+
         parts: list[str] = []
-
-        if self.procurement_verified:
-            parts.append(
-                "### PROCUREMENT-VERIFIED FINDINGS "
-                "(HIGHEST priority — researcher visited the site and confirmed product availability)"
-            )
-            for c in self.procurement_verified:
-                parts.append(c.to_text())
-
-        if self.actionable:
-            parts.append("\n### ACTIONABLE FINDINGS (concrete leads — vendors, URLs, prices)")
-            for c in self.actionable:
-                parts.append(c.to_text())
-
-        if self.context:
-            parts.append("\n### CONTEXTUAL FINDINGS (background/regulatory information)")
-            for c in self.context:
-                parts.append(c.to_text())
-
-        if self.negative:
-            parts.append(f"\n### NEGATIVE FINDINGS ({len(self.negative)} total — topics where nothing was found)")
-            for c in self.negative[:max_negative]:
-                parts.append(c.to_text())
-            remaining = len(self.negative) - max_negative
-            if remaining > 0:
-                parts.append(f"  ... and {remaining} more negative findings omitted")
-
-        if self.errors:
-            parts.append(f"\n### TOOL ERRORS ({len(self.errors)} total — access barriers encountered)")
-            for c in self.errors[:max_errors]:
-                fact_short = c.fact[:150]
-                parts.append(f"- {fact_short}")
-            remaining = len(self.errors) - max_errors
-            if remaining > 0:
-                parts.append(f"  ... and {remaining} more tool errors omitted")
+        parts.append("### RESEARCH FINDINGS (ordered by confidence, highest first)")
+        parts.append("")
+        for c in self.all_findings:
+            parts.append(c.to_text())
 
         return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
-# Categorization logic
+# Simple pass-through (replaces regex categorization)
 # ---------------------------------------------------------------------------
-
-def categorize_condition(c: AtomicCondition) -> str:
-    """Categorize a single condition.
-
-    Returns one of: "procurement_verified", "actionable", "context",
-    "negative", "error".
-    """
-    fact = c.fact
-
-    # Errors first — tool failures, access blocks
-    if _ERROR_PATTERNS.search(fact):
-        return "error"
-
-    # Procurement-verified — researcher visited the actual site and
-    # confirmed product availability (highest value for transactional queries).
-    # Checked BEFORE negative so "visited site, product listed, does not ship"
-    # is correctly classified as procurement-verified rather than negative.
-    if _PROCUREMENT_VERIFIED_PATTERNS.search(fact):
-        return "procurement_verified"
-
-    # Negative findings — "nothing found" conclusions
-    if _NEGATIVE_PATTERNS.search(fact):
-        return "negative"
-
-    # Actionable — concrete entities, URLs, prices, contacts
-    if _ACTIONABLE_PATTERNS.search(fact):
-        return "actionable"
-
-    # High-confidence findings with real source URLs are likely actionable
-    if c.confidence >= 0.7 and c.source_url and c.source_url.startswith("http"):
-        return "actionable"
-
-    # Everything else is context
-    return "context"
-
 
 def categorize_and_prioritize(
     subagent_results: list[SubagentResult],
 ) -> CategorizedConditions:
-    """Categorize all conditions from subagent results.
+    """Collect all conditions from subagent results, sorted by confidence.
 
-    Returns a CategorizedConditions object with conditions sorted by category
-    and ready for synthesis.
+    No regex categorization — all findings are preserved and passed to
+    synthesis in confidence order.  The synthesis LLM is responsible for
+    determining which findings are actionable vs. contextual.
     """
     result = CategorizedConditions()
 
@@ -215,24 +78,9 @@ def categorize_and_prioritize(
         for c in (sr.conditions or []):
             if not c.fact or not c.fact.strip():
                 continue
+            result.all_findings.append(c)
 
-            category = categorize_condition(c)
-            if category == "procurement_verified":
-                result.procurement_verified.append(c)
-            elif category == "actionable":
-                result.actionable.append(c)
-            elif category == "negative":
-                result.negative.append(c)
-            elif category == "error":
-                result.errors.append(c)
-            else:
-                result.context.append(c)
-
-    # Sort procurement-verified by confidence (highest first)
-    result.procurement_verified.sort(key=lambda c: c.confidence, reverse=True)
-    # Sort actionable by confidence (highest first)
-    result.actionable.sort(key=lambda c: c.confidence, reverse=True)
-    # Sort context by confidence
-    result.context.sort(key=lambda c: c.confidence, reverse=True)
+    # Sort by confidence (highest first)
+    result.all_findings.sort(key=lambda c: c.confidence, reverse=True)
 
     return result

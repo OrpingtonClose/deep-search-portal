@@ -474,7 +474,12 @@ _UNGOVERNED_HEAVY_TOOLS: set[str] = {
 
 # Tools that access the internet (governed by rate limiter).
 # Excludes heavy local-compute tools that would starve the global semaphore.
-_GOVERNED_TOOLS = (_CACHEABLE_TOOLS | {"fetch_webpage"}) - _UNGOVERNED_HEAVY_TOOLS
+# Sicry operational tools (fetch/check_tor/renew_identity) are NOT cacheable
+# but still need rate governing to avoid overwhelming Tor circuits.
+_GOVERNED_TOOLS = (
+    (_CACHEABLE_TOOLS | {"fetch_webpage", "sicry_fetch", "sicry_check_tor", "sicry_renew_identity"})
+    - _UNGOVERNED_HEAVY_TOOLS
+)
 
 
 def _extract_query_for_cache(tool_name: str, arguments: dict) -> str:

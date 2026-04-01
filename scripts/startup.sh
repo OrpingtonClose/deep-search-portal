@@ -109,7 +109,7 @@ wait_for_health "http://localhost:${KE_PORT}/health" "Knowledge Engine" 30 || tr
 # --- Tor Daemon (required for Sicry dark web search + onion_fetch) ---
 if ! pgrep -f "tor " > /dev/null 2>&1 && ! pgrep -x "tor" > /dev/null 2>&1; then
     if command -v tor > /dev/null 2>&1; then
-        tor --RunAsDaemon 1 --SocksPort 9050 --ControlPort 9051 --CookieAuthentication 0 --HashedControlPassword "" 2>&1 || echo "WARNING: Tor daemon failed to start"
+        tor --RunAsDaemon 1 --SocksPort 9050 --ControlPort 9051 --CookieAuthentication 1 2>&1 || echo "WARNING: Tor daemon failed to start"
         echo "Tor daemon starting on SOCKS5 :9050, ControlPort :9051..."
         sleep 3
     else

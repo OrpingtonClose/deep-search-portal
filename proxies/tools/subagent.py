@@ -999,9 +999,11 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
 
     # Split on common delimiters: numbered items, bullet points, blank lines
     # Each chunk becomes one condition (if substantive).
+    # Strip leading number prefix from the first item so all chunks are clean
+    # (the regex only splits on \n-prefixed delimiters, so item 1 keeps its "1. ").
     chunks = re.split(
         r'\n\s*(?:\d+[\.\)]\s+|[-*•]\s+|\n)',
-        content.strip(),
+        re.sub(r'^\s*\d+[\.\)]\s+', '', content.strip()),
     )
     # If no splits found, treat the whole content as one chunk
     if len(chunks) <= 1:

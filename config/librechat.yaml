@@ -1,11 +1,11 @@
 # =============================================================================
-# Deep Search Portal — LibreChat Configuration
+# Deep Search Portal - LibreChat Configuration
 #
 # Models are organized into groups:
-#   Simple       — Go-to defaults: Grok 4.20 + multi-model consortiums
-#   Miro         — Miro research engines (deep, quick, focused)
-#   Grok         — All individual Grok models (text, code, image)
-#   Experimental — Swarm, extra consortium tiers, older Grok variants
+#   Simple       - Go-to defaults: Grok 4.20 + multi-model consortiums
+#   Miro         - Miro research engines (deep, quick, focused, swarm)
+#   Grok         - All individual Grok models (text, code, image)
+#   Experimental - Mistral thinking, extra consortium tiers, tier chooser, wiki
 #
 # Proxy services (same VM or reachable via HTTP):
 #   Thinking Proxy:           port 9100
@@ -15,20 +15,23 @@
 #   Swarm Proxy:              port 9500
 #   G0DM0D3 Proxy:            port 9600
 #   xAI Native Proxy:         port 9700
+#   Persistent Wiki:          port 9800
+#   Sprint Wiki:              port 9850
+#   Tier Chooser Proxy:       port 9900
 # =============================================================================
 
 version: 1.3.5
 cache: true
 
 # ---------------------------------------------------------------------------
-# Model Specs — what the user sees in the dropdown
+# Model Specs - what the user sees in the dropdown
 # ---------------------------------------------------------------------------
 modelSpecs:
   enforce: true
   prioritize: true
   list:
     # =======================================================================
-    #  SIMPLE — Grok 4.20 + multi-model consortiums (race across providers)
+    #  SIMPLE - Grok 4.20 + multi-model consortiums (race across providers)
     # =======================================================================
     - name: "xai-grok-420-multiagent"
       label: "Grok 4.20"
@@ -64,7 +67,7 @@ modelSpecs:
         model: "ultraplinian-power"
 
     # =======================================================================
-    #  MIRO — Miro research engines
+    #  MIRO - Miro research engines
     # =======================================================================
     - name: "deep-researcher"
       label: "Miro Deep"
@@ -99,7 +102,7 @@ modelSpecs:
         model: "swarm-miroflow"
 
     # =======================================================================
-    #  GROK — All individual Grok models (text, code, image generation)
+    #  GROK - All individual Grok models (text, code, image generation)
     # =======================================================================
 
     # --- Grok 4.20 ---
@@ -172,7 +175,7 @@ modelSpecs:
 
     - name: "xai-grok-3-fast"
       label: "Grok 3 Fast"
-      description: "Fast, cheap, proven uncensored. The engine behind Miro's research subagents."
+      description: "Fast, cheap, proven uncensored. The engine behind Miro research subagents."
       group: "Grok"
       preset:
         endpoint: "xAI Native"
@@ -214,7 +217,7 @@ modelSpecs:
     # --- Race modes ---
     - name: "xai-race-fast"
       label: "Grok Race (Fast)"
-      description: "Races 3 fastest Grok models — Grok 3 Fast, Grok 4.1 Fast, Grok Code — picks the best."
+      description: "Races 3 fastest Grok models - Grok 3 Fast, Grok 4.1 Fast, Grok Code - picks the best."
       group: "Grok"
       preset:
         endpoint: "xAI Native"
@@ -222,7 +225,7 @@ modelSpecs:
 
     - name: "xai-race-smart"
       label: "Grok Race (Smart)"
-      description: "Races 3 smartest Grok reasoning models — Grok 3, Grok 4.1, Grok 4.20 — picks the deepest."
+      description: "Races 3 smartest Grok reasoning models - Grok 3, Grok 4.1, Grok 4.20 - picks the deepest."
       group: "Grok"
       preset:
         endpoint: "xAI Native"
@@ -237,7 +240,7 @@ modelSpecs:
         model: "xai-race-all"
 
     # =======================================================================
-    #  EXPERIMENTAL — Extra consortium tiers, Mistral, multi-model research
+    #  EXPERIMENTAL - Mistral thinking, extra consortium tiers, tier chooser, wiki
     # =======================================================================
     - name: "thinking-chat"
       label: "Mistral Thinking"
@@ -278,6 +281,112 @@ modelSpecs:
       preset:
         endpoint: "G0DM0D3"
         model: "ultraplinian-research"
+
+    # --- Wiki variants (research + live encyclopedia) ---
+    - name: "deep-researcher-wiki"
+      label: "Miro Deep + Wiki"
+      description: "Same as Miro Deep but also builds a live knowledge encyclopedia as research progresses."
+      group: "Experimental"
+      preset:
+        endpoint: "Persistent MiroFlow Wiki"
+        model: "persistent-miroflow-wiki"
+
+    - name: "quick-researcher-wiki"
+      label: "Miro Quick + Wiki"
+      description: "Same as Miro Quick but also builds a live knowledge encyclopedia. Fast 2-5 minute research with an incrementally constructed wiki article."
+      group: "Experimental"
+      preset:
+        endpoint: "MiroFlow Sprint Wiki"
+        model: "miroflow-sprint-wiki"
+
+    # --- Tier Chooser (multi-provider race by intelligence tier) ---
+    - name: "tier-race-quick"
+      label: "Tier Race (Quick)"
+      description: "Races 6 fast models from Google, xAI, DeepSeek, OpenAI, Mistral, Qwen. Returns the best answer. Cheapest and fastest tier."
+      group: "Experimental"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-race-quick"
+
+    - name: "tier-race-medium"
+      label: "Tier Race (Medium)"
+      description: "Races 8 balanced models including Claude Sonnet 4.6, Gemini 3 Pro, GPT-5.4, Grok 4.1 Reasoning, GLM-5. Best daily-driver tier."
+      group: "Experimental"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-race-medium"
+
+    - name: "tier-race-full-throttle"
+      label: "Tier Race (Full Throttle)"
+      description: "Races 7 flagship models including Claude Opus 4.6, GPT-5, Grok 4.20 Reasoning, DeepSeek R1, GLM-4.7. Maximum intelligence."
+      group: "Experimental"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-race-full-throttle"
+
+    - name: "tier-gemini-flash"
+      label: "Tier - Gemini 2.5 Flash"
+      description: "Google Gemini 2.5 Flash. Ultra-fast, 1M context, multimodal. Direct to Google API."
+      group: "Experimental"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-google/gemini-2.5-flash"
+
+    - name: "tier-deepseek-chat"
+      label: "Tier - DeepSeek Chat"
+      description: "DeepSeek V3. Cheapest strong model available. Direct to DeepSeek API."
+      group: "Experimental"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-deepseek/deepseek-chat"
+
+    - name: "tier-claude-sonnet"
+      label: "Tier - Claude Sonnet 4-6"
+      description: "Anthropic Claude Sonnet 4-6. Frequently the practical winner in blind tests. Direct to Anthropic API."
+      group: "Experimental"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-anthropic/claude-sonnet-4-6"
+
+    - name: "tier-gpt54"
+      label: "Tier - GPT-5.4"
+      description: "OpenAI GPT-5.4 Chat. Strong all-rounder. Direct to OpenAI API."
+      group: "Experimental"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-openai/gpt-5.4"
+
+    - name: "tier-claude-opus"
+      label: "Tier - Claude Opus 4-6"
+      description: "Anthropic Claude Opus 4-6. Reasoning king with max-effort thinking. Direct to Anthropic API."
+      group: "Experimental"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-anthropic/claude-opus-4-6"
+
+    - name: "tier-grok-420"
+      label: "Tier - Grok 4.20 Reasoning"
+      description: "xAI Grok 4.20 with extended thinking. 2M context, web+X search. Direct to xAI API."
+      group: "Experimental"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-x-ai/grok-4.20-0309-reasoning"
+
+    - name: "tier-deepseek-r1"
+      label: "Tier - DeepSeek R1"
+      description: "DeepSeek Reasoner (R1). Math and coding standout with chain-of-thought reasoning. Direct to DeepSeek API."
+      group: "Experimental"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-deepseek/deepseek-reasoner"
+
+    - name: "tier-gpt5"
+      label: "Tier - GPT-5"
+      description: "OpenAI GPT-5. Flagship model, highest capability ceiling. Direct to OpenAI API."
+      group: "Experimental"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-openai/gpt-5"
 
 # ---------------------------------------------------------------------------
 # Backend endpoint wiring (users don't see this directly)
@@ -334,6 +443,46 @@ endpoints:
       titleMethod: "completion"
       summarize: false
       maxContextTokens: 1000000
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+
+    - name: "Persistent MiroFlow Wiki"
+      apiKey: "not-needed"
+      baseURL: "http://host.docker.internal:9800/v1"
+      models:
+        default:
+          - "persistent-miroflow-wiki"
+        fetch: true
+      titleConvo: true
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
+      summarize: false
+      maxContextTokens: 1000000
+      artifacts: true
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+
+    - name: "MiroFlow Sprint Wiki"
+      apiKey: "not-needed"
+      baseURL: "http://host.docker.internal:9850/v1"
+      models:
+        default:
+          - "miroflow-sprint-wiki"
+        fetch: true
+      titleConvo: true
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
+      summarize: false
+      maxContextTokens: 1000000
+      artifacts: true
       dropParams:
         - "stop"
         - "user"
@@ -431,6 +580,26 @@ endpoints:
       titleModel: "mistral-large-thinking"
       titleEndpoint: "Mistral Thinking"
       titleMethod: "completion"
+      summarize: false
+      forcePrompt: false
+      maxContextTokens: 2000000
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+
+    - name: "Tier Chooser"
+      apiKey: "not-needed"
+      baseURL: "http://host.docker.internal:9900/v1"
+      models:
+        default:
+          - "tier-race-quick"
+          - "tier-race-medium"
+          - "tier-race-full-throttle"
+        fetch: true
+      titleConvo: true
+      titleModel: "tier-race-quick"
       summarize: false
       forcePrompt: false
       maxContextTokens: 2000000

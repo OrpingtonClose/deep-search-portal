@@ -1034,6 +1034,35 @@ NATIVE_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_knowledge_wiki",
+            "description": (
+                "Build a structured, Wikipedia-style knowledge encyclopedia from all "
+                "research findings accumulated so far. An LLM agent reads the current "
+                "conditions, synthesizes them into coherent encyclopedia prose with "
+                "inline citations, confidence notes, and thematic organization, then "
+                "emits the result as an interactive HTML artifact in the side pane. "
+                "Call this when you have gathered enough findings to produce a useful "
+                "knowledge base article, or when the user explicitly requests a wiki. "
+                "Each call replaces the previous wiki version."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": (
+                            "Optional focus topic for the wiki. If not provided, "
+                            "covers all research findings for the current query."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
     # -----------------------------------------------------------------------
     # Sicry Dark Web Search Tools (Tor/.onion access via Sicry MCP)
     # -----------------------------------------------------------------------

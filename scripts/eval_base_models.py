@@ -124,12 +124,15 @@ def verify_math_answer(text: str) -> int:
     found_c = any(abs(n - EXPECTED_FIELD_C) < MATH_TOLERANCE for n in float_numbers)
 
     # Check if numbers sum close to 2800
+    # Filter out small numbers that are likely from the problem statement
+    # (2, 3, 1.5, 40, 25, 2800) to avoid false positives
+    candidate_numbers = [n for n in float_numbers if n > 50]
     has_correct_sum = False
-    for i, a in enumerate(float_numbers):
-        for j, b in enumerate(float_numbers):
+    for i, a in enumerate(candidate_numbers):
+        for j, b in enumerate(candidate_numbers):
             if j == i:
                 continue
-            for k, c in enumerate(float_numbers):
+            for k, c in enumerate(candidate_numbers):
                 if k == i or k == j:
                     continue
                 if abs(a + b + c - 2800) < 30:
@@ -458,7 +461,8 @@ async def call_model_streaming(
                     error_body += chunk.decode("utf-8", errors="replace")
                     if len(error_body) > 2000:
                         break
-                result["error"] = f"HTTP {response.status_code}: {error_body[:500]}"
+                sanitized = re.sub(r'"user_id":"[^"]*"', '"user_id":"[REDACTED]"', error_body[:500])
+                result["error"] = f"HTTP {response.status_code}: {sanitized}"
                 result["total_time_s"] = round(time.monotonic() - start_time, 2)
                 return result
 

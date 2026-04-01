@@ -9,6 +9,7 @@ we ensure actionable findings are placed first and dominate the LLM's
 attention window.
 
 Categories (from Kimi's solution, adapted to our AtomicCondition model):
+  PROCUREMENT_VERIFIED — researcher visited vendor site and confirmed product availability
   ACTIONABLE  — concrete entities, vendors, URLs, prices, contacts, methods
   CONTEXT     — legal/regulatory, background knowledge, general information
   NEGATIVE    — "not found", "no evidence", "no results" conclusions
@@ -17,7 +18,7 @@ Categories (from Kimi's solution, adapted to our AtomicCondition model):
 Usage in the synthesis pipeline:
     from .condition_filter import categorize_and_prioritize
     prioritized = categorize_and_prioritize(subagent_results)
-    # prioritized.to_synthesis_text() → ACTIONABLE first, then CONTEXT, then brief NEGATIVE summary
+    # prioritized.to_synthesis_text() → PROCUREMENT_VERIFIED first, then ACTIONABLE, then CONTEXT, ...
 """
 from __future__ import annotations
 
@@ -59,6 +60,18 @@ _NEGATIVE_PATTERNS = re.compile(
     r"|no\s+(?:relevant\s+)?(?:matches|hits|listings)"
 )
 
+# Procurement-verified: the researcher actually visited the site and confirmed
+# product availability.  These are the highest-value conditions.
+_PROCUREMENT_VERIFIED_PATTERNS = re.compile(
+    r"(?i)"
+    r"(?:confirmed|verified|listed|available|in.stock)\s+(?:on|at)\s+(?:https?://\S+|the\s+site|the\s+website)"
+    r"|(?:product\s+page|product\s+listing|item\s+listed)"
+    r"|(?:visited|fetched|scraped|checked)\s+(?:the\s+)?(?:site|website|page|URL|vendor)"
+    r"|(?:price\s+(?:is|was|listed|shown|displayed)\s+)"
+    r"|(?:ships?\s+to\s+\w+.*?(?:confirmed|verified|available))"
+    r"|(?:add\s+to\s+cart|checkout|order\s+(?:page|form|button))"
+)
+
 _ACTIONABLE_PATTERNS = re.compile(
     r"(?i)"
     r"(?:https?://\S+)"                    # contains a URL
@@ -78,6 +91,7 @@ _ACTIONABLE_PATTERNS = re.compile(
 @dataclass
 class CategorizedConditions:
     """Conditions split into priority categories for synthesis."""
+    procurement_verified: list[AtomicCondition] = field(default_factory=list)
     actionable: list[AtomicCondition] = field(default_factory=list)
     context: list[AtomicCondition] = field(default_factory=list)
     negative: list[AtomicCondition] = field(default_factory=list)
@@ -85,10 +99,14 @@ class CategorizedConditions:
 
     @property
     def total(self) -> int:
-        return len(self.actionable) + len(self.context) + len(self.negative) + len(self.errors)
+        return (
+            len(self.procurement_verified) + len(self.actionable)
+            + len(self.context) + len(self.negative) + len(self.errors)
+        )
 
     def summary_line(self) -> str:
         return (
+            f"{len(self.procurement_verified)} procurement-verified, "
             f"{len(self.actionable)} actionable, "
             f"{len(self.context)} context, "
             f"{len(self.negative)} negative, "
@@ -98,15 +116,24 @@ class CategorizedConditions:
     def to_synthesis_text(self, max_negative: int = 5, max_errors: int = 3) -> str:
         """Format conditions for the synthesis prompt.
 
-        ACTIONABLE conditions come first (full detail).
-        CONTEXT conditions come second (full detail).
+        PROCUREMENT-VERIFIED conditions come first (site visited, product confirmed).
+        ACTIONABLE conditions come second (concrete leads).
+        CONTEXT conditions come third (full detail).
         NEGATIVE conditions are summarized (only top N, rest as count).
         ERROR conditions are briefly noted (only count + sample).
         """
         parts: list[str] = []
 
+        if self.procurement_verified:
+            parts.append(
+                "### PROCUREMENT-VERIFIED FINDINGS "
+                "(HIGHEST priority — researcher visited the site and confirmed product availability)"
+            )
+            for c in self.procurement_verified:
+                parts.append(c.to_text())
+
         if self.actionable:
-            parts.append("### ACTIONABLE FINDINGS (highest priority — these are concrete leads)")
+            parts.append("\n### ACTIONABLE FINDINGS (concrete leads — vendors, URLs, prices)")
             for c in self.actionable:
                 parts.append(c.to_text())
 
@@ -142,7 +169,8 @@ class CategorizedConditions:
 def categorize_condition(c: AtomicCondition) -> str:
     """Categorize a single condition.
 
-    Returns one of: "actionable", "context", "negative", "error".
+    Returns one of: "procurement_verified", "actionable", "context",
+    "negative", "error".
     """
     fact = c.fact
 
@@ -153,6 +181,11 @@ def categorize_condition(c: AtomicCondition) -> str:
     # Negative findings — "nothing found" conclusions
     if _NEGATIVE_PATTERNS.search(fact):
         return "negative"
+
+    # Procurement-verified — researcher visited the actual site and
+    # confirmed product availability (highest value for transactional queries)
+    if _PROCUREMENT_VERIFIED_PATTERNS.search(fact):
+        return "procurement_verified"
 
     # Actionable — concrete entities, URLs, prices, contacts
     if _ACTIONABLE_PATTERNS.search(fact):
@@ -182,7 +215,9 @@ def categorize_and_prioritize(
                 continue
 
             category = categorize_condition(c)
-            if category == "actionable":
+            if category == "procurement_verified":
+                result.procurement_verified.append(c)
+            elif category == "actionable":
                 result.actionable.append(c)
             elif category == "negative":
                 result.negative.append(c)
@@ -191,6 +226,8 @@ def categorize_and_prioritize(
             else:
                 result.context.append(c)
 
+    # Sort procurement-verified by confidence (highest first)
+    result.procurement_verified.sort(key=lambda c: c.confidence, reverse=True)
     # Sort actionable by confidence (highest first)
     result.actionable.sort(key=lambda c: c.confidence, reverse=True)
     # Sort context by confidence

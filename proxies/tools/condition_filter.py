@@ -66,7 +66,7 @@ _PROCUREMENT_VERIFIED_PATTERNS = re.compile(
     r"(?i)"
     r"(?:confirmed|verified|listed|available|in.stock)\s+(?:on|at)\s+(?:https?://\S+|the\s+site|the\s+website)"
     r"|(?:product\s+page|product\s+listing|item\s+listed)"
-    r"|(?:visited|fetched|scraped|checked)\s+(?:the\s+)?(?:site|website|page|URL|vendor)"
+    r"|(?:visited|fetched|scraped|checked)\s+(?:the\s+)?(?:site|website|page|URL|vendor).*?(?:confirmed|verified|listed|available|in.stock|product|price|ships)"
     r"|(?:price\s+(?:is|was|listed|shown|displayed)\s+)"
     r"|(?:ships?\s+to\s+\w+.*?(?:confirmed|verified|available))"
     r"|(?:add\s+to\s+cart|checkout|order\s+(?:page|form|button))"
@@ -178,14 +178,16 @@ def categorize_condition(c: AtomicCondition) -> str:
     if _ERROR_PATTERNS.search(fact):
         return "error"
 
+    # Procurement-verified — researcher visited the actual site and
+    # confirmed product availability (highest value for transactional queries).
+    # Checked BEFORE negative so "visited site, product listed, does not ship"
+    # is correctly classified as procurement-verified rather than negative.
+    if _PROCUREMENT_VERIFIED_PATTERNS.search(fact):
+        return "procurement_verified"
+
     # Negative findings — "nothing found" conclusions
     if _NEGATIVE_PATTERNS.search(fact):
         return "negative"
-
-    # Procurement-verified — researcher visited the actual site and
-    # confirmed product availability (highest value for transactional queries)
-    if _PROCUREMENT_VERIFIED_PATTERNS.search(fact):
-        return "procurement_verified"
 
     # Actionable — concrete entities, URLs, prices, contacts
     if _ACTIONABLE_PATTERNS.search(fact):

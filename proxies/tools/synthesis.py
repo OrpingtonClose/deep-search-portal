@@ -579,10 +579,9 @@ async def _wiki_agent_loop(
                     f"\n{wiki_html}\n"
                     f":::\n\n"
                 )
-                for i in range(0, len(artifact_block), _WIKI_AGENT_CHUNK_SIZE):
-                    await output_queue.put(
-                        chunk_fn(artifact_block[i:i + _WIKI_AGENT_CHUNK_SIZE])
-                    )
+                # Emit as a single put to prevent interleaving with
+                # concurrent artifact emissions (tool or final wiki).
+                await output_queue.put(chunk_fn(artifact_block))
 
                 log.info(
                     "[%s] Wiki agent: emitted %d-char article (%d conditions, %d angles)",
@@ -2575,10 +2574,9 @@ async def _pipeline_producer(
                         f"\n{wiki_html}\n"
                         f":::\n\n"
                     )
-                    for i in range(0, len(artifact_block), 200):
-                        await output_queue.put(
-                            chunk_fn(artifact_block[i:i + 200])
-                        )
+                    # Emit as a single put — no chunking needed since
+                    # the wiki agent loop is already cancelled.
+                    await output_queue.put(chunk_fn(artifact_block))
                     log.info(
                         "[%s] Final wiki: %d chars, %d conditions, %d angles",
                         req_id, len(wiki_html), len(all_conditions),

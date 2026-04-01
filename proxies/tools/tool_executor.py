@@ -918,10 +918,9 @@ async def tool_create_knowledge_wiki(
             f"\n{wiki_html}\n"
             f":::\n\n"
         )
-        for i in range(0, len(artifact_block), 200):
-            await output_queue.put(
-                chunk_fn(artifact_block[i:i + 200])
-            )
+        # Emit as a single put to prevent interleaving with
+        # concurrent artifact emissions (wiki agent loop).
+        await output_queue.put(chunk_fn(artifact_block))
         log.info(
             "[%s] Wiki tool: emitted %d-char article (%d conditions, %d angles)",
             req_id, len(wiki_html), len(conditions), len(by_angle),

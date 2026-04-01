@@ -120,7 +120,7 @@ MAX_SUBAGENT_TURNS = env_int("MAX_SUBAGENT_TURNS", 15, minimum=1)
 MAX_CONCURRENT = env_int("MAX_CONCURRENT_PERSISTENT", 2, minimum=1)
 RESEARCH_NAMESPACE = os.getenv("RESEARCH_NAMESPACE", "research")
 JSONL_LOG_DIR = os.getenv("JSONL_LOG_DIR", "/opt/persistent_research_logs/jsonl")
-WEBPAGE_MAX_CHARS = 15000
+WEBPAGE_MAX_CHARS = 6000
 PYTHON_TIMEOUT = 30
 PYTHON_OUTPUT_MAX = 5000
 MAX_PRIOR_CONDITIONS = 20
@@ -139,7 +139,7 @@ TREE_MAX_DEPTH = env_int("TREE_MAX_DEPTH", 5, minimum=1)
 TREE_MAX_NODES = env_int("TREE_MAX_NODES", 50, minimum=5)
 TREE_PRESSURE_THRESHOLD = float(os.getenv("TREE_PRESSURE_THRESHOLD", "0.15"))
 TREE_WORKER_IDLE_TIMEOUT = float(os.getenv("TREE_WORKER_IDLE_TIMEOUT", "60.0"))
-RESEARCH_TIME_LIMIT = float(os.getenv("RESEARCH_TIME_LIMIT", "300"))  # seconds; 0 = no limit
+RESEARCH_TIME_LIMIT = float(os.getenv("RESEARCH_TIME_LIMIT", "600"))  # seconds; 0 = no limit
 # Hard pipeline-level wall-clock timeout.  When exceeded, ALL remaining
 # phases (entities, verify, reflect, persist) are skipped and synthesis
 # runs immediately with whatever findings exist.  Separate from

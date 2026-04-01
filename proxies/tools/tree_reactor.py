@@ -97,53 +97,30 @@ PRESSURE RULES:
 Other rules:
 - Generate 0-5 questions maximum
 - Each question MUST be semantically DISTINCT from all questions in the research net
-- Output ONLY valid JSON, no markdown fences
 
-Output format:
-{{"sub_questions": [{{"question": "...", "context": "...", "pressure": 0.8, "strategy": "lateral"}}]}}"""
+For each question, write:
+QUESTION: [specific, searchable question]
+CONTEXT: [one sentence on why this matters]
+PRESSURE: [0.0-1.0 importance score]
+STRATEGY: [deepen/verify/lateral/contrarian/historical/cross-domain]"""
 
 
 # ============================================================================
 # Prompt-Distance Scoring
 # ============================================================================
 
-# Intent-specific keyword boosters: questions containing these patterns
-# get a relevance boost for the corresponding intent type.
-_INTENT_BOOSTERS: dict[str, list[str]] = {
-    "transactional": [
-        "buy", "purchase", "order", "get", "acquire", "obtain", "source",
-        "vendor", "supplier", "price", "cost", "shipping", "delivery",
-        "how to", "setup", "install", "configure", "step by step",
-        "where can", "who sells", "cheapest", "best deal", "coupon",
-        "subscribe", "sign up", "register", "apply", "book",
-    ],
-    "informational": [
-        "what is", "how does", "why", "explain", "understand",
-        "mechanism", "cause", "effect", "research", "study",
-        "evidence", "data", "statistics", "history", "background",
-        "difference between", "compare", "analysis", "review",
-    ],
-    "exploratory": [
-        "overview", "landscape", "state of", "trends", "future",
-        "possibilities", "options", "alternatives", "emerging",
-        "what are", "survey", "map", "scope", "range",
-    ],
-}
-
-
 def _score_prompt_distance(
     question: str,
     core_need: str,
-    intent_type: str,
 ) -> float:
     """Score how closely a research question serves the user's core need.
 
     Returns a value in [0.0, 1.0] where 1.0 means the question directly
-    addresses the core need and intent.
+    addresses the core need.
 
-    The score combines:
-      1. Word overlap between question and core_need (Jaccard-like)
-      2. Intent-specific keyword boost
+    Based purely on word overlap between question and core_need — no
+    intent classification needed.  The prompt itself tells the model what
+    the user wants; we just measure proximity.
     """
     if not core_need:
         return 0.5  # no core_need available — neutral score
@@ -158,23 +135,9 @@ def _score_prompt_distance(
     if not q_words or not need_words:
         return 0.5
 
-    # 1. Word overlap component (0-1)
     overlap = len(q_words & need_words)
     union = len(q_words | need_words)
-    overlap_score = overlap / max(union, 1)
-
-    # 2. Intent-specific keyword boost (0 or 0.15)
-    intent_boost = 0.0
-    q_lower = question.lower()
-    boosters = _INTENT_BOOSTERS.get(intent_type, [])
-    for keyword in boosters:
-        if keyword in q_lower:
-            intent_boost = 0.15
-            break
-
-    # Combine: overlap is primary, intent boost is additive
-    raw = overlap_score * 0.85 + intent_boost
-    return min(1.0, max(0.0, raw))
+    return min(1.0, max(0.0, overlap / max(union, 1)))
 
 
 def _compute_pressure(
@@ -281,26 +244,39 @@ async def _spawn_sub_questions(
         return []
 
     content = result.get("content", "")
+
+    # Parse sub-questions from JSON (backward compat) or natural language
+    sub_questions: list[dict] = []
     try:
         cleaned = content.strip()
         if cleaned.startswith("```"):
             cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
             cleaned = re.sub(r'\s*```$', '', cleaned)
         data = json.loads(cleaned)
+        sub_questions = data.get("sub_questions", [])
     except (json.JSONDecodeError, ValueError):
-        json_match = re.search(r'\{[^{}]*"sub_questions"\s*:\s*\[.*?\]\s*\}', content, re.DOTALL)
-        if json_match:
-            try:
-                data = json.loads(json_match.group())
-            except (json.JSONDecodeError, ValueError):
-                return []
-        else:
-            return []
+        # Natural language parsing: QUESTION: / CONTEXT: / PRESSURE: / STRATEGY: blocks
+        q_blocks = re.split(r'(?:^|\n)\s*QUESTION:\s*', content)
+        for block in q_blocks[1:]:  # skip preamble before first QUESTION:
+            block = block.strip()
+            if not block:
+                continue
+            question_line = block.split("\n")[0].strip()
+            ctx_match = re.search(r'CONTEXT:\s*(.+)', block)
+            pressure_match = re.search(r'PRESSURE:\s*([\d.]+)', block)
+            strategy_match = re.search(r'STRATEGY:\s*(\w+)', block)
+            if question_line:
+                sub_questions.append({
+                    "question": question_line,
+                    "context": ctx_match.group(1).strip() if ctx_match else "",
+                    "pressure": float(pressure_match.group(1)) if pressure_match else 0.5,
+                    "strategy": strategy_match.group(1).strip() if strategy_match else "deepen",
+                })
 
     children: list[ResearchNode] = []
     connected_count = 0
 
-    for sq in data.get("sub_questions", []):
+    for sq in sub_questions:
         question = sq.get("question", "").strip()
         if not question:
             continue
@@ -337,7 +313,6 @@ async def _spawn_sub_questions(
             pd_score = _score_prompt_distance(
                 question,
                 condition_store.comprehension.core_need,
-                condition_store.comprehension.intent_type,
             )
 
         pressure = _compute_pressure(
@@ -385,14 +360,15 @@ Do NOT include: general concepts, countries, well-known companies (Google, Amazo
 Findings:
 {findings_text}
 
-Output ONLY valid JSON:
-{{"entities": [
-    {{"name": "exact entity name", "type": "vendor|product|person|organization|website|service|forum_thread", "fact_index": 0, "search_queries": ["entity_name review", "entity_name reddit"], "source_url": "the URL where this entity was found (if any)"}}
-]}}
+For each entity, write:
+ENTITY: [exact entity name]
+TYPE: [vendor/product/person/organization/website/service/forum_thread]
+SOURCE_URL: [the URL where this entity was found, if any]
+SEARCH_QUERIES: [query1], [query2]
 
-IMPORTANT: Always include the source_url if the finding mentions a URL for the entity (website, forum thread, product page). This URL will be visited directly for procurement verification.
+IMPORTANT: Always include the source_url if the finding mentions a URL for the entity. This URL will be visited directly for verification.
 
-If no concrete entities need verification, return: {{"entities": []}}"""
+If no concrete entities need verification, write: NO ENTITIES"""
 
 
 async def _extract_entities_for_verification(
@@ -428,15 +404,46 @@ async def _extract_entities_for_verification(
         return []
 
     content = result.get("content", "").strip()
+
+    # Try JSON first (backward compat)
     try:
-        if content.startswith("```"):
-            content = re.sub(r'^```(?:json)?\s*', '', content)
-            content = re.sub(r'\s*```$', '', content)
-        data = json.loads(content)
+        cleaned = content
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+            cleaned = re.sub(r'\s*```$', '', cleaned)
+        data = json.loads(cleaned)
+        entities = data.get("entities", [])
+        if isinstance(entities, list):
+            return entities
     except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Natural language parsing
+    if "NO ENTITIES" in content.upper():
         return []
 
-    return data.get("entities", [])
+    entities: list[dict] = []
+    ent_blocks = re.split(r'(?:^|\n)\s*ENTITY:\s*', content)
+    for block in ent_blocks[1:]:  # skip preamble before first ENTITY:
+        block = block.strip()
+        if not block:
+            continue
+        name = block.split("\n")[0].strip()
+        type_match = re.search(r'TYPE:\s*(\w+)', block)
+        url_match = re.search(r'SOURCE_URL:\s*(\S+)', block)
+        queries_match = re.search(r'SEARCH_QUERIES:\s*(.+)', block)
+        if name:
+            search_queries = []
+            if queries_match:
+                search_queries = [q.strip().strip('[]') for q in queries_match.group(1).split(',') if q.strip()]
+            entities.append({
+                "name": name,
+                "type": type_match.group(1).strip() if type_match else "entity",
+                "source_url": url_match.group(1).strip() if url_match else "",
+                "search_queries": search_queries,
+            })
+
+    return entities
 
 
 def _spawn_verification_nodes(
@@ -444,7 +451,6 @@ def _spawn_verification_nodes(
     parent_node: ResearchNode,
     existing_questions: list[str],
     req_id: str,
-    intent_type: str = "informational",
     core_need: str = "",
 ) -> list[ResearchNode]:
     """Create verification ResearchNodes for concrete entities.
@@ -453,12 +459,12 @@ def _spawn_verification_nodes(
     across forums, reviews, and social media.  These nodes get high
     pressure so the tree prioritizes them.
 
-    For transactional queries, vendor/website/forum_thread entities get
-    **procurement verification** nodes that visit the actual URL with
-    fetch_webpage to confirm product availability, pricing, and shipping.
+    Vendor/website/forum_thread entities ALWAYS get **site verification**
+    nodes that visit the actual URL with fetch_webpage to confirm the
+    content matches the user's query.  No intent classification needed —
+    if we found a concrete lead, we verify it.
     """
     children: list[ResearchNode] = []
-    is_transactional = intent_type == "transactional"
 
     for ent in entities:
         name = ent.get("name", "").strip()
@@ -467,39 +473,38 @@ def _spawn_verification_nodes(
         if not name:
             continue
 
-        # For transactional queries, vendor/website/forum entities get
-        # procurement verification: visit the URL, check product listing
-        if is_transactional and ent_type in (
+        # Vendor/website/forum entities: visit the URL, check content
+        if ent_type in (
             "vendor", "website", "service", "forum_thread",
         ):
             if source_url:
                 question = (
                     f'Visit {name} at {source_url} using fetch_webpage. '
-                    f'Check if the site actually lists the product the user needs '
-                    f'({core_need[:100]}). Look for: product availability, price, '
-                    f'shipping options to the target destination, payment methods. '
+                    f'Check if the site actually contains what the user needs '
+                    f'({core_need[:100]}). Look for: concrete details, availability, '
+                    f'pricing, shipping, contact info, or actionable discussion threads. '
                     f'Then search for "{name}" reviews and complaints to assess legitimacy.'
                 )
             else:
                 question = (
                     f'Find the actual website for "{name}" using searxng_search, '
-                    f'then visit it with fetch_webpage. Check if it actually lists '
-                    f'the product the user needs ({core_need[:100]}). Verify: '
-                    f'product availability, price, shipping, payment methods. '
+                    f'then visit it with fetch_webpage. Check if it actually has '
+                    f'what the user needs ({core_need[:100]}). Verify: '
+                    f'content relevance, concrete details, pricing, availability. '
                     f'Also search for "{name}" reviews and scam reports.'
                 )
             context = (
-                f"Procurement verification for {ent_type} '{name}'. "
-                f"The user needs to BUY something — finding this name is just a lead. "
-                f"You MUST visit the actual site with fetch_webpage and confirm the product "
-                f"is listed and purchasable. A name without site verification is worthless."
+                f"Site verification for {ent_type} '{name}'. "
+                f"Finding this name is just a lead — you MUST visit the actual "
+                f"site with fetch_webpage and confirm it has what the user asked for. "
+                f"A name without site verification is worthless."
             )
-            # Procurement verification gets highest pressure (0.95)
+            # Site verification gets highest pressure (0.95)
             pressure = _compute_pressure(
                 0.95, parent_node.depth + 1, parent_node.pressure,
             )
         else:
-            # Standard reputation verification (non-transactional or non-vendor entities)
+            # Standard reputation verification for non-site entities
             question = (
                 f'Verify "{name}": search for independent mentions, reviews, '
                 f"complaints, or discussions about this {ent_type} across "
@@ -661,7 +666,6 @@ async def tree_research_reactor(
     )
     comprehension = await comprehend_query(user_query, req_id)
     langfuse_config.end_span(comp_span, output={
-        "intent": comprehension.intent_type,
         "entities": len(comprehension.entities),
         "domains": len(comprehension.domains),
         "implicit_questions": len(comprehension.implicit_questions),
@@ -669,14 +673,13 @@ async def tree_research_reactor(
     if comprehension.semantic_summary:
         progress.append(
             f"Understanding: {comprehension.semantic_summary[:300]}\n"
-            f"Intent: **{comprehension.intent_type}**\n"
             f"Core need: {comprehension.core_need[:200]}\n"
             f"Entities: {', '.join(comprehension.entities[:10])}\n"
             f"Domains: {', '.join(comprehension.domains[:8])}\n"
             f"Adjacent territories: {', '.join(comprehension.adjacent_territories[:6])}\n"
         )
     log.info(
-        f"[{req_id}] Query comprehension: intent={comprehension.intent_type}, "
+        f"[{req_id}] Query comprehension: "
         f"{len(comprehension.entities)} entities, "
         f"{len(comprehension.domains)} domains, "
         f"{len(comprehension.implicit_questions)} implicit questions, "
@@ -776,9 +779,9 @@ async def tree_research_reactor(
                 f"find DEEP, RARE knowledge — practitioner experiences, community "
                 f"discussions, enforcement data, obscure archives.\n\n"
                 f"Query: {user_query}\n\n"
-                f"Output ONLY valid JSON:\n"
-                f'{{"angles": [{{"question": "specific searchable question", '
-                f'"context": "why this angle matters"}}]}}'
+                f"For each angle, write:\n"
+                f"ANGLE: [specific searchable question]\n"
+                f"CONTEXT: [why this angle matters]"
             )
             seed_result = await call_llm(
                 [{"role": "user", "content": seed_prompt}],
@@ -786,14 +789,27 @@ async def tree_research_reactor(
             )
             if "error" not in seed_result:
                 seed_content = seed_result.get("content", "").strip()
-                if seed_content.startswith("```"):
-                    seed_content = re.sub(r'^```(?:json)?\s*', '', seed_content)
-                    seed_content = re.sub(r'\s*```$', '', seed_content)
-                seed_data = json.loads(seed_content)
-                for angle in seed_data.get("angles", [])[:5]:
-                    q = angle.get("question", "").strip()
-                    if q and q.lower() != user_query.lower():
-                        seed_angles.append((q, angle.get("context", "")))
+                # Try JSON first (backward compat)
+                try:
+                    if seed_content.startswith("```"):
+                        seed_content = re.sub(r'^```(?:json)?\s*', '', seed_content)
+                        seed_content = re.sub(r'\s*```$', '', seed_content)
+                    seed_data = json.loads(seed_content)
+                    for angle in seed_data.get("angles", [])[:5]:
+                        q = angle.get("question", "").strip()
+                        if q and q.lower() != user_query.lower():
+                            seed_angles.append((q, angle.get("context", "")))
+                except (json.JSONDecodeError, ValueError):
+                    # Natural language parsing
+                    angle_blocks = re.split(r'(?:^|\n)\s*ANGLE:\s*', seed_content)
+                    for block in angle_blocks[1:]:  # skip preamble before first ANGLE:
+                        block = block.strip()
+                        if not block:
+                            continue
+                        q = block.split("\n")[0].strip()
+                        ctx_match = re.search(r'CONTEXT:\s*(.+)', block)
+                        if q and q.lower() != user_query.lower():
+                            seed_angles.append((q, ctx_match.group(1).strip() if ctx_match else ""))
 
         # Create seed nodes from the angles — use prompt-distance
         # scoring instead of uniform 0.9 pressure so questions closer
@@ -824,7 +840,7 @@ async def tree_research_reactor(
                 continue
 
             pd_score = _score_prompt_distance(
-                q, comprehension.core_need, comprehension.intent_type,
+                q, comprehension.core_need,
             )
             # Seed pressure: base 0.9 modulated by prompt distance
             # Range: ~0.63 (distant) to ~1.0 (directly on core_need)
@@ -992,7 +1008,6 @@ async def tree_research_reactor(
                             if entities:
                                 raw_verify = _spawn_verification_nodes(
                                     entities, node, all_questions, req_id,
-                                    intent_type=comprehension.intent_type,
                                     core_need=comprehension.core_need,
                                 )
                                 # Filter verification nodes through the

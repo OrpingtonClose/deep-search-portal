@@ -107,11 +107,32 @@ if ! pgrep -f "org.neo4j.server" > /dev/null; then
         neo4j start 2>&1 || echo "WARNING: neo4j start failed"
         echo "Neo4j starting..."
     else
-        echo "ERROR: Neo4j is NOT installed. Install it with:"
-        echo "  apt-get install -y openjdk-21-jre-headless && apt-get install -y neo4j"
-        echo "  → Prior knowledge retrieval will return empty"
-        echo "  → Condition persistence will fail"
-        echo "  → Cross-session knowledge accumulation is disabled"
+        echo "Neo4j is NOT installed — attempting auto-install..."
+        if command -v apt-get > /dev/null 2>&1; then
+            # Install Java runtime (required by Neo4j)
+            apt-get install -y openjdk-21-jre-headless 2>/dev/null || apt-get install -y default-jre-headless 2>/dev/null || true
+            # Add Neo4j repo and install
+            if [ ! -f /usr/share/keyrings/neo4j-archive-keyring.gpg ]; then
+                curl -fsSL https://debian.neo4j.com/neotechnology.gpg.key | gpg --dearmor -o /usr/share/keyrings/neo4j-archive-keyring.gpg 2>/dev/null || true
+                echo 'deb [signed-by=/usr/share/keyrings/neo4j-archive-keyring.gpg] https://debian.neo4j.com stable latest' > /etc/apt/sources.list.d/neo4j.list 2>/dev/null || true
+                apt-get update -qq 2>/dev/null || true
+            fi
+            apt-get install -y neo4j 2>/dev/null
+            if command -v neo4j > /dev/null 2>&1; then
+                # Set default password for unattended operation
+                neo4j-admin dbms set-initial-password "${NEO4J_PASSWORD:-neo4j_deep_search}" 2>/dev/null || true
+                neo4j start 2>&1 || echo "WARNING: neo4j start failed after install"
+                echo "Neo4j installed and starting..."
+            else
+                echo "ERROR: Neo4j auto-install failed."
+                echo "  → Prior knowledge retrieval will return empty"
+                echo "  → Condition persistence will fail"
+                echo "  → Cross-session knowledge accumulation is disabled"
+            fi
+        else
+            echo "ERROR: Neo4j is NOT installed and apt-get is unavailable."
+            echo "  Install manually: apt-get install -y openjdk-21-jre-headless neo4j"
+        fi
     fi
 fi
 wait_for_health "http://localhost:${NEO4J_HTTP_PORT}" "Neo4j" 30 || true
@@ -214,14 +235,14 @@ fi
 # --- Thinking Proxy (stays on Mistral — override global xAI defaults) ---
 pip3 install fastapi uvicorn httpx -q
 if ! pgrep -f "thinking_proxy.py" > /dev/null; then
-    screen -dmS thinking-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && UPSTREAM_BASE='https://api.mistral.ai/v1' UPSTREAM_KEY=\"${MISTRAL_API_KEY:-}\" UPSTREAM_MODEL='mistral-large-latest' THINKING_PROXY_PORT=9100 python3 thinking_proxy.py 2>&1 | tee /var/log/thinking_proxy.log"
+    screen -dmS thinking-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && UPSTREAM_BASE='https://api.mistral.ai/v1' UPSTREAM_KEY=\"${MISTRAL_API_KEY:-}\" UPSTREAM_MODEL='mistral-large-latest' THINKING_PROXY_PORT=9100 python3 thinking_proxy.py 2>&1 | tee /var/log/thinking_proxy.log"
     echo "Thinking Proxy starting..."
 fi
 wait_for_health "http://localhost:9100/health" "Thinking Proxy" 15
 
 # --- Deep Research Proxy (MiroFlow) — Grok via xAI direct API ---
 if ! pgrep -f "deep_research_proxy.py" > /dev/null; then
-    screen -dmS deep-research bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && DEEP_RESEARCH_PORT=9200 python3 deep_research_proxy.py 2>&1 | tee /var/log/deep_research_proxy.log"
+    screen -dmS deep-research bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && DEEP_RESEARCH_PORT=9200 python3 deep_research_proxy.py 2>&1 | tee /var/log/deep_research_proxy.log"
     echo "Deep Research Proxy starting..."
 fi
 wait_for_health "http://localhost:9200/health" "Deep Research Proxy" 15
@@ -230,35 +251,35 @@ wait_for_health "http://localhost:9200/health" "Deep Research Proxy" 15
 # miro-long:  olafangensan-glm-4.7-flash-heretic (UNCENSORED, thought=6/6, 82.4 tok/s, native tool calling)
 # miro-short: qwen3.5-9b (thought=6/6, 147.5 tok/s, native tool calling, $0.1/M)
 if ! pgrep -f "persistent_deep_research_proxy.py" > /dev/null; then
-    screen -dmS persistent-research bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && PERSISTENT_RESEARCH_PORT=9300 python3 persistent_deep_research_proxy.py 2>&1 | tee /var/log/persistent_research_proxy.log"
+    screen -dmS persistent-research bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && PERSISTENT_RESEARCH_PORT=9300 python3 persistent_deep_research_proxy.py 2>&1 | tee /var/log/persistent_research_proxy.log"
     echo "Persistent Deep Research Proxy starting..."
 fi
 wait_for_health "http://localhost:9300/health" "Persistent Deep Research Proxy" 15
 
 # --- MiroFlow Sprint Proxy (quick 2-round variant) — Venice AI (uncensored) ---
 if ! pgrep -f "miroflow_sprint_proxy.py" > /dev/null; then
-    screen -dmS miroflow-sprint bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && MIROFLOW_SPRINT_PORT=9400 python3 miroflow_sprint_proxy.py 2>&1 | tee /var/log/miroflow_sprint_proxy.log"
+    screen -dmS miroflow-sprint bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && MIROFLOW_SPRINT_PORT=9400 python3 miroflow_sprint_proxy.py 2>&1 | tee /var/log/miroflow_sprint_proxy.log"
     echo "MiroFlow Sprint Proxy starting..."
 fi
 wait_for_health "http://localhost:9400/health" "MiroFlow Sprint Proxy" 15
 
 # --- Swarm Deep Search Proxy — Venice AI (uncensored, override global xAI defaults) ---
 if ! pgrep -f "swarm_proxy.py" > /dev/null; then
-    screen -dmS swarm-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && UPSTREAM_BASE='https://api.venice.ai/api/v1' UPSTREAM_KEY=\"${VENICE_API_KEY:-${MISTRAL_API_KEY:-}}\" UPSTREAM_MODEL='venice-uncensored' SWARM_SYNTHESIS_MODEL='venice-uncensored' SWARM_WORKER_MODEL='venice-uncensored' SWARM_PROXY_PORT=9500 python3 swarm_proxy.py 2>&1 | tee /var/log/swarm_proxy.log"
+    screen -dmS swarm-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && UPSTREAM_BASE='https://api.venice.ai/api/v1' UPSTREAM_KEY=\"${VENICE_API_KEY:-${MISTRAL_API_KEY:-}}\" UPSTREAM_MODEL='venice-uncensored' SWARM_SYNTHESIS_MODEL='venice-uncensored' SWARM_WORKER_MODEL='venice-uncensored' SWARM_PROXY_PORT=9500 python3 swarm_proxy.py 2>&1 | tee /var/log/swarm_proxy.log"
     echo "Swarm Deep Search Proxy starting..."
 fi
 wait_for_health "http://localhost:9500/health" "Swarm Deep Search Proxy" 15
 
 # --- G0DM0D3 Proxy (multi-provider native routing) ---
 if ! pgrep -f "godmode_proxy.py" > /dev/null; then
-    screen -dmS godmode-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && GODMODE_PROXY_PORT=9600 python3 godmode_proxy.py 2>&1 | tee /var/log/godmode_proxy.log"
+    screen -dmS godmode-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && GODMODE_PROXY_PORT=9600 python3 godmode_proxy.py 2>&1 | tee /var/log/godmode_proxy.log"
     echo "G0DM0D3 Proxy starting..."
 fi
 wait_for_health "http://localhost:9600/health" "G0DM0D3 Proxy" 15
 
 # --- xAI Native Proxy (direct xAI API access + race modes) ---
 if ! pgrep -f "xai_native_proxy.py" > /dev/null; then
-    screen -dmS xai-native-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt && XAI_PROXY_PORT=9700 python3 xai_native_proxy.py 2>&1 | tee /var/log/xai_native_proxy.log"
+    screen -dmS xai-native-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && XAI_PROXY_PORT=9700 python3 xai_native_proxy.py 2>&1 | tee /var/log/xai_native_proxy.log"
     echo "xAI Native Proxy starting..."
 fi
 wait_for_health "http://localhost:9700/health" "xAI Native Proxy" 15

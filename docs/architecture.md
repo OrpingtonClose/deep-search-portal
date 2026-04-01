@@ -308,8 +308,8 @@ SearXNG is a self-hosted meta-search engine that aggregates results from multipl
 
 | File | Purpose |
 |---|---|
-| `/opt/deep_research_proxy.py` | The proxy application (this document describes) |
-| `/opt/thinking_proxy.py` | Separate proxy for `<think>` tag support on regular Mistral calls |
+| `/opt/deep-search-portal/proxies/deep_research_proxy.py` | The proxy application (this document describes) |
+| `/opt/deep-search-portal/proxies/thinking_proxy.py` | Separate proxy for `<think>` tag support on regular Mistral calls |
 | `/opt/startup.sh` | Starts all services on boot |
 | `/opt/deep_research_logs/proxy.log` | Rotating debug log |
 | `/tmp/searxng/` | SearXNG installation |

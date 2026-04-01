@@ -570,7 +570,8 @@ endpoints:
           - "tier-x-ai/grok-4.20-0309-reasoning"
         fetch: true
       titleConvo: true
-      titleModel: "tier-race-quick"
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
       titleMethod: "completion"
       summarize: false
       forcePrompt: false

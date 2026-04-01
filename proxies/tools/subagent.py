@@ -961,10 +961,9 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
     if not content:
         return []
 
-    # Reject pure refusals
-    if _is_llm_refusal(content):
-        log.warning("Rejected LLM refusal: %s", content[:120])
-        return []
+    # NOTE: Do NOT check _is_llm_refusal on the entire content here.
+    # Legitimate findings can contain phrases like "I cannot provide exact pricing"
+    # that match refusal patterns. Per-chunk checks below handle this correctly.
 
     # --- Legacy JSON support (backward compat) ---
     # If the model still outputs JSON despite not being asked to, handle it.

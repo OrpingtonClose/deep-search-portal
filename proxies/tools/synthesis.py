@@ -2244,8 +2244,8 @@ def _pipeline_time_exceeded(state: PersistentResearchState) -> bool:
 
 def _after_tree_research(state: PersistentResearchState) -> str:
     """Conditional edge after tree_research: if the hard pipeline timeout
-    has been exceeded, skip entities/verify/reflect/persist and jump
-    straight to synthesis with whatever findings exist.
+    has been exceeded, skip entities/verify/reflect but still persist
+    conditions to Neo4j before synthesising.
     """
     req_id = state["req_id"]
     span = langfuse_config.start_span(
@@ -2256,11 +2256,11 @@ def _after_tree_research(state: PersistentResearchState) -> str:
         elapsed = time.monotonic() - state["start_time"]
         log.warning(
             "[%s] Pipeline hard timeout exceeded (%.0fs) — "
-            "skipping entities/verify/reflect/persist, jumping to synthesis",
+            "skipping entities/verify/reflect, persisting then synthesising",
             req_id, elapsed,
         )
-        langfuse_config.end_span(span, output={"decision": "synthesize", "reason": "timeout"})
-        return "synthesize"
+        langfuse_config.end_span(span, output={"decision": "persist", "reason": "timeout"})
+        return "persist"
     langfuse_config.end_span(span, output={"decision": "entities"})
     return "entities"
 
@@ -2361,7 +2361,7 @@ def build_persistent_research_graph(
 
         START -> comprehend -> retrieve -> tree_research
               -> [_after_tree_research]
-                  -> synthesize  (if hard pipeline timeout exceeded)
+                  -> persist -> synthesize  (if hard pipeline timeout exceeded)
                   -> entities -> verify -> reflect
                       -> [_should_reresearch]
                           -> tree_research  (if quality < 0.4 + targeted Qs)
@@ -2393,11 +2393,11 @@ def build_persistent_research_graph(
     graph.add_edge(START, "comprehend")
     graph.add_edge("comprehend", "retrieve")
     graph.add_edge("retrieve", "tree_research")
-    # Conditional: tree_research → entities (normal) OR synthesize (hard timeout)
+    # Conditional: tree_research → entities (normal) OR persist (hard timeout)
     graph.add_conditional_edges(
         "tree_research",
         _after_tree_research,
-        {"entities": "entities", "synthesize": "synthesize"},
+        {"entities": "entities", "persist": "persist"},
     )
     graph.add_edge("entities", "verify")
     graph.add_edge("verify", "reflect")

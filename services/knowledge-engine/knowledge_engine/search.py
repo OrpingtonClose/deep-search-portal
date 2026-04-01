@@ -63,7 +63,7 @@ def _keyword_search(
         ns_where = "AND node.namespace = $ns" if namespace else ""
         chunk_result = session.run(
             f"""
-            CALL db.index.fulltext.queryNodes('fulltext_chunks', $query)
+            CALL db.index.fulltext.queryNodes('fulltext_chunks', $search_query)
             YIELD node, score
             WHERE score > 0.1 {ns_where}
             OPTIONAL MATCH (doc:Document)-[:HAS_CHUNK]->(node)
@@ -73,7 +73,7 @@ def _keyword_search(
             ORDER BY score DESC
             LIMIT $limit
             """,
-            query=escaped_query, ns=namespace, limit=limit,
+            search_query=escaped_query, ns=namespace, limit=limit,
         )
         for r in chunk_result:
             results.append(SearchResult(
@@ -88,7 +88,7 @@ def _keyword_search(
         # Search concepts
         concept_result = session.run(
             f"""
-            CALL db.index.fulltext.queryNodes('fulltext_concepts', $query)
+            CALL db.index.fulltext.queryNodes('fulltext_concepts', $search_query)
             YIELD node, score
             WHERE score > 0.1 {ns_where}
             RETURN node.id AS id, node.name AS name,
@@ -98,7 +98,7 @@ def _keyword_search(
             ORDER BY score DESC
             LIMIT $limit
             """,
-            query=escaped_query, ns=namespace, limit=limit,
+            search_query=escaped_query, ns=namespace, limit=limit,
         )
         for r in concept_result:
             results.append(SearchResult(
@@ -116,7 +116,7 @@ def _keyword_search(
         # Search claims
         claim_result = session.run(
             f"""
-            CALL db.index.fulltext.queryNodes('fulltext_claims', $query)
+            CALL db.index.fulltext.queryNodes('fulltext_claims', $search_query)
             YIELD node, score
             WHERE score > 0.1 {ns_where}
             RETURN node.id AS id, node.statement AS statement,
@@ -125,7 +125,7 @@ def _keyword_search(
             ORDER BY score DESC
             LIMIT $limit
             """,
-            query=escaped_query, ns=namespace, limit=limit,
+            search_query=escaped_query, ns=namespace, limit=limit,
         )
         for r in claim_result:
             results.append(SearchResult(
@@ -142,7 +142,7 @@ def _keyword_search(
         # Search anomalies
         anom_result = session.run(
             f"""
-            CALL db.index.fulltext.queryNodes('fulltext_anomalies', $query)
+            CALL db.index.fulltext.queryNodes('fulltext_anomalies', $search_query)
             YIELD node, score
             WHERE score > 0.1 {ns_where}
             RETURN node.id AS id, node.description AS description,
@@ -150,7 +150,7 @@ def _keyword_search(
             ORDER BY score DESC
             LIMIT $limit
             """,
-            query=escaped_query, ns=namespace, limit=limit,
+            search_query=escaped_query, ns=namespace, limit=limit,
         )
         for r in anom_result:
             results.append(SearchResult(
@@ -191,7 +191,7 @@ def _graph_search(
         # Find matching concepts and their neighborhoods
         result = session.run(
             f"""
-            CALL db.index.fulltext.queryNodes('fulltext_concepts', $query)
+            CALL db.index.fulltext.queryNodes('fulltext_concepts', $search_query)
             YIELD node AS c, score
             WHERE score > 0.1 {ns_where}
             WITH c, score
@@ -224,7 +224,7 @@ def _graph_search(
                    c.mention_count AS mentions,
                    score, neighbors, chunks
             """,
-            query=escaped_query, ns=namespace,
+            search_query=escaped_query, ns=namespace,
         )
 
         for r in result:

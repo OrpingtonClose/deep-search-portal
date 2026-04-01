@@ -542,6 +542,7 @@ async def run_subagent(
                     trimmed = _trim_tool_responses(agent_messages)
                     if trimmed:
                         log.info(f"[{sa_id}] Turn {turn}: Context overflow — trimmed {trimmed} old tool responses, retrying")
+                        langfuse_config.end_span(turn_span, output={"action": "context_overflow_trim", "trimmed": trimmed})
                         continue  # retry without incrementing consecutive_errors
                 consecutive_errors += 1
                 log.warning(f"[{sa_id}] Turn {turn}: Error: {err_str}")

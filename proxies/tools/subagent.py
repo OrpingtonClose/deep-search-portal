@@ -514,6 +514,8 @@ async def run_subagent(
     used_queries: set[str] = set()
     consecutive_errors = 0
     known_facts: list[str] = []
+    fetch_webpage_count = 0  # Track whether we've actually visited any URLs
+    continuation_nudges = 0  # How many times we've told the model to keep going
 
     try:
         for turn in range(1, MAX_SUBAGENT_TURNS + 1):
@@ -582,6 +584,29 @@ async def run_subagent(
             tool_calls = llm_result.get("tool_calls")
 
             if not tool_calls:
+                # Check if the model is trying to stop without visiting any URLs.
+                # If so, nudge it to continue with fetch_webpage on discovered leads.
+                # Allow up to 2 nudges before accepting the output.
+                if fetch_webpage_count == 0 and continuation_nudges < 2 and turn < MAX_SUBAGENT_TURNS:
+                    # Extract any URLs from the model's output to suggest fetching
+                    import re as _url_re
+                    urls_in_output = _url_re.findall(r'https?://[^\s"\)\]>]+', content or "")
+                    continuation_nudges += 1
+                    nudge_msg = (
+                        "STOP — you have NOT visited any URLs with fetch_webpage yet. "
+                        "Finding names and links via search is only step 1. "
+                        "You MUST now call fetch_webpage on the most promising URLs you found "
+                        "to verify their content matches what the user needs. "
+                        "Do NOT output conditions until you have visited at least 2 URLs."
+                    )
+                    if urls_in_output:
+                        nudge_msg += f"\n\nURLs you discovered that need visiting: {', '.join(urls_in_output[:5])}"
+                    agent_messages.append({"role": "assistant", "content": content or ""})
+                    agent_messages.append({"role": "user", "content": nudge_msg})
+                    log.info(f"[{sa_id}] Turn {turn}: Model tried to stop with 0 fetch_webpage — nudging (attempt {continuation_nudges})")
+                    langfuse_config.end_span(turn_span, output={"action": "fetch_nudge", "nudge": continuation_nudges, "urls_found": len(urls_in_output)})
+                    continue
+
                 result.turns_used = turn
                 langfuse_config.end_span(turn_span, output={"action": "final_answer", "has_content": bool(content)})
                 conditions = _parse_conditions(content, angle_title, is_bridge)
@@ -633,6 +658,8 @@ async def run_subagent(
 
                 used_queries.add(query_key)
                 calls_to_run.append((tc_id, tool_name, arguments))
+                if tool_name == "fetch_webpage":
+                    fetch_webpage_count += 1
 
             if calls_to_run:
                 tool_results = await execute_tools_parallel(calls_to_run, req_id=req_id)

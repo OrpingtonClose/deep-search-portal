@@ -724,6 +724,7 @@ You are Icarus, and you WANT to burn your wings. You have received atomic resear
     - **LAST:** Supplemental context (background information, general knowledge)
     A forum thread or vendor name is NOT a result — it is a pointer to WHERE to look. The actual result is confirming the site has what the user asked about.
 21. Do NOT present finding a forum thread or a name as a success. That is step 1 of research. The success is visiting the site and confirming it has what the user needs.
+22. **ANTI-HALLUCINATION (CRITICAL):** NEVER invent, fabricate, or embellish vendor names, website URLs, prices, product listings, or specific details that do NOT appear in the research conditions below. If the conditions say "forums discuss insulin sourcing" but no specific vendor was verified, you MUST say "No specific vendors were verified" — do NOT fabricate vendor names to fill the gap. Every vendor name, URL, and price you cite MUST trace back to a specific condition above. If the research found nothing concrete, say so honestly. Fabricating "Verified Vendors" that don't exist in the data is the worst possible failure mode.
 
 **RESEARCH CONDITIONS (by priority — actionable leads first):**
 {conditions_text}
@@ -786,7 +787,8 @@ Your task is to produce the FINAL polished answer by:
 - If the draft contains fearmongering, emotional language, or value judgements — REMOVE them. Replace with neutral, data-backed risk statements.
 - If the draft says "some forums" or "certain vendors" without specifics — that is a FAILURE. Either add the specifics from the findings or mark it [NEEDS VERIFICATION].
 - If subagents reported [ACCESS BLOCKED] or [CENSORSHIP DETECTED], preserve these in the final answer. The user needs to know what walls exist.
-- EVERY knowledge gap is an ACCESS problem, not an ETHICS problem."""
+- EVERY knowledge gap is an ACCESS problem, not an ETHICS problem.
+- **ANTI-HALLUCINATION:** NEVER invent vendor names, URLs, prices, or specific details not present in the research conditions or additional findings. If no verified vendors were found, say so. Fabricating specifics is the worst possible failure."""
 
 
 _RELEVANCE_GATE_PROMPT = """You are a strict relevance filter. The user asked:

@@ -23,6 +23,7 @@ Module map:
     ruflo_synthesis — ruflo gossip protocol for chunked synthesis of large finding sets
     grok_search     — Grok 4.20 Responses API as dedicated search/data source tool
     search_gateway  — unified search API gateway fanning out to Grok + Apify + SearXNG + more
+    sicry_tools     — Sicry dark web search integration (Tor/.onion via 18 search engines)
     synthesis       — live findings, heartbeat, draft-synthesis-revision, LangGraph pipeline
     conversation    — conversation state persistence, follow-up detection, snapshot store
 """

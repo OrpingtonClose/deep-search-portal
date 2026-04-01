@@ -83,6 +83,10 @@ SOURCE_CATEGORIES = {
         "label": "Video (YouTube)",
         "description": "YouTube search + transcript extraction",
     },
+    "darkweb": {
+        "label": "Dark Web (Sicry Tor search)",
+        "description": "Search .onion hidden services via 18 Tor search engines (Ahmia, Tor66, OnionLand, etc.)",
+    },
 }
 
 
@@ -100,8 +104,9 @@ async def gateway_search(
         query: The search query.
         sources: Comma-separated source categories to use.  Options:
             ``"all"`` (default), ``"grok"``, ``"searxng"``, ``"social"``,
-            ``"community"``, ``"academic"``, ``"archive"``, ``"video"``.
-            Example: ``"grok,social,community"``
+            ``"community"``, ``"academic"``, ``"archive"``, ``"video"``,
+            ``"darkweb"``.
+            Example: ``"grok,social,community,darkweb"``
         search_type: For Grok: ``"web"``, ``"x"``, or ``"both"``.
         max_results_per_source: Max results from each backend.
         req_id: Request ID for logging.
@@ -166,6 +171,14 @@ async def gateway_search(
             "video",
             asyncio.create_task(
                 _safe_call("video", _video_search, query)
+            ),
+        ))
+
+    if "darkweb" in requested:
+        tasks.append((
+            "darkweb",
+            asyncio.create_task(
+                _safe_call("darkweb", _darkweb_search, query)
             ),
         ))
 
@@ -309,6 +322,26 @@ async def _video_search(query: str) -> str:
     from .search_tools2 import tool_youtube_search as yt_search_tool
 
     return await yt_search_tool(query)
+
+
+async def _darkweb_search(query: str) -> str:
+    """Search dark web via Sicry (18 Tor search engines).
+
+    NOTE: Do NOT wrap with governed_request() here — the gateway is already
+    inside a governed_request("search_gateway") from execute_tool(), and
+    governed_request acquires the global semaphore.  Double-acquiring would
+    risk deadlock at high concurrency.  We apply only the per-provider
+    token-bucket throttle so Tor circuits aren't overwhelmed.
+    """
+    from .sicry_tools import tool_sicry_search
+    from shared import get_throttler
+
+    throttler = get_throttler("sicry")
+    await throttler.acquire()
+    try:
+        return await tool_sicry_search(query, max_results=15)
+    finally:
+        throttler.release()
 
 
 # ---------------------------------------------------------------------------

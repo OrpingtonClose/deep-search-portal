@@ -16,6 +16,8 @@
 #   Swarm Proxy:              port 9500
 #   G0DM0D3 Proxy:            port 9600
 #   xAI Native Proxy:         port 9700
+#   Persistent Wiki:          port 9800
+#   Sprint Wiki:              port 9850
 #   Tier Chooser Proxy:       port 9900
 # =============================================================================
 
@@ -162,6 +164,14 @@ modelSpecs:
         endpoint: "Persistent MiroFlow"
         model: "persistent-miroflow"
 
+    - name: "deep-researcher-wiki"
+      label: "Deep Researcher + Wiki"
+      description: "Same as Deep Researcher but also builds a live knowledge encyclopedia in the side pane as research progresses. An LLM agent reads findings in real time and writes a structured wiki article."
+      group: "Complex"
+      preset:
+        endpoint: "Persistent MiroFlow Wiki"
+        model: "persistent-miroflow-wiki"
+
     - name: "quick-researcher"
       label: "Quick Researcher"
       description: "Same research engine as Deep Researcher but limited to 2 rounds. Gets you useful results in 2-5 minutes."
@@ -169,6 +179,14 @@ modelSpecs:
       preset:
         endpoint: "MiroFlow Sprint"
         model: "miroflow-sprint"
+
+    - name: "quick-researcher-wiki"
+      label: "Quick Researcher + Wiki"
+      description: "Same as Quick Researcher but also builds a live knowledge encyclopedia in the side pane. Fast 2-5 minute research with an incrementally constructed wiki article."
+      group: "Complex"
+      preset:
+        endpoint: "MiroFlow Sprint Wiki"
+        model: "miroflow-sprint-wiki"
 
     - name: "single-agent-research"
       label: "Focused Search"
@@ -390,6 +408,7 @@ endpoints:
         fetch: true
       titleConvo: true
       titleModel: "mistral-large-thinking"
+      titleMethod: "completion"
       summarize: false
       maxContextTokens: 1000000
       dropParams:
@@ -406,7 +425,9 @@ endpoints:
           - "persistent-miroflow"
         fetch: true
       titleConvo: true
-      titleModel: "persistent-miroflow"
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
       summarize: false
       maxContextTokens: 1000000
       dropParams:
@@ -423,9 +444,51 @@ endpoints:
           - "miroflow-sprint"
         fetch: true
       titleConvo: true
-      titleModel: "miroflow-sprint"
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
       summarize: false
       maxContextTokens: 1000000
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+
+    - name: "Persistent MiroFlow Wiki"
+      apiKey: "not-needed"
+      baseURL: "http://host.docker.internal:9800/v1"
+      models:
+        default:
+          - "persistent-miroflow-wiki"
+        fetch: true
+      titleConvo: true
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
+      summarize: false
+      maxContextTokens: 1000000
+      artifacts: true
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+
+    - name: "MiroFlow Sprint Wiki"
+      apiKey: "not-needed"
+      baseURL: "http://host.docker.internal:9900/v1"
+      models:
+        default:
+          - "miroflow-sprint-wiki"
+        fetch: true
+      titleConvo: true
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
+      summarize: false
+      maxContextTokens: 1000000
+      artifacts: true
       dropParams:
         - "stop"
         - "user"
@@ -440,7 +503,9 @@ endpoints:
           - "miroflow"
         fetch: true
       titleConvo: true
-      titleModel: "miroflow"
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
       summarize: false
       maxContextTokens: 1000000
       dropParams:
@@ -457,7 +522,9 @@ endpoints:
           - "swarm-miroflow"
         fetch: true
       titleConvo: true
-      titleModel: "swarm-miroflow"
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
       summarize: false
       maxContextTokens: 1000000
       dropParams:
@@ -480,7 +547,9 @@ endpoints:
           - "ultraplinian-research"
         fetch: false
       titleConvo: true
-      titleModel: "godmode-classic"
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
       summarize: false
       forcePrompt: false
       maxContextTokens: 1000000
@@ -514,7 +583,9 @@ endpoints:
           - "xai-race-all"
         fetch: false
       titleConvo: true
-      titleModel: "xai-grok-3-fast"
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
       summarize: false
       forcePrompt: false
       maxContextTokens: 2000000

@@ -1053,9 +1053,9 @@ def _parse_conditions(content: str, angle: str, is_bridge: bool) -> list[AtomicC
             elif re.search(r'\b(?:no|not|nothing|zero|none)\b.{0,20}\b(?:found|available|results?|evidence|vendors?)\b', chunk_lower):
                 # Negative context: "no results found", "not available", "nothing found"
                 confidence = 0.3
-            elif any(w in chunk_lower for w in ("confirmed", "verified", "visited", "in stock", "product page")):
+            elif any(re.search(r'\b' + w + r'\b', chunk_lower) for w in ("confirmed", "verified", "visited", "in stock", "product page")):
                 confidence = 0.9
-            elif any(w in chunk_lower for w in ("found", "listed", "available", "ships to")):
+            elif any(re.search(r'\b' + w + r'\b', chunk_lower) for w in ("found", "listed", "available", "ships to")):
                 confidence = 0.7
             elif any(w in chunk_lower for w in ("mentioned", "discussed", "referenced", "suggests")):
                 confidence = 0.5

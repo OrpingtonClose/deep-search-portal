@@ -9,7 +9,10 @@ env vars must be set before the first import.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
+import uuid
 from typing import Any
 
 from langchain_openai import ChatOpenAI
@@ -177,6 +180,94 @@ VERITAS_HALLUCINATION_THRESHOLD = float(os.getenv("VERITAS_HALLUCINATION_THRESHO
 COMMERCIAL_SEARCH_ENABLED = os.getenv("COMMERCIAL_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes")
 BRIGHT_DATA_SERP_ZONE = os.getenv("BRIGHT_DATA_SERP_ZONE", "mcp_unlocker")
 MODERATION_MODEL = os.getenv("MODERATION_MODEL", SUBAGENT_MODEL)
+
+# --- XML Tool Calling (Hermes 3 format) ---
+# Models that don't support the standard OpenAI `tools` parameter but can
+# do tool calling via the Hermes 3 XML format (<tool_call> tags).
+# When the active model is in this set, call_llm injects an XML system
+# prompt instead of using bind_tools(), then parses <tool_call> from output.
+XML_TOOL_CALLING_MODELS: set[str] = {
+    m.strip()
+    for m in os.getenv("XML_TOOL_CALLING_MODELS", "venice-uncensored,hermes-3-llama-3.1-405b").split(",")
+    if m.strip()
+}
+
+
+def is_xml_tool_model(model: str) -> bool:
+    """Return True if *model* requires Hermes-3 XML tool calling."""
+    return model in XML_TOOL_CALLING_MODELS
+
+
+def build_xml_tools_system_prompt(tools: list[dict]) -> str:
+    """Build a Hermes-3 XML system prompt from OpenAI-format tool definitions.
+
+    The returned string should be **prepended** to (or merged with) the
+    existing system message so the model knows how to emit tool calls.
+    """
+    schemas = []
+    for t in tools:
+        fn = t.get("function", t)
+        schemas.append({
+            "name": fn["name"],
+            "description": fn.get("description", ""),
+            "parameters": fn.get("parameters", {}),
+        })
+
+    tools_json = json.dumps(schemas, indent=2)
+    return (
+        "You are a function calling AI model. You are provided with function "
+        "signatures within <tools></tools> XML tags. You may call one or more "
+        "functions to assist with the user query. Don't make assumptions about "
+        "what values to plug into functions.\n\n"
+        "Here are the available tools:\n"
+        f"<tools>\n{tools_json}\n</tools>\n\n"
+        "For each function call return a valid JSON object with the function "
+        "name and arguments inside <tool_call></tool_call> XML tags like this:\n"
+        '<tool_call>\n{"name": "example_function", "arguments": {"arg1": "value1"}}\n</tool_call>\n\n'
+        "IMPORTANT: You may call multiple tools. Output one <tool_call> block per call.\n"
+        "After receiving <tool_response> results, analyze them and either call more "
+        "tools or provide your final answer."
+    )
+
+
+_XML_TC_RE = re.compile(
+    r"<tool_call>\s*(\{.*?\})\s*</tool_call>",
+    re.DOTALL,
+)
+
+
+def parse_xml_tool_calls(content: str) -> list[dict] | None:
+    """Parse Hermes-3 ``<tool_call>`` blocks into OpenAI-format dicts.
+
+    Returns a list of tool-call dicts (same shape as
+    ``response.choices[0].message.tool_calls``) or *None* if no valid
+    tool calls were found.
+    """
+    matches = _XML_TC_RE.findall(content)
+    if not matches:
+        return None
+
+    tool_calls: list[dict] = []
+    for raw in matches:
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        name = obj.get("name", "")
+        args = obj.get("arguments", {})
+        if not name:
+            continue
+        tool_calls.append({
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": json.dumps(args) if isinstance(args, dict) else str(args),
+            },
+        })
+
+    return tool_calls or None
+
 
 log.info(
     f"Config: synthesis_model={UPSTREAM_MODEL}, subagent_model={SUBAGENT_MODEL}, "

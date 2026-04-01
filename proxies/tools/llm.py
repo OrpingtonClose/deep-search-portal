@@ -19,7 +19,10 @@ from .config import (
     UPSTREAM_MODEL,
     _get_llm,
     _get_llm_via_litellm,
+    build_xml_tools_system_prompt,
+    is_xml_tool_model,
     log,
+    parse_xml_tool_calls,
 )
 from .tool_defs import LANGCHAIN_TOOLS
 
@@ -83,6 +86,50 @@ def _dicts_to_langchain_messages(
 _request_configs: dict[str, dict] = {}
 
 
+def _inject_xml_tools(messages: list[dict], tools: list[dict]) -> list[dict]:
+    """Prepend Hermes-3 XML tool instructions to the system message.
+
+    If the first message is a system message, the XML prompt is prepended.
+    Otherwise a new system message is inserted at position 0.
+    Also converts any ``tool`` role messages to ``user`` role with
+    ``<tool_response>`` XML wrapper so the model understands them.
+    """
+    xml_prompt = build_xml_tools_system_prompt(tools)
+    out: list[dict] = []
+    system_injected = False
+
+    for m in messages:
+        role = m.get("role", "user")
+        if role == "system" and not system_injected:
+            out.append({
+                "role": "system",
+                "content": xml_prompt + "\n\n" + (m.get("content", "") or ""),
+            })
+            system_injected = True
+        elif role == "tool":
+            # Convert tool responses to user messages with XML wrapper
+            tc_id = m.get("tool_call_id", "unknown")
+            content = m.get("content", "") or ""
+            out.append({
+                "role": "user",
+                "content": f"<tool_response>\n{content}\n</tool_response>",
+            })
+        elif role == "assistant" and m.get("tool_calls"):
+            # Strip native tool_calls from assistant messages — the XML
+            # model already emitted <tool_call> tags in its content.
+            out.append({
+                "role": "assistant",
+                "content": m.get("content", "") or "",
+            })
+        else:
+            out.append(m)
+
+    if not system_injected:
+        out.insert(0, {"role": "system", "content": xml_prompt})
+
+    return out
+
+
 async def call_llm(
     messages: list[dict],
     req_id: str,
@@ -100,6 +147,7 @@ async def call_llm(
     or  {"error": str}
     """
     resolved_model = model or UPSTREAM_MODEL
+    use_xml = include_tools and is_xml_tool_model(resolved_model)
 
     if SEARCH_BACKEND == "mcp":
         # --- MCP path: LiteLLM handles retries, fallbacks, cost tracking ---
@@ -109,10 +157,11 @@ async def call_llm(
             temperature=temperature,
         )
 
-        if include_tools:
+        if include_tools and not use_xml:
             llm = llm.bind_tools(LANGCHAIN_TOOLS)
 
-        lc_messages = _dicts_to_langchain_messages(messages)
+        msgs = _inject_xml_tools(messages, LANGCHAIN_TOOLS) if use_xml else messages
+        lc_messages = _dicts_to_langchain_messages(msgs)
         config = _request_configs.get(req_id, {})
 
         try:
@@ -120,7 +169,9 @@ async def call_llm(
             content = ai_msg.content or ""
 
             tool_calls_out = None
-            if ai_msg.tool_calls:
+            if use_xml:
+                tool_calls_out = parse_xml_tool_calls(content)
+            elif ai_msg.tool_calls:
                 tool_calls_out = [
                     {
                         "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
@@ -155,10 +206,11 @@ async def call_llm(
         temperature=temperature,
     )
 
-    if include_tools:
+    if include_tools and not use_xml:
         llm = llm.bind_tools(LANGCHAIN_TOOLS)
 
-    lc_messages = _dicts_to_langchain_messages(messages)
+    msgs = _inject_xml_tools(messages, LANGCHAIN_TOOLS) if use_xml else messages
+    lc_messages = _dicts_to_langchain_messages(msgs)
 
     # Look up per-request config (contains callbacks list with
     # ResearchMetricsCallback) so metrics fire automatically.
@@ -175,7 +227,9 @@ async def call_llm(
 
             # Extract tool_calls in OpenAI format for backward compat
             tool_calls_out = None
-            if ai_msg.tool_calls:
+            if use_xml:
+                tool_calls_out = parse_xml_tool_calls(content)
+            elif ai_msg.tool_calls:
                 tool_calls_out = [
                     {
                         "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),

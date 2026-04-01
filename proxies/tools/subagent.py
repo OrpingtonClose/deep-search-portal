@@ -342,22 +342,39 @@ def _trim_tool_responses(messages: list[dict], max_content: int = 1500) -> int:
 
     Walks the message list and truncates tool-response content that exceeds
     *max_content* characters.  Returns the number of messages trimmed.
-    Preserves the system prompt (index 0) and the most recent 4 messages.
+    Preserves the system prompt (index 0).
+
+    First pass: trim older messages (everything except last 4) to *max_content*.
+    Second pass: if first pass trimmed nothing (overflow is in recent messages),
+    trim ALL tool messages (including recent ones) to *max_content*.
+    This prevents unrecoverable overflow when recent tool responses are very large.
     """
     trimmed = 0
-    # Don't touch system prompt or the last 4 messages (recent context)
+    sentinel = "\n[...trimmed to free context...]"
+
+    # Pass 1: trim older messages only (preserve recent 4)
     safe_end = max(1, len(messages) - 4)
     for i in range(1, safe_end):
         msg = messages[i]
         role = msg.get("role", "")
         content = msg.get("content", "") or ""
-        if role == "tool" and len(content) > max_content and not content.endswith("[...truncated to free context...]"):
-            messages[i] = {**msg, "content": content[:max_content] + "\n[...truncated to free context...]"}
+        if role == "tool" and len(content) > max_content and not content.endswith(sentinel):
+            messages[i] = {**msg, "content": content[:max_content] + sentinel}
             trimmed += 1
-        elif role == "user" and "tool_response" in content.lower() and len(content) > max_content and not content.endswith("[...truncated to free context...]"):
-            # XML tool responses embedded in user messages
-            messages[i] = {**msg, "content": content[:max_content] + "\n[...truncated to free context...]"}
+        elif role == "user" and "tool_response" in content.lower() and len(content) > max_content and not content.endswith(sentinel):
+            messages[i] = {**msg, "content": content[:max_content] + sentinel}
             trimmed += 1
+
+    # Pass 2: if pass 1 freed nothing, trim recent messages too
+    if trimmed == 0:
+        for i in range(safe_end, len(messages)):
+            msg = messages[i]
+            role = msg.get("role", "")
+            content = msg.get("content", "") or ""
+            if role == "tool" and len(content) > max_content and not content.endswith(sentinel):
+                messages[i] = {**msg, "content": content[:max_content] + sentinel}
+                trimmed += 1
+
     return trimmed
 
 

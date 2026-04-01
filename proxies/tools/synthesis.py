@@ -512,11 +512,12 @@ async def _wiki_agent_loop(
                 )
 
                 # Use .replace() instead of .format() to avoid
-                # KeyError when user_query or conditions contain { or }
+                # KeyError when user_query or conditions contain { or }.
+                # Substitute {conditions_text} LAST because it contains
+                # arbitrary web-scraped text that may include literal
+                # placeholder strings like "{phase}".
                 prompt = _WIKI_AGENT_PROMPT.replace(
                     "{query}", user_query
-                ).replace(
-                    "{conditions_text}", conditions_text[:12000]
                 ).replace(
                     "{phase}", activity.get("phase", "researching")
                 ).replace(
@@ -525,6 +526,8 @@ async def _wiki_agent_loop(
                     "{sources_count}", str(activity.get("sources_count", 0))
                 ).replace(
                     "{progress_note}", progress_note
+                ).replace(
+                    "{conditions_text}", conditions_text[:12000]
                 )
 
                 messages = [
@@ -2502,11 +2505,11 @@ async def _pipeline_producer(
                 by_angle = _group_by_angle(all_conditions)
 
                 # Use .replace() instead of .format() to avoid
-                # KeyError when user_query or conditions contain { or }
+                # KeyError when user_query or conditions contain { or }.
+                # Substitute {conditions_text} LAST — it contains arbitrary
+                # web-scraped text that may include literal placeholders.
                 final_prompt = _WIKI_AGENT_PROMPT.replace(
                     "{query}", user_query
-                ).replace(
-                    "{conditions_text}", conditions_text[:12000]
                 ).replace(
                     "{phase}", "completed"
                 ).replace(
@@ -2518,6 +2521,8 @@ async def _pipeline_producer(
                         "\n9. This is the FINAL version — research is "
                         "complete. Write a comprehensive, polished article."
                     )
+                ).replace(
+                    "{conditions_text}", conditions_text[:12000]
                 )
                 messages = [
                     {"role": "system", "content": final_prompt},

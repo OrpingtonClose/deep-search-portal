@@ -845,10 +845,10 @@ async def tool_create_knowledge_wiki(
 
     user_query = topic or collector.user_query
 
+    # Substitute {conditions_text} LAST — it contains arbitrary
+    # web-scraped text that may include literal placeholder strings.
     prompt = _WIKI_TOOL_PROMPT.replace(
         "{query}", user_query
-    ).replace(
-        "{conditions_text}", conditions_text[:12000]
     ).replace(
         "{phase}", phase
     ).replace(
@@ -860,6 +860,8 @@ async def tool_create_knowledge_wiki(
             "\n9. This is a LIVE snapshot — research is ongoing. "
             "Write what you can from what is available now."
         )
+    ).replace(
+        "{conditions_text}", conditions_text[:12000]
     )
 
     messages = [

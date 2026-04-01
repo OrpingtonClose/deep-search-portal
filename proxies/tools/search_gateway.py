@@ -327,8 +327,10 @@ async def _video_search(query: str) -> str:
 async def _darkweb_search(query: str) -> str:
     """Search dark web via Sicry (18 Tor search engines)."""
     from .sicry_tools import tool_sicry_search
+    from .rate_governor import governed_request
 
-    return await tool_sicry_search(query, max_results=15)
+    async with governed_request("sicry_search"):
+        return await tool_sicry_search(query, max_results=15)
 
 
 # ---------------------------------------------------------------------------

@@ -1017,7 +1017,7 @@ NATIVE_TOOLS = [
                         "description": (
                             "Comma-separated source categories to query. Options: "
                             "'all' (default), 'grok', 'searxng', 'social', "
-                            "'community', 'academic', 'archive', 'video'"
+                            "'community', 'academic', 'archive', 'video', 'darkweb'"
                         ),
                     },
                     "search_type": {

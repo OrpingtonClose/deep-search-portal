@@ -461,7 +461,7 @@ _CACHEABLE_TOOLS = {
     "tiktok_search", "linkedin_search",
     "chan_4plebs_search", "chan_b4k_search", "chan_warosu_search",
     "grok_deep_search", "search_gateway",
-    "sicry_search", "sicry_fetch", "sicry_check_tor", "sicry_renew_identity",
+    "sicry_search",  # sicry_fetch/check_tor/renew_identity are NOT cached (operational/mutating)
 }
 
 # Tools that involve long-running local computation (e.g. WhisperX GPU

@@ -86,8 +86,8 @@ _SELF_THROTTLED_TOOLS: set[str] = {
     "wayback_fetch",
     # Onion fetch throttles via get_throttler("tor") internally
     "onion_fetch",
-    # Sicry dark web tools throttle via get_throttler("sicry") internally
-    "sicry_search", "sicry_fetch", "sicry_check_tor", "sicry_renew_identity",
+    # Note: Sicry tools are NOT in _SELF_THROTTLED_TOOLS — the governor
+    # enforces the "sicry" per-provider bucket (1 RPS / 3 burst / 3 concurrent).
     # Grok deep search throttles via get_throttler("xai") internally
     "grok_deep_search",
     # Search gateway delegates to sub-tools that all self-throttle

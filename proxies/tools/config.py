@@ -45,7 +45,7 @@ SEARCH_BACKEND = os.getenv("SEARCH_BACKEND", "legacy")  # "legacy" or "mcp"
 
 # Grok Responses API (dedicated search data source — separate from synthesis)
 GROK_RESPONSES_API_BASE = os.getenv("GROK_RESPONSES_API_BASE", "https://api.x.ai")
-XAI_API_KEY = os.getenv("XAI_API_KEY", os.getenv("UPSTREAM_KEY", ""))
+XAI_API_KEY = os.getenv("XAI_API_KEY", "")
 GROK_SEARCH_MODEL = os.getenv("GROK_SEARCH_MODEL", "grok-4.20-0309-reasoning")
 LISTEN_PORT = env_int("PERSISTENT_RESEARCH_PORT", 9300, minimum=1)
 PORTAL_PUBLIC_URL = os.getenv("PORTAL_PUBLIC_URL", "").rstrip("/")

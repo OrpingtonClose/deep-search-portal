@@ -128,7 +128,7 @@ TIER_MODELS = {
         "qwen/qwen2.5-72b-instruct",
     ],
     "medium": [
-        "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-sonnet-4-6",
         "google/gemini-3-pro-preview",
         "openai/gpt-5.4",
         "x-ai/grok-4-1-fast-reasoning",
@@ -138,7 +138,7 @@ TIER_MODELS = {
         "z-ai/glm-5",
     ],
     "full-throttle": [
-        "anthropic/claude-opus-4.6",
+        "anthropic/claude-opus-4-6",
         "google/gemini-3.1-pro-preview",
         "openai/gpt-5",
         "x-ai/grok-4.20-0309-reasoning",

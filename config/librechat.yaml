@@ -77,12 +77,12 @@ modelSpecs:
         model: "tier-deepseek/deepseek-chat"
 
     - name: "tier-claude-sonnet"
-      label: "Medium — Claude Sonnet 4.6"
-      description: "Anthropic Claude Sonnet 4.6. Frequently the practical winner in blind tests. Direct to Anthropic API."
+      label: "Medium — Claude Sonnet 4-6"
+      description: "Anthropic Claude Sonnet 4-6. Frequently the practical winner in blind tests. Direct to Anthropic API."
       group: "Chooser"
       preset:
         endpoint: "Tier Chooser"
-        model: "tier-anthropic/claude-sonnet-4.6"
+        model: "tier-anthropic/claude-sonnet-4-6"
 
     - name: "tier-gpt54"
       label: "Medium — GPT-5.4"
@@ -93,12 +93,12 @@ modelSpecs:
         model: "tier-openai/gpt-5.4"
 
     - name: "tier-claude-opus"
-      label: "Full Throttle — Claude Opus 4.6"
-      description: "Anthropic Claude Opus 4.6. Reasoning king with max-effort thinking. Direct to Anthropic API."
+      label: "Full Throttle — Claude Opus 4-6"
+      description: "Anthropic Claude Opus 4-6. Reasoning king with max-effort thinking. Direct to Anthropic API."
       group: "Chooser"
       preset:
         endpoint: "Tier Chooser"
-        model: "tier-anthropic/claude-opus-4.6"
+        model: "tier-anthropic/claude-opus-4-6"
 
     - name: "tier-grok-420"
       label: "Full Throttle — Grok 4.20 Reasoning"

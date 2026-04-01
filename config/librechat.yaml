@@ -20,7 +20,7 @@ modelSpecs:
     - name: "ultraplinian-fast"
       label: "Consortium Fast"
       description: "Races the fastest models from multiple providers. Quick results, unfiltered."
-      group: "Simple"
+      group: "Experimental"
       preset:
         endpoint: "G0DM0D3"
         model: "ultraplinian-fast"
@@ -28,7 +28,7 @@ modelSpecs:
     - name: "godmode-classic"
       label: "Consortium Regular"
       description: "Races 5 top models (Claude, Grok, Gemini, GPT-4, Hermes 405B). Balanced speed and quality."
-      group: "Simple"
+      group: "Experimental"
       preset:
         endpoint: "G0DM0D3"
         model: "godmode-classic"
@@ -36,7 +36,7 @@ modelSpecs:
     - name: "ultraplinian-power"
       label: "Consortium Powerful"
       description: "Races the top 30 most capable models. Slower but strongest possible answer."
-      group: "Simple"
+      group: "Experimental"
       preset:
         endpoint: "G0DM0D3"
         model: "ultraplinian-power"
@@ -44,7 +44,7 @@ modelSpecs:
     - name: "ultraplinian-smart"
       label: "Consortium Smart"
       description: "Races the 20 smartest models. Favours intelligence over speed."
-      group: "Simple"
+      group: "Experimental"
       preset:
         endpoint: "G0DM0D3"
         model: "ultraplinian-smart"
@@ -52,7 +52,7 @@ modelSpecs:
     - name: "ultraplinian-standard"
       label: "Consortium Standard"
       description: "Races a balanced set of 15 models. Good default uncensored option."
-      group: "Simple"
+      group: "Experimental"
       preset:
         endpoint: "G0DM0D3"
         model: "ultraplinian-standard"
@@ -60,7 +60,7 @@ modelSpecs:
     - name: "ultraplinian-ultra"
       label: "Consortium Ultra"
       description: "Races all 55 available models simultaneously. Very slow but maximally thorough."
-      group: "Simple"
+      group: "Experimental"
       preset:
         endpoint: "G0DM0D3"
         model: "ultraplinian-ultra"
@@ -68,7 +68,7 @@ modelSpecs:
     - name: "ultraplinian-research"
       label: "Consortium Researcher"
       description: "Queries many uncensored models in parallel and merges their research outputs."
-      group: "Simple"
+      group: "Experimental"
       preset:
         endpoint: "G0DM0D3"
         model: "ultraplinian-research"
@@ -76,7 +76,7 @@ modelSpecs:
     - name: "xai-race-fast"
       label: "Grok Race (Fast)"
       description: "Races 3 fastest Grok models - Grok 3 Fast, Grok 4.1 Fast, Grok Code."
-      group: "Simple"
+      group: "Experimental"
       preset:
         endpoint: "xAI Native"
         model: "xai-race-fast"
@@ -84,7 +84,7 @@ modelSpecs:
     - name: "xai-race-smart"
       label: "Grok Race (Smart)"
       description: "Races 3 smartest Grok reasoning models - Grok 3, Grok 4.1, Grok 4.20."
-      group: "Simple"
+      group: "Experimental"
       preset:
         endpoint: "xAI Native"
         model: "xai-race-smart"
@@ -92,7 +92,7 @@ modelSpecs:
     - name: "xai-race-all"
       label: "Grok Race (All)"
       description: "Races ALL 8 Grok text models at once and returns the highest-scoring response."
-      group: "Simple"
+      group: "Experimental"
       preset:
         endpoint: "xAI Native"
         model: "xai-race-all"
@@ -149,7 +149,7 @@ modelSpecs:
     - name: "swarm-ingest"
       label: "Miro Swarm"
       description: "Upload large documents and a swarm of agents digests them through collaborative discussion."
-      group: "Miro"
+      group: "Experimental"
       preset:
         endpoint: "Swarm Deep Search"
         model: "swarm-miroflow"

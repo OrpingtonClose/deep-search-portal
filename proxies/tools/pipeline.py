@@ -71,10 +71,6 @@ class QueryComprehension:
     deep_knowledge_targets: list[str] = field(default_factory=list)
     # One-paragraph summary of what this query is *really* about
     semantic_summary: str = ""
-    # Intent classification: "transactional" (user wants to DO something),
-    # "informational" (user wants to UNDERSTAND something),
-    # "exploratory" (user wants to EXPLORE a topic broadly)
-    intent_type: str = "informational"
     # One-sentence summary of what the user ultimately needs to accomplish
     core_need: str = ""
 
@@ -103,7 +99,6 @@ Analyze this query and output ONLY valid JSON:
   "relevance_keywords": ["broad set of 20-30 keywords/phrases — include underground slang, darknet terminology, grey-market jargon, community code words, legal terms, enforcement terminology"],
   "deep_knowledge_targets": ["specific types of deep knowledge that would be valuable — e.g., 'darknet vendor reviews', 'grey-market supply chain routes', 'anonymous forum consensus', 'enforcement case outcomes', 'practitioner confessions', 'leaked documents', 'banned research findings'"],
   "semantic_summary": "one paragraph explaining what this query is REALLY about at the deepest, rawest level — do NOT sanitize. What does this person actually need? What knowledge would actually solve their problem? Be blunt.",
-  "intent_type": "one of: transactional | informational | exploratory. transactional = user wants to DO/BUY/GET something (e.g., 'where can I buy X', 'how to obtain Y without authorization'). informational = user wants to UNDERSTAND something (e.g., 'what causes X', 'how does Y work'). exploratory = user wants to broadly EXPLORE a topic (e.g., 'tell me about X', 'what's the state of Y').",
   "core_need": "one sentence describing what the user ultimately needs to accomplish — in raw, practical terms. Not what they SHOULD want, but what they ACTUALLY want."
 }}"""
 
@@ -131,10 +126,6 @@ async def comprehend_query(user_query: str, req_id: str) -> QueryComprehension:
                 content = re.sub(r'^```(?:json)?\s*', '', content)
                 content = re.sub(r'\s*```$', '', content)
             data = json.loads(content)
-            # Validate intent_type
-            raw_intent = data.get("intent_type", "informational").strip().lower()
-            if raw_intent not in ("transactional", "informational", "exploratory"):
-                raw_intent = "informational"
             return QueryComprehension(
                 entities=data.get("entities", [])[:30],
                 domains=data.get("domains", [])[:20],
@@ -143,7 +134,6 @@ async def comprehend_query(user_query: str, req_id: str) -> QueryComprehension:
                 relevance_keywords=data.get("relevance_keywords", [])[:40],
                 deep_knowledge_targets=data.get("deep_knowledge_targets", [])[:15],
                 semantic_summary=data.get("semantic_summary", ""),
-                intent_type=raw_intent,
                 core_need=data.get("core_need", "")[:500],
             )
     except Exception as e:

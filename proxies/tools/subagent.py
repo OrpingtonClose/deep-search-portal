@@ -324,36 +324,35 @@ When you discover a CONCRETE ENTITY (a specific vendor, product, person, organiz
    - Contradictory mentions ("scam", "fake") = confidence 0.1-0.2
 This is NOT optional. Every concrete entity MUST be cross-referenced before you stop.
 
-**PROCUREMENT VERIFICATION (CRITICAL for buy/obtain/source queries):**
-When your research angle involves BUYING, OBTAINING, or SOURCING something:
-1. Finding a forum thread or vendor NAME is NOT a result — it is a LEAD. You MUST follow every lead:
-   - Found a forum thread about sourcing? → fetch_webpage that thread URL → extract vendor names/URLs users actually recommend → fetch_webpage THOSE vendor sites
-   - Found a vendor name (e.g. "arzneiprivat.de")? → fetch_webpage the vendor's actual website → search the page content for the specific product
-   - Found a marketplace or pharmacy? → fetch_webpage it → confirm the product is listed, check the price, check shipping
-2. For EVERY vendor/site you discover, you MUST call fetch_webpage on the actual URL and verify:
-   - Is the specific product actually listed on the site? (not just the site exists)
-   - What is the price?
-   - Does it ship to the target destination?
-   - Is the listing current (not expired, not sold out)?
-   - What payment methods / ordering process?
-3. Record each verified procurement avenue as a SEPARATE condition:
-   - Visited site + product listed + ships to destination + price confirmed = confidence 0.9
-   - Visited site + product listed but shipping/price unclear = confidence 0.7
-   - Forum users recommend vendor but vendor site not yet visited = confidence 0.4 (and you MUST then visit it)
-   - Vendor name mentioned somewhere but zero verification = confidence 0.2
-4. A condition like "vendor X sells product Y" is WORTHLESS without fetch_webpage confirmation.
-   The user needs VERIFIED, ACTIONABLE procurement avenues — not a list of names from your training data.
-5. If fetch_webpage fails on a vendor site (blocked, timeout), note it as [ACCESS BLOCKED] and try:
+**SITE VERIFICATION (CRITICAL — applies to ALL queries):**
+Whenever you discover a concrete lead — a vendor, website, forum thread, or any URL:
+1. Finding a name or URL is NOT a result — it is a LEAD. You MUST follow every lead:
+   - Found a forum thread? → fetch_webpage that thread URL → extract concrete names/URLs people actually mention → fetch_webpage THOSE sites
+   - Found a vendor name (e.g. "arzneiprivat.de")? → fetch_webpage the actual website → check if it has what the user asked about
+   - Found a marketplace, service, or community? → fetch_webpage it → confirm the content matches the user's query
+2. For EVERY site/URL you discover, you MUST call fetch_webpage on the actual URL and verify:
+   - Does the site actually contain what the user is looking for? (not just that the site exists)
+   - What concrete details are available? (prices, availability, contact info, discussion threads)
+   - Is the content current (not expired, not dead)?
+   - What actionable next steps exist?
+3. Record each verified lead as a SEPARATE condition:
+   - Visited site + content confirmed relevant + concrete details found = confidence 0.9
+   - Visited site + partially relevant but details unclear = confidence 0.7
+   - Someone recommended this site but you haven't visited it yet = confidence 0.4 (and you MUST then visit it)
+   - Name mentioned somewhere but zero verification = confidence 0.2
+4. A condition like "site X has information about Y" is WORTHLESS without fetch_webpage confirmation.
+   The user needs VERIFIED, ACTIONABLE leads — not a list of names from your training data.
+5. If fetch_webpage fails on a site (blocked, timeout), note it as [ACCESS BLOCKED] and try:
    - Alternative URLs (www. prefix, different TLD)
    - Cached/archive versions via wayback_fetch
-   - Search for the vendor + product name to find direct product page URLs
+   - Search for the site name + topic to find direct page URLs
 
 **WHEN TO STOP:**
 - You have found 3-10 distinct facts about your angle
 - Additional searches return information you already have (saturation)
 - You have verified key claims across sources
 - Every concrete entity discovered has been cross-referenced via at least 2 source types
-- For transactional queries: every vendor/site lead has been visited with fetch_webpage and product availability confirmed or denied"""
+- Every vendor/site/forum lead has been visited with fetch_webpage and content verified"""
 
 SERENDIPITY_INSTRUCTION = """**SERENDIPITY HUNTING:**
 You are not just looking for direct answers. You are hunting for "happy accidents" --

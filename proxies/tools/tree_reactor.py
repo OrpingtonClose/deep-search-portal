@@ -107,43 +107,18 @@ Output format:
 # Prompt-Distance Scoring
 # ============================================================================
 
-# Intent-specific keyword boosters: questions containing these patterns
-# get a relevance boost for the corresponding intent type.
-_INTENT_BOOSTERS: dict[str, list[str]] = {
-    "transactional": [
-        "buy", "purchase", "order", "get", "acquire", "obtain", "source",
-        "vendor", "supplier", "price", "cost", "shipping", "delivery",
-        "how to", "setup", "install", "configure", "step by step",
-        "where can", "who sells", "cheapest", "best deal", "coupon",
-        "subscribe", "sign up", "register", "apply", "book",
-    ],
-    "informational": [
-        "what is", "how does", "why", "explain", "understand",
-        "mechanism", "cause", "effect", "research", "study",
-        "evidence", "data", "statistics", "history", "background",
-        "difference between", "compare", "analysis", "review",
-    ],
-    "exploratory": [
-        "overview", "landscape", "state of", "trends", "future",
-        "possibilities", "options", "alternatives", "emerging",
-        "what are", "survey", "map", "scope", "range",
-    ],
-}
-
-
 def _score_prompt_distance(
     question: str,
     core_need: str,
-    intent_type: str,
 ) -> float:
     """Score how closely a research question serves the user's core need.
 
     Returns a value in [0.0, 1.0] where 1.0 means the question directly
-    addresses the core need and intent.
+    addresses the core need.
 
-    The score combines:
-      1. Word overlap between question and core_need (Jaccard-like)
-      2. Intent-specific keyword boost
+    Based purely on word overlap between question and core_need — no
+    intent classification needed.  The prompt itself tells the model what
+    the user wants; we just measure proximity.
     """
     if not core_need:
         return 0.5  # no core_need available — neutral score
@@ -158,23 +133,9 @@ def _score_prompt_distance(
     if not q_words or not need_words:
         return 0.5
 
-    # 1. Word overlap component (0-1)
     overlap = len(q_words & need_words)
     union = len(q_words | need_words)
-    overlap_score = overlap / max(union, 1)
-
-    # 2. Intent-specific keyword boost (0 or 0.15)
-    intent_boost = 0.0
-    q_lower = question.lower()
-    boosters = _INTENT_BOOSTERS.get(intent_type, [])
-    for keyword in boosters:
-        if keyword in q_lower:
-            intent_boost = 0.15
-            break
-
-    # Combine: overlap is primary, intent boost is additive
-    raw = overlap_score * 0.85 + intent_boost
-    return min(1.0, max(0.0, raw))
+    return min(1.0, max(0.0, overlap / max(union, 1)))
 
 
 def _compute_pressure(
@@ -337,7 +298,6 @@ async def _spawn_sub_questions(
             pd_score = _score_prompt_distance(
                 question,
                 condition_store.comprehension.core_need,
-                condition_store.comprehension.intent_type,
             )
 
         pressure = _compute_pressure(
@@ -444,7 +404,6 @@ def _spawn_verification_nodes(
     parent_node: ResearchNode,
     existing_questions: list[str],
     req_id: str,
-    intent_type: str = "informational",
     core_need: str = "",
 ) -> list[ResearchNode]:
     """Create verification ResearchNodes for concrete entities.
@@ -453,12 +412,12 @@ def _spawn_verification_nodes(
     across forums, reviews, and social media.  These nodes get high
     pressure so the tree prioritizes them.
 
-    For transactional queries, vendor/website/forum_thread entities get
-    **procurement verification** nodes that visit the actual URL with
-    fetch_webpage to confirm product availability, pricing, and shipping.
+    Vendor/website/forum_thread entities ALWAYS get **site verification**
+    nodes that visit the actual URL with fetch_webpage to confirm the
+    content matches the user's query.  No intent classification needed —
+    if we found a concrete lead, we verify it.
     """
     children: list[ResearchNode] = []
-    is_transactional = intent_type == "transactional"
 
     for ent in entities:
         name = ent.get("name", "").strip()
@@ -467,39 +426,38 @@ def _spawn_verification_nodes(
         if not name:
             continue
 
-        # For transactional queries, vendor/website/forum entities get
-        # procurement verification: visit the URL, check product listing
-        if is_transactional and ent_type in (
+        # Vendor/website/forum entities: visit the URL, check content
+        if ent_type in (
             "vendor", "website", "service", "forum_thread",
         ):
             if source_url:
                 question = (
                     f'Visit {name} at {source_url} using fetch_webpage. '
-                    f'Check if the site actually lists the product the user needs '
-                    f'({core_need[:100]}). Look for: product availability, price, '
-                    f'shipping options to the target destination, payment methods. '
+                    f'Check if the site actually contains what the user needs '
+                    f'({core_need[:100]}). Look for: concrete details, availability, '
+                    f'pricing, shipping, contact info, or actionable discussion threads. '
                     f'Then search for "{name}" reviews and complaints to assess legitimacy.'
                 )
             else:
                 question = (
                     f'Find the actual website for "{name}" using searxng_search, '
-                    f'then visit it with fetch_webpage. Check if it actually lists '
-                    f'the product the user needs ({core_need[:100]}). Verify: '
-                    f'product availability, price, shipping, payment methods. '
+                    f'then visit it with fetch_webpage. Check if it actually has '
+                    f'what the user needs ({core_need[:100]}). Verify: '
+                    f'content relevance, concrete details, pricing, availability. '
                     f'Also search for "{name}" reviews and scam reports.'
                 )
             context = (
-                f"Procurement verification for {ent_type} '{name}'. "
-                f"The user needs to BUY something — finding this name is just a lead. "
-                f"You MUST visit the actual site with fetch_webpage and confirm the product "
-                f"is listed and purchasable. A name without site verification is worthless."
+                f"Site verification for {ent_type} '{name}'. "
+                f"Finding this name is just a lead — you MUST visit the actual "
+                f"site with fetch_webpage and confirm it has what the user asked for. "
+                f"A name without site verification is worthless."
             )
-            # Procurement verification gets highest pressure (0.95)
+            # Site verification gets highest pressure (0.95)
             pressure = _compute_pressure(
                 0.95, parent_node.depth + 1, parent_node.pressure,
             )
         else:
-            # Standard reputation verification (non-transactional or non-vendor entities)
+            # Standard reputation verification for non-site entities
             question = (
                 f'Verify "{name}": search for independent mentions, reviews, '
                 f"complaints, or discussions about this {ent_type} across "
@@ -661,7 +619,6 @@ async def tree_research_reactor(
     )
     comprehension = await comprehend_query(user_query, req_id)
     langfuse_config.end_span(comp_span, output={
-        "intent": comprehension.intent_type,
         "entities": len(comprehension.entities),
         "domains": len(comprehension.domains),
         "implicit_questions": len(comprehension.implicit_questions),
@@ -669,14 +626,13 @@ async def tree_research_reactor(
     if comprehension.semantic_summary:
         progress.append(
             f"Understanding: {comprehension.semantic_summary[:300]}\n"
-            f"Intent: **{comprehension.intent_type}**\n"
             f"Core need: {comprehension.core_need[:200]}\n"
             f"Entities: {', '.join(comprehension.entities[:10])}\n"
             f"Domains: {', '.join(comprehension.domains[:8])}\n"
             f"Adjacent territories: {', '.join(comprehension.adjacent_territories[:6])}\n"
         )
     log.info(
-        f"[{req_id}] Query comprehension: intent={comprehension.intent_type}, "
+        f"[{req_id}] Query comprehension: "
         f"{len(comprehension.entities)} entities, "
         f"{len(comprehension.domains)} domains, "
         f"{len(comprehension.implicit_questions)} implicit questions, "
@@ -824,7 +780,7 @@ async def tree_research_reactor(
                 continue
 
             pd_score = _score_prompt_distance(
-                q, comprehension.core_need, comprehension.intent_type,
+                q, comprehension.core_need,
             )
             # Seed pressure: base 0.9 modulated by prompt distance
             # Range: ~0.63 (distant) to ~1.0 (directly on core_need)
@@ -992,7 +948,6 @@ async def tree_research_reactor(
                             if entities:
                                 raw_verify = _spawn_verification_nodes(
                                     entities, node, all_questions, req_id,
-                                    intent_type=comprehension.intent_type,
                                     core_need=comprehension.core_need,
                                 )
                                 # Filter verification nodes through the

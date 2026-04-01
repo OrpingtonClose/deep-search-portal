@@ -547,12 +547,14 @@ async def run_subagent(
                         continue  # retry without incrementing consecutive_errors
                     # Trimming didn't help (already trimmed) — try reducing max_tokens
                     import re as _re
-                    _m = _re.search(r'has (\d+) input tokens', str(err_str))
-                    if _m:
-                        input_toks = int(_m.group(1))
-                        headroom = 32768 - input_toks - 64  # small safety margin
+                    _m_input = _re.search(r'has (\d+) input tokens', str(err_str))
+                    _m_ctx = _re.search(r'maximum context length is (\d+)', str(err_str))
+                    if _m_input:
+                        input_toks = int(_m_input.group(1))
+                        ctx_limit = int(_m_ctx.group(1)) if _m_ctx else 32768
+                        headroom = ctx_limit - input_toks - 64  # small safety margin
                         if headroom >= 512:
-                            log.info(f"[{sa_id}] Turn {turn}: Context overflow after trim — reducing max_tokens to {headroom}")
+                            log.info(f"[{sa_id}] Turn {turn}: Context overflow after trim — reducing max_tokens to {headroom} (ctx={ctx_limit})")
                             llm_result = await call_llm(
                                 agent_messages, sa_id,
                                 model=SUBAGENT_MODEL,
@@ -561,11 +563,9 @@ async def run_subagent(
                                 temperature=0.3,
                             )
                             if "error" not in llm_result:
-                                langfuse_config.end_span(turn_span, output={"action": "context_overflow_reduce_tokens", "max_tokens": headroom})
                                 recovered = True
                             else:
                                 log.warning(f"[{sa_id}] Turn {turn}: Reduced max_tokens still failed: {llm_result['error']}")
-                                langfuse_config.end_span(turn_span, output={"action": "context_overflow_unrecoverable"}, level="ERROR")
                 if not recovered:
                     consecutive_errors += 1
                     log.warning(f"[{sa_id}] Turn {turn}: Error: {err_str}")

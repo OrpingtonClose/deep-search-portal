@@ -418,10 +418,10 @@ def _trim_tool_responses(messages: list[dict], max_content: int = 1500) -> int:
         msg = messages[i]
         role = msg.get("role", "")
         content = msg.get("content", "") or ""
-        if role == "tool" and len(content) > max_content:
+        if role == "tool" and len(content) > max_content and not content.endswith("[...truncated to free context...]"):
             messages[i] = {**msg, "content": content[:max_content] + "\n[...truncated to free context...]"}
             trimmed += 1
-        elif role == "user" and "tool_response" in content.lower() and len(content) > max_content:
+        elif role == "user" and "tool_response" in content.lower() and len(content) > max_content and not content.endswith("[...truncated to free context...]"):
             # XML tool responses embedded in user messages
             messages[i] = {**msg, "content": content[:max_content] + "\n[...truncated to free context...]"}
             trimmed += 1

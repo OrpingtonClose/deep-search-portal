@@ -400,6 +400,63 @@ def score_response(content: str, query: str) -> dict:
 # Model API call helpers (native provider routing with OpenRouter fallback)
 # ============================================================================
 
+# Models whose providers require max_completion_tokens instead of max_tokens
+_MAX_COMPLETION_TOKENS_PREFIXES = {"openai"}
+
+# Thinking models that need enable_thinking=false for non-streaming calls
+_THINKING_MODELS = {
+    "qwen3-235b-a22b", "qwen3-235b-a22b-instruct-2507",
+    "qwen3-235b-a22b-thinking-2507",
+}
+
+# Models that do not support custom temperature (only default=1)
+_NO_CUSTOM_TEMPERATURE_MODELS = {
+    "gpt-5",
+}
+
+
+def _build_body(
+    native_model: str,
+    messages: list[dict],
+    provider_prefix: str,
+    *,
+    temperature: float,
+    max_tokens: int,
+    stream: bool,
+) -> dict:
+    """Build the request body with provider-specific parameter adjustments."""
+    body: dict = {
+        "model": native_model,
+        "messages": messages,
+        "stream": stream,
+    }
+    # Some models reject custom temperature; omit it so the API uses its default
+    if native_model not in _NO_CUSTOM_TEMPERATURE_MODELS:
+        body["temperature"] = temperature
+    # Newer OpenAI models reject max_tokens; use max_completion_tokens
+    if provider_prefix in _MAX_COMPLETION_TOKENS_PREFIXES:
+        body["max_completion_tokens"] = max_tokens
+    else:
+        body["max_tokens"] = max_tokens
+    # Qwen3 thinking models require enable_thinking=false for non-streaming
+    if not stream and native_model in _THINKING_MODELS:
+        body["enable_thinking"] = False
+    return body
+
+
+def _extract_content(message: dict) -> str:
+    """Extract text from a response message, falling back to reasoning_content.
+
+    Reasoning models (DeepSeek Reasoner, GLM-5, GLM-4.7) may return their
+    answer only in reasoning_content with empty content.
+    """
+    content = message.get("content", "") or ""
+    if content.strip():
+        return content
+    # Fallback: some reasoning models put everything in reasoning_content
+    return message.get("reasoning_content", "") or ""
+
+
 async def call_model(
     model: str,
     messages: list[dict],
@@ -411,6 +468,7 @@ async def call_model(
     """Call a single model via its native API (or OpenRouter fallback)."""
     base_url, api_key, native_model = resolve_provider(model)
     is_openrouter = (base_url == OPENROUTER_BASE)
+    provider_prefix = model.split("/", 1)[0] if "/" in model else ""
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -420,13 +478,10 @@ async def call_model(
         headers["HTTP-Referer"] = "https://deep-search.uk"
         headers["X-Title"] = "Deep Search Tier Chooser"
 
-    body = {
-        "model": native_model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": False,
-    }
+    body = _build_body(
+        native_model, messages, provider_prefix,
+        temperature=temperature, max_tokens=max_tokens, stream=False,
+    )
 
     provider_label = "OpenRouter" if is_openrouter else base_url.split("//")[1].split("/")[0]
     client = http_client()
@@ -448,7 +503,7 @@ async def call_model(
         choices = data.get("choices", [])
         if not choices:
             return ""
-        return choices[0].get("message", {}).get("content", "")
+        return _extract_content(choices[0].get("message", {}))
 
     except asyncio.TimeoutError:
         log.warning(f"[{req_id}] {provider_label} {model} timed out after {MODEL_TIMEOUT}s")
@@ -469,6 +524,7 @@ async def stream_model(
     """Stream a single model's response via its native API (or OpenRouter fallback)."""
     base_url, api_key, native_model = resolve_provider(model)
     is_openrouter = (base_url == OPENROUTER_BASE)
+    provider_prefix = model.split("/", 1)[0] if "/" in model else ""
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -478,13 +534,10 @@ async def stream_model(
         headers["HTTP-Referer"] = "https://deep-search.uk"
         headers["X-Title"] = "Deep Search Tier Chooser"
 
-    body = {
-        "model": native_model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": True,
-    }
+    body = _build_body(
+        native_model, messages, provider_prefix,
+        temperature=temperature, max_tokens=max_tokens, stream=True,
+    )
 
     provider_label = "OpenRouter" if is_openrouter else base_url.split("//")[1].split("/")[0]
     client = http_client()
@@ -510,7 +563,8 @@ async def stream_model(
                 try:
                     chunk = json.loads(payload)
                     delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    content = delta.get("content", "")
+                    # Yield content; fall back to reasoning_content for reasoning models
+                    content = delta.get("content", "") or delta.get("reasoning_content", "")
                     if content:
                         yield content
                 except json.JSONDecodeError:

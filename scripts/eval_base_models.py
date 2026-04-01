@@ -1095,7 +1095,10 @@ async def main() -> None:
         for r in previous_results:
             surface = r.get("api_surface", "")
             model = r.get("model", "")
-            if model not in failed_models.get(surface, set()):
+            is_failed = model in failed_models.get(surface, set())
+            # Keep non-failed results, and also keep failed results from
+            # surfaces we are NOT retrying this run
+            if not is_failed or surface not in surfaces:
                 all_results.append(r)
 
     # Fetch OpenRouter pricing once if needed

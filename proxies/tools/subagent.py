@@ -404,6 +404,30 @@ Rules:
 - Output ONLY valid JSON"""
 
 
+def _trim_tool_responses(messages: list[dict], max_content: int = 1500) -> int:
+    """Trim the oldest/largest tool responses to free context space.
+
+    Walks the message list and truncates tool-response content that exceeds
+    *max_content* characters.  Returns the number of messages trimmed.
+    Preserves the system prompt (index 0) and the most recent 4 messages.
+    """
+    trimmed = 0
+    # Don't touch system prompt or the last 4 messages (recent context)
+    safe_end = max(1, len(messages) - 4)
+    for i in range(1, safe_end):
+        msg = messages[i]
+        role = msg.get("role", "")
+        content = msg.get("content", "") or ""
+        if role == "tool" and len(content) > max_content:
+            messages[i] = {**msg, "content": content[:max_content] + "\n[...truncated to free context...]"}
+            trimmed += 1
+        elif role == "user" and "tool_response" in content.lower() and len(content) > max_content:
+            # XML tool responses embedded in user messages
+            messages[i] = {**msg, "content": content[:max_content] + "\n[...truncated to free context...]"}
+            trimmed += 1
+    return trimmed
+
+
 async def run_subagent(
     angle: dict,
     subagent_index: int,
@@ -512,13 +536,20 @@ async def run_subagent(
             )
 
             if "error" in llm_result:
+                err_str = llm_result["error"]
+                # Context overflow: trim old tool responses instead of wasting turns
+                if "context_length_exceeded" in str(err_str):
+                    trimmed = _trim_tool_responses(agent_messages)
+                    if trimmed:
+                        log.info(f"[{sa_id}] Turn {turn}: Context overflow — trimmed {trimmed} old tool responses, retrying")
+                        continue  # retry without incrementing consecutive_errors
                 consecutive_errors += 1
-                log.warning(f"[{sa_id}] Turn {turn}: Error: {llm_result['error']}")
-                langfuse_config.end_span(turn_span, output={"error": llm_result["error"]}, level="ERROR")
+                log.warning(f"[{sa_id}] Turn {turn}: Error: {err_str}")
+                langfuse_config.end_span(turn_span, output={"error": err_str}, level="ERROR")
                 if consecutive_errors >= 3:
-                    result.error = llm_result["error"]
+                    result.error = err_str
                     break
-                agent_messages.append({"role": "assistant", "content": llm_result["error"]})
+                agent_messages.append({"role": "assistant", "content": err_str})
                 agent_messages.append({"role": "user", "content": "Error occurred. Try a different approach."})
                 continue
 

@@ -453,6 +453,17 @@ def _build_body(
     return body
 
 
+# Models known to produce reasoning_content alongside their answer.
+# Thinking harvesting collects this chain-of-thought during the
+# full-throttle race and feeds it to the synthesis agent.
+_REASONING_MODELS = {
+    "grok-4.20", "grok-4.20-0309-reasoning",
+    "deepseek-r1", "deepseek-reasoner",
+    "glm-4.7", "glm-5",
+    "qwen3-235b-a22b", "qwen3-235b-a22b-thinking-2507",
+}
+
+
 def _extract_content(message: dict) -> str:
     """Extract text from a response message, falling back to reasoning_content.
 
@@ -466,6 +477,21 @@ def _extract_content(message: dict) -> str:
     return message.get("reasoning_content", "") or ""
 
 
+def _extract_content_and_reasoning(message: dict) -> tuple[str, str]:
+    """Extract both content and reasoning_content from a response message.
+
+    Returns (content, reasoning_content).  Content uses the same fallback
+    logic as ``_extract_content`` so that models which put everything in
+    reasoning_content still produce a usable answer.
+    """
+    content = message.get("content", "") or ""
+    reasoning = message.get("reasoning_content", "") or ""
+    if not content.strip() and reasoning.strip():
+        # Model put everything in reasoning_content — use it as content too
+        return reasoning, reasoning
+    return content, reasoning
+
+
 async def call_model(
     model: str,
     messages: list[dict],
@@ -473,8 +499,14 @@ async def call_model(
     temperature: float = 0.7,
     max_tokens: int = 4096,
     req_id: str = "",
-) -> str:
-    """Call a single model via its native API (or OpenRouter fallback)."""
+    harvest_reasoning: bool = False,
+) -> str | dict:
+    """Call a single model via its native API (or OpenRouter fallback).
+
+    When *harvest_reasoning* is True, returns a dict
+    ``{"content": str, "reasoning": str}`` so callers can access the
+    chain-of-thought separately.  Otherwise returns a plain string.
+    """
     base_url, api_key, native_model = resolve_provider(model)
     is_openrouter = (base_url == OPENROUTER_BASE)
     # Only apply provider-specific body tweaks when routing natively;
@@ -495,6 +527,7 @@ async def call_model(
     )
 
     provider_label = "OpenRouter" if is_openrouter else base_url.split("//")[1].split("/")[0]
+    _empty: str | dict = {"content": "", "reasoning": ""} if harvest_reasoning else ""
     client = http_client()
     try:
         resp = await asyncio.wait_for(
@@ -508,20 +541,24 @@ async def call_model(
         if resp.status_code != 200:
             error_text = resp.text[:500]
             log.warning(f"[{req_id}] {provider_label} {model} returned {resp.status_code}: {error_text}")
-            return ""
+            return _empty
 
         data = resp.json()
         choices = data.get("choices", [])
         if not choices:
-            return ""
-        return _extract_content(choices[0].get("message", {}))
+            return _empty
+        msg = choices[0].get("message", {})
+        if harvest_reasoning:
+            content, reasoning = _extract_content_and_reasoning(msg)
+            return {"content": content, "reasoning": reasoning}
+        return _extract_content(msg)
 
     except asyncio.TimeoutError:
         log.warning(f"[{req_id}] {provider_label} {model} timed out after {MODEL_TIMEOUT}s")
-        return ""
+        return _empty
     except Exception as e:
         log.error(f"[{req_id}] {provider_label} {model} error: {e}")
-        return ""
+        return _empty
 
 
 async def stream_model(
@@ -686,6 +723,59 @@ async def _stream_tidbits(
 
 
 # ============================================================================
+# Thinking Harvest — extract a tidbit from a single model's chain-of-thought
+# ============================================================================
+
+_THINKING_TIDBIT_PROMPT = """You are reading the internal chain-of-thought (reasoning trace) of an AI model that just answered a question. Extract ONE concise, interesting insight from this reasoning — something the model considered, a surprising connection it made, an internal debate it had, or a key step in its logic that a reader would find illuminating.
+
+Rules:
+- ONE sentence only, 20-40 words
+- Be specific — reference the actual thought, not a vague summary
+- Start with the model name in bold: **ModelName** thought...
+- Capture the *flavour* of the reasoning — was it cautious? creative? methodical? conflicted?
+- Do NOT add disclaimers
+- If the reasoning is empty or trivial, respond with exactly: SKIP"""
+
+
+async def _harvest_thinking_tidbit(
+    model_name: str,
+    reasoning: str,
+    user_query: str,
+    req_id: str,
+) -> str:
+    """Produce a single interesting tidbit from a model's reasoning trace.
+
+    Returns a short string suitable for streaming as reasoning_content,
+    or empty string if the reasoning is empty/trivial.
+    """
+    if not reasoning or len(reasoning.strip()) < 50:
+        return ""
+
+    short = model_name.split("/")[-1]
+    # Take first 2000 chars of reasoning to keep the call fast
+    snippet = reasoning[:2000]
+
+    messages = [
+        {"role": "system", "content": _THINKING_TIDBIT_PROMPT},
+        {"role": "user", "content": (
+            f"Question: {user_query}\n\n"
+            f"Model: {short}\n\n"
+            f"Internal reasoning:\n{snippet}"
+        )},
+    ]
+
+    result = await call_model(
+        SYNTHESIS_MODEL, messages,
+        temperature=0.5, max_tokens=100, req_id=req_id,
+    )
+    if isinstance(result, dict):
+        result = result.get("content", "")
+    if not result or result.strip() == "SKIP":
+        return ""
+    return result.strip()
+
+
+# ============================================================================
 # Synthesis — merge all valid responses into the richest possible answer
 # ============================================================================
 
@@ -702,16 +792,30 @@ Rules:
 - Prioritize depth, specificity, and completeness over brevity
 - If one model provides a unique insight or example that others missed, ALWAYS include it"""
 
+_SYNTHESIS_THINKING_ADDENDUM = """
+
+You also have access to the internal chain-of-thought (reasoning traces) from some of the models. These reveal how the models actually thought through the problem — their doubts, alternative approaches they considered, and internal debates. Use these to:
+- Identify insights that only appear in the reasoning but not in the final answers
+- Note where a model's internal reasoning was more nuanced than its public answer
+- If reasoning reveals a model was uncertain about a claim, reflect that uncertainty
+- Do NOT reproduce the raw reasoning — distil the *insights* from it into the answer"""
+
 
 async def _synthesize_responses(
     user_query: str,
     valid_results: list[dict],
     req_id: str,
+    harvested_thinking: Optional[dict[str, str]] = None,
 ) -> str:
     """Merge all valid model responses into a single comprehensive answer.
 
     Uses the SYNTHESIS_MODEL (default: Gemini Flash for speed and large
     context window) to combine the best information from every response.
+
+    When *harvested_thinking* is provided (model_name -> reasoning text),
+    the reasoning traces are included so the synthesis can extract insights
+    that only appeared in the chain-of-thought.
+
     Returns the synthesised text, or empty string on failure.
     """
     # Build the responses block — all models presented equally, no ranking
@@ -723,13 +827,35 @@ async def _synthesize_responses(
         )
     responses_text = "\n".join(response_parts)
 
+    # Build the user content
+    user_content = (
+        f"User question: {user_query}\n\n"
+        f"Model responses:\n{responses_text}\n\n"
+    )
+
+    # Append harvested reasoning traces if available
+    system_prompt = _SYNTHESIS_PROMPT
+    if harvested_thinking:
+        thinking_parts = []
+        for model_name, reasoning in harvested_thinking.items():
+            if reasoning and len(reasoning.strip()) > 50:
+                short = model_name.split("/")[-1]
+                # Cap each reasoning trace to keep the prompt manageable
+                thinking_parts.append(
+                    f"--- {short} internal reasoning ---\n{reasoning[:3000]}\n"
+                )
+        if thinking_parts:
+            system_prompt += _SYNTHESIS_THINKING_ADDENDUM
+            user_content += (
+                "Model reasoning traces (chain-of-thought):\n"
+                + "\n".join(thinking_parts) + "\n\n"
+            )
+
+    user_content += "Produce the most comprehensive, information-rich answer possible."
+
     messages = [
-        {"role": "system", "content": _SYNTHESIS_PROMPT},
-        {"role": "user", "content": (
-            f"User question: {user_query}\n\n"
-            f"Model responses:\n{responses_text}\n\n"
-            f"Produce the most comprehensive, information-rich answer possible."
-        )},
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
     ]
 
     return await call_model(
@@ -781,20 +907,36 @@ async def run_tier_race(
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_MODELS)
 
+    # Determine whether to harvest reasoning (full-throttle tier only)
+    is_full_throttle = (tier == "full-throttle")
+    # Collected reasoning traces keyed by model name
+    harvested_thinking: dict[str, str] = {}
+    # Background tidbit tasks fired as models complete (full-throttle only)
+    tidbit_tasks: list[asyncio.Task] = []
+
     async def query_model(model_name: str) -> dict:
         async with semaphore:
             # Pass messages as-is — NO system prompt injection
-            content = await call_model(
+            raw = await call_model(
                 model_name, messages,
                 temperature=0.7, max_tokens=4096, req_id=req_id,
+                harvest_reasoning=is_full_throttle,
             )
+            if is_full_throttle and isinstance(raw, dict):
+                content = raw.get("content", "")
+                reasoning = raw.get("reasoning", "")
+            else:
+                content = raw if isinstance(raw, str) else raw.get("content", "")
+                reasoning = ""
             if not content:
                 # Empty string means timeout, HTTP error, or exception — not a refusal
-                return {"model": model_name, "content": "", "score": -9999,
+                return {"model": model_name, "content": "", "reasoning": "",
+                        "score": -9999,
                         "is_refusal": False, "is_empty": True, "hedge_count": 0}
             result = score_response(content, user_query)
             result["is_empty"] = False
-            return {"model": model_name, "content": content, **result}
+            return {"model": model_name, "content": content, "reasoning": reasoning,
+                    **result}
 
     tasks = [asyncio.create_task(query_model(m)) for m in models]
     results = []
@@ -813,6 +955,19 @@ async def run_tier_race(
         short_model = result["model"].split("/")[-1]
         yield _chunk("", reasoning=f"  [{completed}/{len(models)}] {short_model}: {status}\n")
 
+        # --- Progressive thinking harvest (full-throttle only) ---
+        if is_full_throttle and result.get("reasoning") and status == "OK":
+            harvested_thinking[result["model"]] = result["reasoning"]
+            # Fire a background task to produce a tidbit from this model's
+            # reasoning — we'll stream results every few seconds below.
+            t = asyncio.create_task(
+                _harvest_thinking_tidbit(
+                    result["model"], result["reasoning"],
+                    user_query, req_id,
+                )
+            )
+            tidbit_tasks.append(t)
+
     valid = [r for r in results if not r["is_refusal"] and not r.get("is_empty") and r["content"]]
     if not valid:
         empty_count = sum(1 for r in results if r.get("is_empty"))
@@ -826,6 +981,8 @@ async def run_tier_race(
             msg += f" ({refusal_count} refused)"
         msg += ". Try rephrasing."
         media_task.cancel()
+        for t in tidbit_tasks:
+            t.cancel()
         yield _chunk(msg, finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
@@ -844,6 +1001,27 @@ async def run_tier_race(
         f"{empty_count} error\n"
         f"Valid: {model_names}\n"
     ))
+
+    # --- Stream harvested thinking tidbits (full-throttle only) ---
+    if tidbit_tasks:
+        yield _chunk("", reasoning="\n🧠 Harvesting model reasoning...\n")
+        # Wait for all tidbit tasks (max 10s) then stream results
+        done, pending = await asyncio.wait(tidbit_tasks, timeout=10.0)
+        for t in pending:
+            t.cancel()
+        for t in done:
+            try:
+                tidbit = t.result()
+                if tidbit:
+                    yield _chunk("", reasoning=f"• {tidbit}\n")
+            except Exception:
+                pass  # tidbit generation failed — skip silently
+        thinking_count = sum(1 for v in harvested_thinking.values() if v.strip())
+        if thinking_count:
+            yield _chunk("", reasoning=(
+                f"\nCaptured reasoning from {thinking_count} model(s) — "
+                f"feeding into synthesis.\n"
+            ))
 
     # --- Synthesise the richest answer from ALL valid responses ---
     if len(valid) == 1:
@@ -869,7 +1047,10 @@ async def run_tier_race(
         f"(via {SYNTHESIS_MODEL.split('/')[-1]})...\n"
     ))
 
-    synthesised = await _synthesize_responses(user_query, valid, req_id)
+    synthesised = await _synthesize_responses(
+        user_query, valid, req_id,
+        harvested_thinking=harvested_thinking if harvested_thinking else None,
+    )
 
     try:
         media_section = await asyncio.wait_for(media_task, timeout=5.0)

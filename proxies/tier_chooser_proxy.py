@@ -713,7 +713,7 @@ async def _stream_tidbits(
 # Synthesis — merge all valid responses into the richest possible answer
 # ============================================================================
 
-_SYNTHESIS_PROMPT = """You are a synthesis engine. You have received multiple responses from different AI models answering the same question. Your job is to produce a single comprehensive answer that captures the maximum wealth of information from ALL responses.
+_SYNTHESIS_PROMPT_BASE = """You are a synthesis engine. You have received multiple responses from different AI models answering the same question. Your job is to produce a single comprehensive answer that captures the maximum wealth of information from ALL responses.
 
 Rules:
 - Extract and combine ALL unique facts, details, examples, code snippets, URLs, and actionable information from every response
@@ -725,6 +725,9 @@ Rules:
 - The final answer must read as a single authoritative response, not a compilation
 - Prioritize depth, specificity, and completeness over brevity
 - If one model provides a unique insight or example that others missed, ALWAYS include it
+- Do NOT include any images, videos, or media unless you are explicitly given media results to choose from"""
+
+_SYNTHESIS_PROMPT_MEDIA = """
 
 Media enrichment — IMPORTANT, follow carefully:
 - You will receive image and video search results alongside the model responses
@@ -779,8 +782,9 @@ async def _synthesize_responses(
         )
     user_content += "Produce the most comprehensive, information-rich answer possible."
 
+    system_prompt = _SYNTHESIS_PROMPT_BASE + (_SYNTHESIS_PROMPT_MEDIA if media_section else "")
     messages = [
-        {"role": "system", "content": _SYNTHESIS_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
 

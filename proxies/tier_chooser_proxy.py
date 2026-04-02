@@ -740,7 +740,8 @@ IMAGES:
 - If an image's description is vague (e.g. just "photo", "image", "stock photo"), skip it
 
 VIDEOS:
-- You will receive video results with Title, Video ID, Thumbnail URL, and Description
+- You will receive video results with Title, Video ID, Thumbnail URL, and Description or Spoken content
+- Some videos include a **Spoken content** field with timestamped transcript snippets showing what was actually said in the video (e.g. "[1:23] how to do a proper cable pushdown"). These are the HIGHEST-QUALITY relevance signals — a video where someone literally says the technique name is far more apt than one with a vague title.
 - Videos are MORE valuable than images for tutorials, demonstrations, form checks, and how-to content
 - For EACH video you include, output BOTH a clickable thumbnail AND an artifact embed:
 
@@ -752,7 +753,7 @@ VIDEOS:
      <iframe width="100%" height="400" src="https://www.youtube.com/embed/VIDEO_ID" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
      :::
 
-- STRICT RELEVANCE: Only embed a video if its title/description directly demonstrates or explains the SPECIFIC technique, equipment, or concept in the adjacent paragraph. A generic "arm workout" video does NOT belong next to a section specifically about skull crushers.
+- STRICT RELEVANCE: Only embed a video if its title/description/spoken-content directly demonstrates or explains the SPECIFIC technique, equipment, or concept in the adjacent paragraph. A generic "arm workout" video does NOT belong next to a section specifically about skull crushers. Videos with matching **Spoken content** snippets are strongly preferred over those with only title matches.
 - Give each artifact a unique, descriptive identifier (e.g. video-cable-pushdown, video-skull-crusher-form)
 - Prefer fewer, highly relevant videos over many loosely related ones — 2 perfect videos beat 5 generic ones"""
 

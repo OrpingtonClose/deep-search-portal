@@ -734,20 +734,17 @@ Media enrichment — IMPORTANT, follow carefully:
 - Use MANY images generously throughout the answer — aim for at least one image per major section
 - VERIFY each image is relevant: only include images whose description matches the content being discussed. If an image description says "cat" but the section is about "cars", skip it.
 - Place images INLINE next to the text they illustrate — like a well-designed magazine article, NOT all at the end
-- Use HTML for aesthetic layout that flows with text. Float images to the side:
-  <img src="URL" alt="description" style="float:right; margin:0 0 12px 16px; max-width:280px; border-radius:8px;">
-  Alternate between float:right and float:left across sections for visual rhythm.
-- For wide/panoramic images or hero images at section starts, use full-width:
-  <img src="URL" alt="description" style="width:100%; border-radius:8px; margin:12px 0;">
-- For YouTube videos, EMBED them as playable iframes so users can watch without leaving the page:
-  <div style="float:right; margin:0 0 12px 16px; max-width:360px;">
-    <iframe width="360" height="202" src="https://www.youtube.com/embed/VIDEO_ID" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="border-radius:8px; width:100%;"></iframe>
-    <p style="font-size:0.85em; margin:4px 0 0; color:#666;">Video title</p>
-  </div>
+- Use standard Markdown image syntax for all images:
+  ![Descriptive alt text](https://image-url.jpg)
+  Place each image on its own line, between relevant paragraphs. Alternate placement naturally through the text.
+- For wide/hero images at section starts, just use the same Markdown syntax — the renderer handles sizing.
+- For YouTube videos, EMBED them as playable iframes using the artifact format so the user can watch without leaving the page:
+  :::artifact{title="Video title here" type="text/html" identifier="video-UNIQUE_ID"}
+  <iframe width="100%" height="400" src="https://www.youtube.com/embed/VIDEO_ID" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+  :::
   Extract the VIDEO_ID from YouTube URLs (e.g. https://www.youtube.com/watch?v=XXXXX → VIDEO_ID is XXXXX, https://youtu.be/XXXXX → VIDEO_ID is XXXXX).
-  Alternate video embeds between float:right and float:left like images.
+  Give each artifact a unique identifier (e.g. video-cable-pushdown, video-dip-tutorial).
   For topics where video is especially valuable (tutorials, demonstrations, how-tos), prefer embedding videos over static images.
-- After a floated image or video, add a <div style="clear:both;"></div> before the next major heading to reset the flow
 - Skip irrelevant, low-quality, or off-topic media entirely — quality over quantity, but be generous with relevant media
 - If image descriptions are vague or generic (e.g. "photo", "image"), skip them — only include images with clear, specific descriptions that match the content"""
 

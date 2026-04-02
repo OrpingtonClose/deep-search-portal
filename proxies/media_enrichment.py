@@ -253,7 +253,7 @@ async def _fetch_transcript_snippet(
             f"{TRANSCRIPTAPI_BASE}/youtube/transcript",
             headers=headers,
             params={
-                "video_url": video_id,
+                "video_url": f"https://www.youtube.com/watch?v={video_id}",
                 "format": "json",
                 "include_timestamp": "true",
             },

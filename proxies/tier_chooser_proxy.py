@@ -784,10 +784,18 @@ async def _synthesize_responses(
         {"role": "user", "content": user_content},
     ]
 
-    return await call_model(
+    result = await call_model(
         SYNTHESIS_MODEL, messages,
         temperature=0.3, max_tokens=8192, req_id=req_id,
     )
+    # call_model now returns error strings (e.g. "[ERROR:500]...", "[TIMEOUT:90s]...")
+    # instead of "". Treat these as synthesis failure so callers fall back gracefully.
+    if result and result.startswith("[") and any(
+        result.startswith(p) for p in ("[ERROR", "[TIMEOUT")
+    ):
+        log.warning(f"[{req_id}] Synthesis failed: {result[:120]}")
+        return ""
+    return result
 
 
 # ============================================================================

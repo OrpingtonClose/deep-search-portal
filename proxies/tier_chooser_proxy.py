@@ -57,7 +57,7 @@ MAX_CONCURRENT_MODELS = env_int("TIER_CHOOSER_MAX_CONCURRENT", 10, minimum=1)
 MODEL_TIMEOUT = int(os.getenv("TIER_CHOOSER_MODEL_TIMEOUT", "90"))
 
 # Synthesis configuration
-SYNTHESIS_MODEL = os.getenv("TIER_CHOOSER_SYNTHESIS_MODEL", "google/gemini-2.5-flash")
+SYNTHESIS_MODEL = os.getenv("TIER_CHOOSER_SYNTHESIS_MODEL", "google/gemini-3.1-flash")
 KNOWLEDGE_NAMESPACE = os.getenv("TIER_CHOOSER_NAMESPACE", "tier-chooser")
 
 # ---------------------------------------------------------------------------
@@ -724,18 +724,32 @@ Rules:
 - Structure the answer clearly with markdown headers and sections when content warrants it
 - The final answer must read as a single authoritative response, not a compilation
 - Prioritize depth, specificity, and completeness over brevity
-- If one model provides a unique insight or example that others missed, ALWAYS include it"""
+- If one model provides a unique insight or example that others missed, ALWAYS include it
+
+Media enrichment:
+- You may receive image and video search results alongside the model responses
+- Include relevant images using markdown: ![description](url)
+- Include relevant YouTube videos using thumbnail links: [![title](thumbnail)](video_url)
+- ONLY include media that directly illustrates or supports the answer content
+- Place media inline near the relevant section, not dumped at the end
+- Skip irrelevant, low-quality, or off-topic media results entirely
+- If no media is relevant, include none — do not force media into the answer"""
 
 
 async def _synthesize_responses(
     user_query: str,
     valid_results: list[dict],
     req_id: str,
+    media_section: str = "",
 ) -> str:
     """Merge all valid model responses into a single comprehensive answer.
 
-    Uses the SYNTHESIS_MODEL (default: Gemini Flash for speed and large
-    context window) to combine the best information from every response.
+    Uses the SYNTHESIS_MODEL (default: Gemini Flash 3.1 for speed, large
+    context window, and multimodal awareness) to combine the best
+    information from every response.  When *media_section* is provided
+    (markdown with image/video search results), the synthesis model
+    decides which media to weave into the answer.
+
     Returns the synthesised text, or empty string on failure.
     """
     # Build the responses block — all models presented equally, no ranking
@@ -747,13 +761,20 @@ async def _synthesize_responses(
         )
     responses_text = "\n".join(response_parts)
 
+    user_content = (
+        f"User question: {user_query}\n\n"
+        f"Model responses:\n{responses_text}\n\n"
+    )
+    if media_section:
+        user_content += (
+            f"Available media (images and videos from search — include "
+            f"ONLY what is directly relevant):\n{media_section}\n\n"
+        )
+    user_content += "Produce the most comprehensive, information-rich answer possible."
+
     messages = [
         {"role": "system", "content": _SYNTHESIS_PROMPT},
-        {"role": "user", "content": (
-            f"User question: {user_query}\n\n"
-            f"Model responses:\n{responses_text}\n\n"
-            f"Produce the most comprehensive, information-rich answer possible."
-        )},
+        {"role": "user", "content": user_content},
     ]
 
     return await call_model(
@@ -869,45 +890,40 @@ async def run_tier_race(
         f"Valid: {model_names}\n"
     ))
 
-    # --- Synthesise the richest answer from ALL valid responses ---
-    if len(valid) == 1:
-        # Only one valid response — return it directly, no synthesis needed
-        yield _chunk("", reasoning="Single valid response — returning directly.\n")
-        try:
-            media_section = await asyncio.wait_for(media_task, timeout=5.0)
-        except Exception:
-            media_section = ""
-        yield _chunk(valid[0]["content"] + media_section, finish_reason="stop")
-        yield "data: [DONE]\n\n"
-        return
-
-    # Stream interesting tidbits from the responses as thinking content
-    yield _chunk("", reasoning=(
-        f"\nAnalysing {len(valid)} responses for interesting tidbits...\n\n"
-    ))
-    async for tidbit_chunk in _stream_tidbits(user_query, valid, req_id):
-        yield _chunk("", reasoning=tidbit_chunk)
-
-    yield _chunk("", reasoning=(
-        f"\n\nSynthesising comprehensive answer from {len(valid)} responses "
-        f"(via {SYNTHESIS_MODEL.split('/')[-1]})...\n"
-    ))
-
-    synthesised = await _synthesize_responses(user_query, valid, req_id)
-
+    # --- Collect media results (already running concurrently) ---
     try:
-        media_section = await asyncio.wait_for(media_task, timeout=5.0)
+        media_section = await asyncio.wait_for(media_task, timeout=10.0)
     except Exception:
         media_section = ""
 
+    # --- Synthesise the richest answer from ALL valid responses ---
+    if len(valid) == 1:
+        # Only one valid response — pass through synthesis so the model can
+        # intelligently weave in relevant media, then shuttle to complete.
+        if media_section:
+            synthesised = await _synthesize_responses(
+                user_query, valid, req_id, media_section=media_section,
+            )
+            if synthesised:
+                yield _chunk(synthesised, finish_reason="stop")
+                yield "data: [DONE]\n\n"
+                return
+        # No media or synthesis failed — return raw response directly
+        yield _chunk(valid[0]["content"], finish_reason="stop")
+        yield "data: [DONE]\n\n"
+        return
+
+    # Multiple valid responses — synthesise with media at the model's discretion
+    synthesised = await _synthesize_responses(
+        user_query, valid, req_id, media_section=media_section,
+    )
+
     if synthesised:
-        yield _chunk("", reasoning="Synthesis complete.\n")
-        yield _chunk(synthesised + media_section, finish_reason="stop")
+        yield _chunk(synthesised, finish_reason="stop")
     else:
         # Synthesis failed — return the longest response as a reasonable fallback
         fallback = max(valid, key=lambda r: len(r["content"]))
-        yield _chunk("", reasoning="Synthesis failed — returning longest response as fallback.\n")
-        yield _chunk(fallback["content"] + media_section, finish_reason="stop")
+        yield _chunk(fallback["content"], finish_reason="stop")
     yield "data: [DONE]\n\n"
 
 

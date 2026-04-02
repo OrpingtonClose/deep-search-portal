@@ -739,9 +739,15 @@ Media enrichment — IMPORTANT, follow carefully:
   Alternate between float:right and float:left across sections for visual rhythm.
 - For wide/panoramic images or hero images at section starts, use full-width:
   <img src="URL" alt="description" style="width:100%; border-radius:8px; margin:12px 0;">
-- For YouTube videos, use clickable thumbnails floated like images:
-  <a href="VIDEO_URL"><img src="THUMBNAIL" alt="title" style="float:left; margin:0 16px 12px 0; max-width:240px; border-radius:8px;"></a>
-- After a floated image, add a <div style="clear:both;"></div> before the next major heading to reset the flow
+- For YouTube videos, EMBED them as playable iframes so users can watch without leaving the page:
+  <div style="float:right; margin:0 0 12px 16px; max-width:360px;">
+    <iframe width="360" height="202" src="https://www.youtube.com/embed/VIDEO_ID" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="border-radius:8px; width:100%;"></iframe>
+    <p style="font-size:0.85em; margin:4px 0 0; color:#666;">Video title</p>
+  </div>
+  Extract the VIDEO_ID from YouTube URLs (e.g. https://www.youtube.com/watch?v=XXXXX → VIDEO_ID is XXXXX, https://youtu.be/XXXXX → VIDEO_ID is XXXXX).
+  Alternate video embeds between float:right and float:left like images.
+  For topics where video is especially valuable (tutorials, demonstrations, how-tos), prefer embedding videos over static images.
+- After a floated image or video, add a <div style="clear:both;"></div> before the next major heading to reset the flow
 - Skip irrelevant, low-quality, or off-topic media entirely — quality over quantity, but be generous with relevant media
 - If image descriptions are vague or generic (e.g. "photo", "image"), skip them — only include images with clear, specific descriptions that match the content"""
 

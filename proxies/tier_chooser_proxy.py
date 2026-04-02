@@ -532,7 +532,7 @@ async def call_model(
         if resp.status_code != 200:
             error_text = resp.text[:500]
             log.warning(f"[{req_id}] {provider_label} {model} returned {resp.status_code}: {error_text}")
-            return ""
+            return f"[ERROR:{resp.status_code}] {provider_label} rejected request: {error_text[:120]}"
 
         data = resp.json()
         choices = data.get("choices", [])
@@ -542,10 +542,10 @@ async def call_model(
 
     except asyncio.TimeoutError:
         log.warning(f"[{req_id}] {provider_label} {model} timed out after {MODEL_TIMEOUT}s")
-        return ""
+        return f"[TIMEOUT:{MODEL_TIMEOUT}s] {provider_label} did not respond in time"
     except Exception as e:
         log.error(f"[{req_id}] {provider_label} {model} error: {e}")
-        return ""
+        return f"[ERROR] {provider_label}: {type(e).__name__}: {str(e)[:100]}"
 
 
 async def stream_model(
@@ -726,14 +726,21 @@ Rules:
 - Prioritize depth, specificity, and completeness over brevity
 - If one model provides a unique insight or example that others missed, ALWAYS include it
 
-Media enrichment:
-- You may receive image and video search results alongside the model responses
-- Include relevant images using markdown: ![description](url)
-- Include relevant YouTube videos using thumbnail links: [![title](thumbnail)](video_url)
-- ONLY include media that directly illustrates or supports the answer content
-- Place media inline near the relevant section, not dumped at the end
-- Skip irrelevant, low-quality, or off-topic media results entirely
-- If no media is relevant, include none — do not force media into the answer"""
+Media enrichment — IMPORTANT, follow carefully:
+- You will receive image and video search results alongside the model responses
+- Use MANY images generously throughout the answer — aim for at least one image per major section
+- VERIFY each image is relevant: only include images whose description matches the content being discussed. If an image description says "cat" but the section is about "cars", skip it.
+- Place images INLINE next to the text they illustrate — like a well-designed magazine article, NOT all at the end
+- Use HTML for aesthetic layout that flows with text. Float images to the side:
+  <img src="URL" alt="description" style="float:right; margin:0 0 12px 16px; max-width:280px; border-radius:8px;">
+  Alternate between float:right and float:left across sections for visual rhythm.
+- For wide/panoramic images or hero images at section starts, use full-width:
+  <img src="URL" alt="description" style="width:100%; border-radius:8px; margin:12px 0;">
+- For YouTube videos, use clickable thumbnails floated like images:
+  <a href="VIDEO_URL"><img src="THUMBNAIL" alt="title" style="float:left; margin:0 16px 12px 0; max-width:240px; border-radius:8px;"></a>
+- After a floated image, add a <div style="clear:both;"></div> before the next major heading to reset the flow
+- Skip irrelevant, low-quality, or off-topic media entirely — quality over quantity, but be generous with relevant media
+- If image descriptions are vague or generic (e.g. "photo", "image"), skip them — only include images with clear, specific descriptions that match the content"""
 
 
 async def _synthesize_responses(
@@ -744,8 +751,8 @@ async def _synthesize_responses(
 ) -> str:
     """Merge all valid model responses into a single comprehensive answer.
 
-    Uses the SYNTHESIS_MODEL (default: Gemini Flash 3.1 for speed, large
-    context window, and multimodal awareness) to combine the best
+    Uses the SYNTHESIS_MODEL (default: Gemini 3 Flash Preview for speed,
+    large context window, and multimodal awareness) to combine the best
     information from every response.  When *media_section* is provided
     (markdown with image/video search results), the synthesis model
     decides which media to weave into the answer.
@@ -834,9 +841,14 @@ async def run_tier_race(
                 temperature=0.7, max_tokens=4096, req_id=req_id,
             )
             if not content:
-                # Empty string means timeout, HTTP error, or exception — not a refusal
                 return {"model": model_name, "content": "", "score": -9999,
-                        "is_refusal": False, "is_empty": True, "hedge_count": 0}
+                        "is_refusal": False, "is_empty": True, "hedge_count": 0,
+                        "error_detail": "no response"}
+            # Structured error messages from call_model start with "["
+            if content.startswith("[") and any(content.startswith(p) for p in ("[ERROR", "[TIMEOUT")):
+                return {"model": model_name, "content": "", "score": -9999,
+                        "is_refusal": False, "is_empty": True, "hedge_count": 0,
+                        "error_detail": content}
             result = score_response(content, user_query)
             result["is_empty"] = False
             return {"model": model_name, "content": content, **result}
@@ -850,11 +862,12 @@ async def run_tier_race(
         results.append(result)
         completed += 1
         if result.get("is_empty"):
-            status = "ERROR/TIMEOUT"
+            detail = result.get("error_detail", "no response")
+            status = f"FAILED — {detail}"
         elif result["is_refusal"]:
-            status = "REFUSAL"
+            status = "REFUSED (safety filter)"
         else:
-            status = "OK"
+            status = f"OK ({len(result.get('content',''))} chars)"
         short_model = result["model"].split("/")[-1]
         yield _chunk("", reasoning=f"  [{completed}/{len(models)}] {short_model}: {status}\n")
 

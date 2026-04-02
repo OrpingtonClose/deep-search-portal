@@ -122,32 +122,32 @@ log.info(
 # ---------------------------------------------------------------------------
 
 TIER_MODELS = {
-    "quick": [
-        "google/gemini-2.5-flash",
-        "x-ai/grok-4.1-fast",
-        "deepseek/deepseek-chat",
-        "openai/gpt-4o",
-        "mistralai/mistral-medium-3.1",
-        "qwen/qwen-2.5-72b-instruct",
+    "quick": [  # Fastest inference, lowest cost, still usable quality
+        "google/gemini-3-flash",          # Top fast multimodal + reasoning
+        "x-ai/grok-4.1-fast",             # Proven high-throughput & cheap
+        "deepseek/deepseek-v3.2-chat",    # Excellent speed/quality MoE
+        "openai/gpt-5.4-mini",            # Upgraded from gpt-4o (faster + smarter)
+        "mistralai/mistral-medium-4",     # Latest fast Mistral variant
+        "qwen/qwen3-72b-instruct-fast",   # Strong fast Chinese option
     ],
-    "medium": [
-        "anthropic/claude-sonnet-4.6",
-        "google/gemini-2.5-pro",
-        "openai/gpt-5.4",
-        "x-ai/grok-4",
-        "deepseek/deepseek-v3.2",
-        "qwen/qwen3.5-35b-a3b",
-        "mistralai/mistral-large-2512",
-        "z-ai/glm-5",
+    "medium": [  # Best price/performance balance
+        "anthropic/claude-sonnet-4.6",    # Outstanding coding/writing balance
+        "google/gemini-3-pro",            # Broad reasoning + multimodal leader
+        "openai/gpt-5.4",                 # Versatile all-rounder
+        "x-ai/grok-4",                    # Strong real-time/unfiltered edge
+        "deepseek/deepseek-v3.2",         # Insane value MoE
+        "qwen/qwen3.5-72b",               # Upgraded Qwen MoE
+        "mistralai/mistral-large-4",      # Latest Mistral large
+        "z-ai/glm-5",                     # Strong Chinese contender
     ],
-    "full-throttle": [
-        "anthropic/claude-opus-4.6",
-        "google/gemini-3.1-pro-preview",
-        "openai/gpt-5",
-        "x-ai/grok-4.20",
-        "deepseek/deepseek-r1",
-        "qwen/qwen3-235b-a22b",
-        "z-ai/glm-4.7",
+    "full-throttle": [  # Maximum capability, no compromises
+        "anthropic/claude-opus-4.6",      # Current coding/agentic king
+        "google/gemini-3.1-pro-preview",  # Often #1 or #2 overall
+        "openai/gpt-5.4-high",            # Highest-effort GPT-5 variant
+        "x-ai/grok-4.20",                 # Competitive frontier model
+        "deepseek/deepseek-r1",           # Top reasoning/value performer
+        "qwen/qwen3-235b-a22b",           # Massive MoE power
+        "z-ai/glm-5-thinking",            # Max-effort GLM variant
     ],
 }
 

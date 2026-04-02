@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""
-Tier Chooser Proxy — Three-tier model selection with author-direct routing.
+"""Tier Chooser Proxy — Two-tier model selection with author-direct routing.
 
-Provides Quick / Medium / Full Throttle tiers. Each tier races its models
-in parallel, scores responses, and returns the best. Individual model
-access is also supported.
+Provides Fast (speed-optimised) and Thinking (reasoning-optimised) tiers.
+Each tier races its models in parallel, scores responses, and returns the
+best.  Individual model access is also supported.
 
-All models route to their author's native API. Anthropic models use
-Anthropic's OpenAI-compatible endpoint (https://api.anthropic.com/v1/).
+All models route to their author's native API where an API key is
+available; models without a native key fall back to OpenRouter.
 
 Port: 9900 (configurable via TIER_CHOOSER_PORT)
 """
@@ -37,8 +36,7 @@ from shared import (
     stream_passthrough,
 )
 import knowledge_client
-from search_providers import _search_searxng
-from media_enrichment import enrich_with_media
+from media_enrichment import enrich_with_media, enrich_with_media_structured
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -119,36 +117,27 @@ log.info(
 )
 
 # ---------------------------------------------------------------------------
-# Three tiers
+# Two tiers: Fast (speed-optimised) and Thinking (reasoning-optimised)
 # ---------------------------------------------------------------------------
+# Models use ONLY native APIs (no OpenRouter fallback) where the
+# corresponding API key env-var is set.  Models whose providers have no
+# native API key (Phi-5, Llama 4, Command A, Yi-1.5, Hunyuan-Lite) are
+# excluded — they require OpenRouter which the user explicitly declined.
 
 TIER_MODELS = {
-    "quick": [  # Fastest inference, lowest cost, still usable quality
-        "google/gemini-3-flash",          # Top fast multimodal + reasoning
-        "x-ai/grok-4.1-fast",             # Proven high-throughput & cheap
-        "deepseek/deepseek-v3.2-chat",    # Excellent speed/quality MoE
-        "openai/gpt-5.4-mini",            # Upgraded from gpt-4o (faster + smarter)
-        "mistralai/mistral-medium-4",     # Latest fast Mistral variant
-        "qwen/qwen3-72b-instruct-fast",   # Strong fast Chinese option
+    "fast": [
+        "google/gemini-3.1-flash-lite",          # Google — native GEMINI_API_KEY
+        "qwen/qwen3.5-35b-a3b",                  # Alibaba — native DASHSCOPE_API_KEY
+        "deepseek/deepseek-chat",                 # DeepSeek V3.2 Lite — native DEEPSEEK_API_KEY
+        "x-ai/grok-4.20-non-reasoning",           # xAI — native XAI_API_KEY
+        "mistralai/mistral-small-latest",          # Mistral Small 4 — native MISTRAL_NATIVE_API_KEY
     ],
-    "medium": [  # Best price/performance balance
-        "anthropic/claude-sonnet-4.6",    # Outstanding coding/writing balance
-        "google/gemini-3-pro",            # Broad reasoning + multimodal leader
-        "openai/gpt-5.4",                 # Versatile all-rounder
-        "x-ai/grok-4",                    # Strong real-time/unfiltered edge
-        "deepseek/deepseek-v3.2",         # Insane value MoE
-        "qwen/qwen3.5-72b",               # Upgraded Qwen MoE
-        "mistralai/mistral-large-4",      # Latest Mistral large
-        "z-ai/glm-5",                     # Strong Chinese contender
-    ],
-    "full-throttle": [  # Maximum capability, no compromises
-        "anthropic/claude-opus-4.6",      # Current coding/agentic king
-        "google/gemini-3.1-pro-preview",  # Often #1 or #2 overall
-        "openai/gpt-5.4-high",            # Highest-effort GPT-5 variant
-        "x-ai/grok-4.20",                 # Competitive frontier model
-        "deepseek/deepseek-r1",           # Top reasoning/value performer
-        "qwen/qwen3-235b-a22b",           # Massive MoE power
-        "z-ai/glm-5-thinking",            # Max-effort GLM variant
+    "thinking": [
+        "deepseek/deepseek-reasoner",              # DeepSeek-R1 — native DEEPSEEK_API_KEY
+        "openai/gpt-5.4",                          # GPT-5.4 o3-High — native OPENAI_API_KEY
+        "google/gemini-3.1-pro",                   # Gemini 3.1 Pro Deep Think — native GEMINI_API_KEY
+        "x-ai/grok-4.20-reasoning",               # Grok 4.20 Reasoning — native XAI_API_KEY
+        "z-ai/glm-5",                              # GLM-5 Thinking — native ZHIPU_API_KEY
     ],
 }
 
@@ -456,6 +445,17 @@ def _build_body(
     return body
 
 
+# Models known to produce reasoning_content alongside their answer.
+# Thinking harvesting collects this chain-of-thought during the
+# full-throttle race and feeds it to the synthesis agent.
+_REASONING_MODELS = {
+    "grok-4.20", "grok-4.20-0309-reasoning",
+    "deepseek-r1", "deepseek-reasoner",
+    "glm-4.7", "glm-5",
+    "qwen3-235b-a22b", "qwen3-235b-a22b-thinking-2507",
+}
+
+
 def _extract_content(message: dict) -> str:
     """Extract text from a response message, falling back to reasoning_content.
 
@@ -469,6 +469,21 @@ def _extract_content(message: dict) -> str:
     return message.get("reasoning_content", "") or ""
 
 
+def _extract_content_and_reasoning(message: dict) -> tuple[str, str]:
+    """Extract both content and reasoning_content from a response message.
+
+    Returns (content, reasoning_content).  Content uses the same fallback
+    logic as ``_extract_content`` so that models which put everything in
+    reasoning_content still produce a usable answer.
+    """
+    content = message.get("content", "") or ""
+    reasoning = message.get("reasoning_content", "") or ""
+    if not content.strip() and reasoning.strip():
+        # Model put everything in reasoning_content — use it as content too
+        return reasoning, reasoning
+    return content, reasoning
+
+
 async def call_model(
     model: str,
     messages: list[dict],
@@ -476,8 +491,14 @@ async def call_model(
     temperature: float = 0.7,
     max_tokens: int = 4096,
     req_id: str = "",
-) -> str:
-    """Call a single model via its native API (or OpenRouter fallback)."""
+    harvest_reasoning: bool = False,
+) -> str | dict:
+    """Call a single model via its native API (or OpenRouter fallback).
+
+    When *harvest_reasoning* is True, returns a dict
+    ``{"content": str, "reasoning": str}`` so callers can access the
+    chain-of-thought separately.  Otherwise returns a plain string.
+    """
     base_url, api_key, native_model = resolve_provider(model)
     is_openrouter = (base_url == OPENROUTER_BASE)
     # Only apply provider-specific body tweaks when routing natively;
@@ -498,6 +519,7 @@ async def call_model(
     )
 
     provider_label = "OpenRouter" if is_openrouter else base_url.split("//")[1].split("/")[0]
+    _empty: str | dict = {"content": "", "reasoning": ""} if harvest_reasoning else ""
     client = http_client()
     try:
         resp = await asyncio.wait_for(
@@ -511,20 +533,24 @@ async def call_model(
         if resp.status_code != 200:
             error_text = resp.text[:500]
             log.warning(f"[{req_id}] {provider_label} {model} returned {resp.status_code}: {error_text}")
-            return ""
+            return _empty
 
         data = resp.json()
         choices = data.get("choices", [])
         if not choices:
-            return ""
-        return _extract_content(choices[0].get("message", {}))
+            return _empty
+        msg = choices[0].get("message", {})
+        if harvest_reasoning:
+            content, reasoning = _extract_content_and_reasoning(msg)
+            return {"content": content, "reasoning": reasoning}
+        return _extract_content(msg)
 
     except asyncio.TimeoutError:
         log.warning(f"[{req_id}] {provider_label} {model} timed out after {MODEL_TIMEOUT}s")
-        return ""
+        return _empty
     except Exception as e:
         log.error(f"[{req_id}] {provider_label} {model} error: {e}")
-        return ""
+        return _empty
 
 
 async def stream_model(
@@ -689,6 +715,59 @@ async def _stream_tidbits(
 
 
 # ============================================================================
+# Thinking Harvest — extract a tidbit from a single model's chain-of-thought
+# ============================================================================
+
+_THINKING_TIDBIT_PROMPT = """You are reading the internal chain-of-thought (reasoning trace) of an AI model that just answered a question. Extract ONE concise, interesting insight from this reasoning — something the model considered, a surprising connection it made, an internal debate it had, or a key step in its logic that a reader would find illuminating.
+
+Rules:
+- ONE sentence only, 20-40 words
+- Be specific — reference the actual thought, not a vague summary
+- Start with the model name in bold: **ModelName** thought...
+- Capture the *flavour* of the reasoning — was it cautious? creative? methodical? conflicted?
+- Do NOT add disclaimers
+- If the reasoning is empty or trivial, respond with exactly: SKIP"""
+
+
+async def _harvest_thinking_tidbit(
+    model_name: str,
+    reasoning: str,
+    user_query: str,
+    req_id: str,
+) -> str:
+    """Produce a single interesting tidbit from a model's reasoning trace.
+
+    Returns a short string suitable for streaming as reasoning_content,
+    or empty string if the reasoning is empty/trivial.
+    """
+    if not reasoning or len(reasoning.strip()) < 50:
+        return ""
+
+    short = model_name.split("/")[-1]
+    # Take first 2000 chars of reasoning to keep the call fast
+    snippet = reasoning[:2000]
+
+    messages = [
+        {"role": "system", "content": _THINKING_TIDBIT_PROMPT},
+        {"role": "user", "content": (
+            f"Question: {user_query}\n\n"
+            f"Model: {short}\n\n"
+            f"Internal reasoning:\n{snippet}"
+        )},
+    ]
+
+    result = await call_model(
+        SYNTHESIS_MODEL, messages,
+        temperature=0.5, max_tokens=100, req_id=req_id,
+    )
+    if isinstance(result, dict):
+        result = result.get("content", "")
+    if not result or result.strip() == "SKIP":
+        return ""
+    return result.strip()
+
+
+# ============================================================================
 # Synthesis — merge all valid responses into the richest possible answer
 # ============================================================================
 
@@ -705,16 +784,56 @@ Rules:
 - Prioritize depth, specificity, and completeness over brevity
 - If one model provides a unique insight or example that others missed, ALWAYS include it"""
 
+_SYNTHESIS_THINKING_ADDENDUM = """
+
+You also have access to the internal chain-of-thought (reasoning traces) from some of the models. These reveal how the models actually thought through the problem — their doubts, alternative approaches they considered, and internal debates. Use these to:
+- Identify insights that only appear in the reasoning but not in the final answers
+- Note where a model's internal reasoning was more nuanced than its public answer
+- If reasoning reveals a model was uncertain about a claim, reflect that uncertainty
+- Do NOT reproduce the raw reasoning — distil the *insights* from it into the answer"""
+
+_SYNTHESIS_MEDIA_ADDENDUM = """
+
+You have been given a set of IMAGES and VIDEOS found for the user's query.
+Embed them INLINE at contextually appropriate positions in the answer using
+Markdown and LibreChat Artifacts:
+
+- For images: use `![<brief alt text>](<img_src URL>)` placed right after the
+  paragraph the image illustrates.  Verify the image title/description actually
+  matches the surrounding content before including it.
+- For YouTube videos: output a clickable thumbnail followed by an artifact:
+  `[![<title>](<thumbnail URL>)](<video URL>)`
+  then on a new line:
+  `:::artifact{title="<title>" type="text/html" identifier="vid-<N>"}`
+  `<iframe width="560" height="315" src="https://www.youtube.com/embed/<video_id>" frameborder="0" allowfullscreen></iframe>`
+  `:::`
+- For non-YouTube videos: use `[▶ <title>](<url>)` as a clickable link.
+- Aim for at least one image per major section when relevant media is available.
+- Do NOT dump all media at the end; scatter them throughout the text where they
+  add value.  Skip any item whose title/description does not match the content.
+- If no media is relevant to a section, omit media from that section entirely."""
+
 
 async def _synthesize_responses(
     user_query: str,
     valid_results: list[dict],
     req_id: str,
+    harvested_thinking: Optional[dict[str, str]] = None,
+    media: Optional[list[dict]] = None,
 ) -> str:
     """Merge all valid model responses into a single comprehensive answer.
 
     Uses the SYNTHESIS_MODEL (default: Gemini Flash for speed and large
     context window) to combine the best information from every response.
+
+    When *harvested_thinking* is provided (model_name -> reasoning text),
+    the reasoning traces are included so the synthesis can extract insights
+    that only appeared in the chain-of-thought.
+
+    When *media* is provided (list of image/video dicts from
+    enrich_with_media_structured), the synthesis model is instructed to
+    embed them inline at contextually appropriate positions.
+
     Returns the synthesised text, or empty string on failure.
     """
     # Build the responses block — all models presented equally, no ranking
@@ -726,13 +845,60 @@ async def _synthesize_responses(
         )
     responses_text = "\n".join(response_parts)
 
+    # Build the user content
+    user_content = (
+        f"User question: {user_query}\n\n"
+        f"Model responses:\n{responses_text}\n\n"
+    )
+
+    # Append harvested reasoning traces if available
+    system_prompt = _SYNTHESIS_PROMPT
+    if harvested_thinking:
+        thinking_parts = []
+        for model_name, reasoning in harvested_thinking.items():
+            if reasoning and len(reasoning.strip()) > 50:
+                short = model_name.split("/")[-1]
+                # Cap each reasoning trace to keep the prompt manageable
+                thinking_parts.append(
+                    f"--- {short} internal reasoning ---\n{reasoning[:3000]}\n"
+                )
+        if thinking_parts:
+            system_prompt += _SYNTHESIS_THINKING_ADDENDUM
+            user_content += (
+                "Model reasoning traces (chain-of-thought):\n"
+                + "\n".join(thinking_parts) + "\n\n"
+            )
+
+    # Append media for inline placement
+    if media:
+        system_prompt += _SYNTHESIS_MEDIA_ADDENDUM
+        media_lines = []
+        for idx, item in enumerate(media, 1):
+            if item["type"] == "image":
+                media_lines.append(
+                    f"  IMAGE #{idx}: title={item['title']!r}, "
+                    f"description={item.get('description', '')!r}, "
+                    f"img_src={item['img_src']!r}"
+                )
+            elif item["type"] == "video":
+                vid_id = item.get("video_id", "")
+                thumb = item.get("thumbnail", "")
+                media_lines.append(
+                    f"  VIDEO #{idx}: title={item['title']!r}, "
+                    f"description={item.get('description', '')!r}, "
+                    f"url={item['url']!r}, video_id={vid_id!r}, "
+                    f"thumbnail={thumb!r}"
+                )
+        user_content += (
+            "Available media (embed inline where contextually relevant):\n"
+            + "\n".join(media_lines) + "\n\n"
+        )
+
+    user_content += "Produce the most comprehensive, information-rich answer possible."
+
     messages = [
-        {"role": "system", "content": _SYNTHESIS_PROMPT},
-        {"role": "user", "content": (
-            f"User question: {user_query}\n\n"
-            f"Model responses:\n{responses_text}\n\n"
-            f"Produce the most comprehensive, information-rich answer possible."
-        )},
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
     ]
 
     return await call_model(
@@ -918,24 +1084,40 @@ async def run_tier_race(
     yield _chunk("", reasoning=f"TIER CHOOSER [{tier.upper()}] \u2014 racing {len(models)} models...\n")
 
     # Fire media enrichment concurrently with model race (zero added latency)
-    media_task = asyncio.create_task(enrich_with_media(user_query, req_id))
+    media_task = asyncio.create_task(enrich_with_media_structured(user_query, req_id))
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_MODELS)
+
+    # Determine whether to harvest reasoning (thinking tier only)
+    is_thinking_tier = (tier == "thinking")
+    # Collected reasoning traces keyed by model name
+    harvested_thinking: dict[str, str] = {}
+    # Background tidbit tasks fired as models complete (full-throttle only)
+    tidbit_tasks: list[asyncio.Task] = []
 
     async def query_model(model_name: str) -> dict:
         async with semaphore:
             # Pass messages as-is — NO system prompt injection
-            content = await call_model(
+            raw = await call_model(
                 model_name, messages,
                 temperature=0.7, max_tokens=4096, req_id=req_id,
+                harvest_reasoning=is_thinking_tier,
             )
+            if is_thinking_tier and isinstance(raw, dict):
+                content = raw.get("content", "")
+                reasoning = raw.get("reasoning", "")
+            else:
+                content = raw if isinstance(raw, str) else raw.get("content", "")
+                reasoning = ""
             if not content:
                 # Empty string means timeout, HTTP error, or exception — not a refusal
-                return {"model": model_name, "content": "", "score": -9999,
+                return {"model": model_name, "content": "", "reasoning": "",
+                        "score": -9999,
                         "is_refusal": False, "is_empty": True, "hedge_count": 0}
             result = score_response(content, user_query)
             result["is_empty"] = False
-            return {"model": model_name, "content": content, **result}
+            return {"model": model_name, "content": content, "reasoning": reasoning,
+                    **result}
 
     tasks = [asyncio.create_task(query_model(m)) for m in models]
     results = []
@@ -954,6 +1136,30 @@ async def run_tier_race(
         short_model = result["model"].split("/")[-1]
         yield _chunk("", reasoning=f"  [{completed}/{len(models)}] {short_model}: {status}\n")
 
+        # --- Progressive thinking harvest (thinking tier only) ---
+        if is_thinking_tier and result.get("reasoning") and status == "OK":
+            harvested_thinking[result["model"]] = result["reasoning"]
+            # Fire a background task to produce a tidbit from this model's
+            # reasoning — streamed progressively as each completes.
+            t = asyncio.create_task(
+                _harvest_thinking_tidbit(
+                    result["model"], result["reasoning"],
+                    user_query, req_id,
+                )
+            )
+            tidbit_tasks.append(t)
+
+        # Stream any completed tidbits immediately (progressive, not batched)
+        newly_done = [t for t in tidbit_tasks if t.done()]
+        for t in newly_done:
+            tidbit_tasks.remove(t)
+            try:
+                tidbit = t.result()
+                if tidbit:
+                    yield _chunk("", reasoning=f"• {tidbit}\n")
+            except Exception:
+                pass
+
     valid = [r for r in results if not r["is_refusal"] and not r.get("is_empty") and r["content"]]
     if not valid:
         empty_count = sum(1 for r in results if r.get("is_empty"))
@@ -967,6 +1173,8 @@ async def run_tier_race(
             msg += f" ({refusal_count} refused)"
         msg += ". Try rephrasing."
         media_task.cancel()
+        for t in tidbit_tasks:
+            t.cancel()
         yield _chunk(msg, finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
@@ -986,19 +1194,46 @@ async def run_tier_race(
         f"Valid: {model_names}\n"
     ))
 
+    # --- Drain any remaining thinking tidbits (most already streamed progressively) ---
+    if tidbit_tasks:
+        done, pending = await asyncio.wait(tidbit_tasks, timeout=5.0)
+        for t in pending:
+            t.cancel()
+        for t in done:
+            try:
+                tidbit = t.result()
+                if tidbit:
+                    yield _chunk("", reasoning=f"• {tidbit}\n")
+            except Exception:
+                pass
+    if harvested_thinking:
+        thinking_count = sum(1 for v in harvested_thinking.values() if v.strip())
+        if thinking_count:
+            yield _chunk("", reasoning=(
+                f"\nCaptured reasoning from {thinking_count} model(s) — "
+                f"feeding into synthesis.\n"
+            ))
+
+    # --- Collect structured media for inline embedding ---
+    try:
+        media_items: list[dict] = await asyncio.wait_for(media_task, timeout=8.0)
+    except Exception:
+        media_items = []
+
+    media_count = len(media_items)
+    if media_count:
+        img_count = sum(1 for m in media_items if m["type"] == "image")
+        vid_count = sum(1 for m in media_items if m["type"] == "video")
+        yield _chunk("", reasoning=(
+            f"\nMedia found: {img_count} images, {vid_count} videos "
+            f"— will embed inline.\n"
+        ))
+
     # --- Synthesise the richest answer from ALL valid responses ---
     if len(valid) == 1:
-        yield _chunk("", reasoning="Single valid response. Searching for relevant images...\n")
-        enriched = await _enrich_with_images(valid[0]["content"], req_id)
-        try:
-            media_section = await asyncio.wait_for(media_task, timeout=5.0)
-        except Exception:
-            media_section = ""
-        # Strip duplicate image section from media_enrichment when our
-        # LLM-guided image enrichment already produced one.
-        if enriched != valid[0]["content"]:
-            media_section = _strip_media_images(media_section)
-        yield _chunk(enriched + media_section, finish_reason="stop")
+        # Only one valid response — return it directly, no synthesis needed
+        yield _chunk("", reasoning="Single valid response — returning directly.\n")
+        yield _chunk(valid[0]["content"], finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
 
@@ -1014,31 +1249,20 @@ async def run_tier_race(
         f"(via {SYNTHESIS_MODEL.split('/')[-1]})...\n"
     ))
 
-    synthesised = await _synthesize_responses(user_query, valid, req_id)
-
-    try:
-        media_section = await asyncio.wait_for(media_task, timeout=5.0)
-    except Exception:
-        media_section = ""
+    synthesised = await _synthesize_responses(
+        user_query, valid, req_id,
+        harvested_thinking=harvested_thinking if harvested_thinking else None,
+        media=media_items if media_items else None,
+    )
 
     if synthesised:
-        yield _chunk("", reasoning="Synthesis complete. Searching for relevant images...\n")
-        enriched = await _enrich_with_images(synthesised, req_id)
-        if enriched != synthesised:
-            image_count = enriched.count("![") - synthesised.count("![")
-            yield _chunk("", reasoning=f"Found {image_count} relevant images.\n")
-        else:
-            yield _chunk("", reasoning="No relevant images found.\n")
-        # Strip duplicate image section from media_enrichment when our
-        # LLM-guided image enrichment already produced one.
-        if enriched != synthesised:
-            media_section = _strip_media_images(media_section)
-        yield _chunk(enriched + media_section, finish_reason="stop")
+        yield _chunk("", reasoning="Synthesis complete.\n")
+        yield _chunk(synthesised, finish_reason="stop")
     else:
         # Synthesis failed — return the longest response as a reasonable fallback
         fallback = max(valid, key=lambda r: len(r["content"]))
         yield _chunk("", reasoning="Synthesis failed — returning longest response as fallback.\n")
-        yield _chunk(fallback["content"] + media_section, finish_reason="stop")
+        yield _chunk(fallback["content"], finish_reason="stop")
     yield "data: [DONE]\n\n"
 
 
@@ -1134,7 +1358,7 @@ async def chat_completions(request: Request):
     if not messages:
         return JSONResponse(status_code=400, content={"error": {"message": "messages array is required", "type": "invalid_request"}})
 
-    requested_model = body.get("model", "tier-race-medium")
+    requested_model = body.get("model", "tier-race-fast")
     utility = is_utility_request(messages)
 
     log.info(f"[{req_id}] New request: model={requested_model}, messages={len(messages)}, utility={utility}")
@@ -1184,8 +1408,8 @@ async def chat_completions(request: Request):
             return JSONResponse(status_code=400, content={"error": {"message": f"Unknown model: {actual_model}", "type": "invalid_request"}})
         generator = _stream_single_model(actual_model, messages, req_id)
     else:
-        # Default to medium race for unknown model IDs
-        generator = run_tier_race("medium", messages, user_query, req_id)
+        # Default to fast race for unknown model IDs
+        generator = run_tier_race("fast", messages, user_query, req_id)
 
     async def tracked_generator():
         try:

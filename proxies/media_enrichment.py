@@ -91,11 +91,11 @@ def _format_image_results(results: list[dict], max_items: int) -> str:
 
 
 def _format_video_results(results: list[dict], max_items: int) -> str:
-    """Format SearXNG video results as a markdown section.
+    """Format SearXNG video results as a structured section for synthesis.
 
-    For YouTube URLs, extracts the video ID and shows a thumbnail via
-    ``https://img.youtube.com/vi/{id}/mqdefault.jpg``.
-    Other platforms get a bold link with snippet.
+    Each YouTube video entry includes the video_id, thumbnail URL, title,
+    and description so the synthesis model can judge relevance per-section
+    and render both an artifact embed and a clickable thumbnail.
     """
     if not results:
         return ""
@@ -113,12 +113,19 @@ def _format_video_results(results: list[dict], max_items: int) -> str:
         # Try to extract YouTube video ID
         video_id = _extract_youtube_id(url)
         if video_id:
-            thumbnail = f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
-            line = f"[![{title}]({thumbnail})]({url})"
-        else:
-            line = f"**[{title}]({url})**"
+            thumbnail = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+            line = (
+                f"- **Title:** {title}\n"
+                f"  **Video ID:** {video_id}\n"
+                f"  **Thumbnail:** {thumbnail}\n"
+                f"  **URL:** {url}"
+            )
             if content:
-                line += f"  \n{content}"
+                line += f"\n  **Description:** {content}"
+        else:
+            line = f"- **Title:** {title}\n  **URL:** {url}"
+            if content:
+                line += f"\n  **Description:** {content}"
 
         lines.append(line)
 
@@ -128,7 +135,7 @@ def _format_video_results(results: list[dict], max_items: int) -> str:
     if not lines:
         return ""
 
-    return "\n\n### Related Videos\n\n" + "\n\n".join(lines) + "\n"
+    return "\n\n### Available Videos\n\n" + "\n\n".join(lines) + "\n"
 
 
 _YT_PATTERN = re.compile(

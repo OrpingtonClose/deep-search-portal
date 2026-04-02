@@ -730,23 +730,31 @@ Rules:
 _SYNTHESIS_PROMPT_MEDIA = """
 
 Media enrichment — IMPORTANT, follow carefully:
-- You will receive image and video search results alongside the model responses
-- Use MANY images generously throughout the answer — aim for at least one image per major section
-- VERIFY each image is relevant: only include images whose description matches the content being discussed. If an image description says "cat" but the section is about "cars", skip it.
-- Place images INLINE next to the text they illustrate — like a well-designed magazine article, NOT all at the end
-- Use standard Markdown image syntax for all images:
-  ![Descriptive alt text](https://image-url.jpg)
-  Place each image on its own line, between relevant paragraphs. Alternate placement naturally through the text.
-- For wide/hero images at section starts, just use the same Markdown syntax — the renderer handles sizing.
-- For YouTube videos, EMBED them as playable iframes using the artifact format so the user can watch without leaving the page:
-  :::artifact{title="Video title here" type="text/html" identifier="video-UNIQUE_ID"}
-  <iframe width="100%" height="400" src="https://www.youtube.com/embed/VIDEO_ID" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-  :::
-  Extract the VIDEO_ID from YouTube URLs (e.g. https://www.youtube.com/watch?v=XXXXX → VIDEO_ID is XXXXX, https://youtu.be/XXXXX → VIDEO_ID is XXXXX).
-  Give each artifact a unique identifier (e.g. video-cable-pushdown, video-dip-tutorial).
-  For topics where video is especially valuable (tutorials, demonstrations, how-tos), prefer embedding videos over static images.
-- Skip irrelevant, low-quality, or off-topic media entirely — quality over quantity, but be generous with relevant media
-- If image descriptions are vague or generic (e.g. "photo", "image"), skip them — only include images with clear, specific descriptions that match the content"""
+
+IMAGES:
+- You will receive image search results with titles and descriptions
+- Use standard Markdown image syntax: ![Descriptive alt text](https://image-url.jpg)
+- ONLY include an image if its title/description SPECIFICALLY matches the paragraph it accompanies — not just the general topic. Example: an image titled "cable tricep pushdown form" is apt next to a paragraph about cable pushdowns, but NOT next to a paragraph about dumbbell kickbacks.
+- Aim for at least one image per major section, but skip rather than force-fit
+- Place each image on its own line between relevant paragraphs
+- If an image's description is vague (e.g. just "photo", "image", "stock photo"), skip it
+
+VIDEOS:
+- You will receive video results with Title, Video ID, Thumbnail URL, and Description
+- Videos are MORE valuable than images for tutorials, demonstrations, form checks, and how-to content
+- For EACH video you include, output BOTH a clickable thumbnail AND an artifact embed:
+
+  1. First, a clickable thumbnail image that shows what the video is about:
+     [![Video title](THUMBNAIL_URL)](https://www.youtube.com/watch?v=VIDEO_ID)
+
+  2. Then immediately below, the playable embed:
+     :::artifact{title="Video title" type="text/html" identifier="video-UNIQUE_ID"}
+     <iframe width="100%" height="400" src="https://www.youtube.com/embed/VIDEO_ID" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+     :::
+
+- STRICT RELEVANCE: Only embed a video if its title/description directly demonstrates or explains the SPECIFIC technique, equipment, or concept in the adjacent paragraph. A generic "arm workout" video does NOT belong next to a section specifically about skull crushers.
+- Give each artifact a unique, descriptive identifier (e.g. video-cable-pushdown, video-skull-crusher-form)
+- Prefer fewer, highly relevant videos over many loosely related ones — 2 perfect videos beat 5 generic ones"""
 
 
 async def _synthesize_responses(

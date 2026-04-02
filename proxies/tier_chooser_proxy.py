@@ -36,6 +36,7 @@ from shared import (
     stream_passthrough,
 )
 import knowledge_client
+from search_providers import _search_searxng
 from media_enrichment import enrich_with_media, enrich_with_media_structured
 
 # ---------------------------------------------------------------------------
@@ -125,19 +126,32 @@ log.info(
 # excluded — they require OpenRouter which the user explicitly declined.
 
 TIER_MODELS = {
-    "fast": [
-        "google/gemini-3.1-flash-lite",          # Google — native GEMINI_API_KEY
-        "qwen/qwen3.5-35b-a3b",                  # Alibaba — native DASHSCOPE_API_KEY
-        "deepseek/deepseek-chat",                 # DeepSeek V3.2 Lite — native DEEPSEEK_API_KEY
-        "x-ai/grok-4.20-non-reasoning",           # xAI — native XAI_API_KEY
-        "mistralai/mistral-small-latest",          # Mistral Small 4 — native MISTRAL_NATIVE_API_KEY
+    "quick": [  # Fastest inference, lowest cost, still usable quality
+        "google/gemini-3-flash",          # Top fast multimodal + reasoning
+        "x-ai/grok-4.1-fast",             # Proven high-throughput & cheap
+        "deepseek/deepseek-v3.2-chat",    # Excellent speed/quality MoE
+        "openai/gpt-5.4-mini",            # Upgraded from gpt-4o (faster + smarter)
+        "mistralai/mistral-medium-4",     # Latest fast Mistral variant
+        "qwen/qwen3-72b-instruct-fast",   # Strong fast Chinese option
     ],
-    "thinking": [
-        "deepseek/deepseek-reasoner",              # DeepSeek-R1 — native DEEPSEEK_API_KEY
-        "openai/gpt-5.4",                          # GPT-5.4 o3-High — native OPENAI_API_KEY
-        "google/gemini-3.1-pro",                   # Gemini 3.1 Pro Deep Think — native GEMINI_API_KEY
-        "x-ai/grok-4.20-reasoning",               # Grok 4.20 Reasoning — native XAI_API_KEY
-        "z-ai/glm-5",                              # GLM-5 Thinking — native ZHIPU_API_KEY
+    "medium": [  # Best price/performance balance
+        "anthropic/claude-sonnet-4.6",    # Outstanding coding/writing balance
+        "google/gemini-3-pro",            # Broad reasoning + multimodal leader
+        "openai/gpt-5.4",                 # Versatile all-rounder
+        "x-ai/grok-4",                    # Strong real-time/unfiltered edge
+        "deepseek/deepseek-v3.2",         # Insane value MoE
+        "qwen/qwen3.5-72b",               # Upgraded Qwen MoE
+        "mistralai/mistral-large-4",      # Latest Mistral large
+        "z-ai/glm-5",                     # Strong Chinese contender
+    ],
+    "full-throttle": [  # Maximum capability, no compromises
+        "anthropic/claude-opus-4.6",      # Current coding/agentic king
+        "google/gemini-3.1-pro-preview",  # Often #1 or #2 overall
+        "openai/gpt-5.4-high",            # Highest-effort GPT-5 variant
+        "x-ai/grok-4.20",                 # Competitive frontier model
+        "deepseek/deepseek-r1",           # Top reasoning/value performer
+        "qwen/qwen3-235b-a22b",           # Massive MoE power
+        "z-ai/glm-5-thinking",            # Max-effort GLM variant
     ],
 }
 
@@ -1089,7 +1103,7 @@ async def run_tier_race(
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_MODELS)
 
     # Determine whether to harvest reasoning (thinking tier only)
-    is_thinking_tier = (tier == "thinking")
+    is_thinking_tier = (tier == "full-throttle")
     # Collected reasoning traces keyed by model name
     harvested_thinking: dict[str, str] = {}
     # Background tidbit tasks fired as models complete (full-throttle only)
@@ -1231,9 +1245,9 @@ async def run_tier_race(
 
     # --- Synthesise the richest answer from ALL valid responses ---
     if len(valid) == 1:
-        # Only one valid response — return it directly, no synthesis needed
-        yield _chunk("", reasoning="Single valid response — returning directly.\n")
-        yield _chunk(valid[0]["content"], finish_reason="stop")
+        yield _chunk("", reasoning="Single valid response. Searching for relevant images...\n")
+        enriched = await _enrich_with_images(valid[0]["content"], req_id)
+        yield _chunk(enriched, finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
 
@@ -1256,8 +1270,14 @@ async def run_tier_race(
     )
 
     if synthesised:
-        yield _chunk("", reasoning="Synthesis complete.\n")
-        yield _chunk(synthesised, finish_reason="stop")
+        yield _chunk("", reasoning="Synthesis complete. Searching for relevant images...\n")
+        enriched = await _enrich_with_images(synthesised, req_id)
+        if enriched != synthesised:
+            image_count = enriched.count("![") - synthesised.count("![")
+            yield _chunk("", reasoning=f"Found {image_count} relevant images.\n")
+        else:
+            yield _chunk("", reasoning="No relevant images found.\n")
+        yield _chunk(enriched, finish_reason="stop")
     else:
         # Synthesis failed — return the longest response as a reasonable fallback
         fallback = max(valid, key=lambda r: len(r["content"]))
@@ -1358,7 +1378,7 @@ async def chat_completions(request: Request):
     if not messages:
         return JSONResponse(status_code=400, content={"error": {"message": "messages array is required", "type": "invalid_request"}})
 
-    requested_model = body.get("model", "tier-race-fast")
+    requested_model = body.get("model", "tier-race-quick")
     utility = is_utility_request(messages)
 
     log.info(f"[{req_id}] New request: model={requested_model}, messages={len(messages)}, utility={utility}")
@@ -1409,7 +1429,7 @@ async def chat_completions(request: Request):
         generator = _stream_single_model(actual_model, messages, req_id)
     else:
         # Default to fast race for unknown model IDs
-        generator = run_tier_race("fast", messages, user_query, req_id)
+        generator = run_tier_race("quick", messages, user_query, req_id)
 
     async def tracked_generator():
         try:

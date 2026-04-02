@@ -2,10 +2,10 @@
 """
 Media Enrichment — append image and video results to any answer.
 
-Searches SearXNG for images + videos, and optionally Filmot for
-spoken-content matches in YouTube transcripts.  All sources run in
-parallel; results are merged, deduplicated by video ID, and formatted
-as structured metadata for the synthesis model.
+Searches SearXNG for images + videos, and optionally TranscriptAPI for
+YouTube search + transcript extraction.  All sources run in parallel;
+results are merged, deduplicated by video ID, and formatted as
+structured metadata for the synthesis model.
 
 Fail-safe: any exception returns an empty string so the main answer
 is never blocked by media enrichment failures.
@@ -33,11 +33,11 @@ MEDIA_ENRICHMENT_ENABLED = os.getenv("MEDIA_ENRICHMENT_ENABLED", "true").lower()
 MEDIA_ENRICHMENT_MAX_IMAGES = int(os.getenv("MEDIA_ENRICHMENT_MAX_IMAGES", "6"))
 MEDIA_ENRICHMENT_MAX_VIDEOS = int(os.getenv("MEDIA_ENRICHMENT_MAX_VIDEOS", "4"))
 
-# Filmot (spoken-content search inside YouTube transcripts)
-# Get a key at https://rapidapi.com/Jopik1/api/filmot-tube-metadata-archive/
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "")
-FILMOT_ENABLED = bool(RAPIDAPI_KEY)
-FILMOT_HOST = "filmot-tube-metadata-archive.p.rapidapi.com"
+# TranscriptAPI (YouTube search + transcript extraction)
+# Get a key at https://transcriptapi.com/onboarding
+TRANSCRIPTAPI_KEY = os.getenv("TRANSCRIPTAPI_KEY", "")
+TRANSCRIPTAPI_ENABLED = bool(TRANSCRIPTAPI_KEY)
+TRANSCRIPTAPI_BASE = "https://transcriptapi.com/api/v2"
 
 
 # ---------------------------------------------------------------------------
@@ -131,9 +131,9 @@ def _format_video_results(results: list[dict], max_items: int) -> str:
                 f"  **URL:** {url}"
             )
             if content:
-                # Filmot results have transcript snippets with timestamps;
+                # TranscriptAPI results have transcript snippets with timestamps;
                 # SearXNG results have a generic description.
-                label = "Spoken content" if source_tag == "filmot" else "Description"
+                label = "Spoken content" if source_tag == "transcriptapi" else "Description"
                 line += f"\n  **{label}:** {content}"
         else:
             line = f"- **Title:** {title}\n  **URL:** {url}"
@@ -173,62 +173,112 @@ def _extract_youtube_id(url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Filmot spoken-content search
+# TranscriptAPI — YouTube search + transcript extraction
 # ---------------------------------------------------------------------------
-async def _filmot_search(query: str, max_results: int) -> list[dict]:
-    """Search YouTube transcripts via Filmot RapidAPI.
+async def _transcriptapi_search(query: str, max_results: int) -> list[dict]:
+    """Search YouTube via TranscriptAPI and fetch transcript snippets.
+
+    Two-step process:
+    1. Search YouTube for relevant videos via /youtube/search
+    2. For top results with captions, fetch a transcript snippet
+       via /youtube/transcript to get spoken-content data
 
     Returns results normalised to the same shape as SearXNG video results
     so they can be merged seamlessly.
     """
-    if not FILMOT_ENABLED:
+    if not TRANSCRIPTAPI_ENABLED:
         return []
 
     client = http_client()
-    headers = {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": FILMOT_HOST,
-    }
-    params = {
-        "query": query,
-        "lang": "en",
-        "searchManualSubs": "true",
-        "searchAutoSubs": "true",
-    }
+    headers = {"Authorization": f"Bearer {TRANSCRIPTAPI_KEY}"}
+
+    # Step 1: search YouTube
     resp = await client.get(
-        f"https://{FILMOT_HOST}/getsearchresults",
+        f"{TRANSCRIPTAPI_BASE}/youtube/search",
         headers=headers,
-        params=params,
+        params={"q": query, "type": "video", "limit": str(max_results * 2)},
         timeout=12.0,
     )
     resp.raise_for_status()
-    data = resp.json()
+    search_data = resp.json()
+    results = search_data.get("results", [])
+    if not results:
+        return []
 
-    # Filmot returns a list of hit objects; normalise to SearXNG-like dicts
+    # Step 2: for videos with captions, fetch transcript snippets in parallel
     normalised: list[dict] = []
-    for hit in data if isinstance(data, list) else []:
-        vid = hit.get("id") or hit.get("videoId") or ""
+    transcript_tasks = []
+    captioned_results = []
+    for item in results:
+        vid = item.get("videoId", "")
         if not vid:
             continue
-        title = hit.get("title") or "Video"
-        # Build a spoken-content snippet from the hits
-        hits_data = hit.get("hits") or hit.get("hitsData") or []
-        snippets: list[str] = []
-        for h in hits_data[:3]:  # first 3 transcript matches
-            text = h.get("text", "").strip()
-            ts = h.get("start", h.get("timestamp", 0))
-            if text:
-                snippets.append(f"[{_fmt_ts(ts)}] {text}")
-        content = " | ".join(snippets) if snippets else ""
-        normalised.append({
+        title = item.get("title", "Video")
+        has_captions = item.get("hasCaptions", False)
+        normalised_item = {
             "url": f"https://www.youtube.com/watch?v={vid}",
             "title": title,
-            "content": content,
-            "_source": "filmot",  # tag for dedup priority
-        })
-        if len(normalised) >= max_results:
+            "content": "",
+            "_source": "transcriptapi",
+        }
+        if has_captions and len(transcript_tasks) < max_results:
+            captioned_results.append((len(normalised), normalised_item))
+            transcript_tasks.append(
+                _fetch_transcript_snippet(client, headers, vid)
+            )
+        normalised.append(normalised_item)
+        if len(normalised) >= max_results * 2:
             break
-    return normalised
+
+    # Fetch transcripts concurrently
+    if transcript_tasks:
+        snippets = await asyncio.gather(*transcript_tasks, return_exceptions=True)
+        for (idx, _item), snippet in zip(captioned_results, snippets):
+            if isinstance(snippet, str) and snippet:
+                normalised[idx]["content"] = snippet
+
+    # Return only items up to max_results, preferring those with transcripts
+    with_transcript = [r for r in normalised if r.get("content")]
+    without_transcript = [r for r in normalised if not r.get("content")]
+    final = (with_transcript + without_transcript)[:max_results]
+    return final
+
+
+async def _fetch_transcript_snippet(
+    client, headers: dict, video_id: str, max_chars: int = 300
+) -> str:
+    """Fetch transcript for a video and return a short spoken-content snippet."""
+    try:
+        resp = await client.get(
+            f"{TRANSCRIPTAPI_BASE}/youtube/transcript",
+            headers=headers,
+            params={
+                "video_url": video_id,
+                "format": "json",
+                "include_timestamp": "true",
+            },
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        segments = data.get("transcript", [])
+        if not segments:
+            return ""
+        # Build a snippet from the first few segments
+        snippets: list[str] = []
+        total_chars = 0
+        for seg in segments:
+            text = seg.get("text", "").strip()
+            ts = seg.get("start", 0)
+            if text:
+                entry = f"[{_fmt_ts(ts)}] {text}"
+                snippets.append(entry)
+                total_chars += len(entry)
+                if total_chars >= max_chars:
+                    break
+        return " | ".join(snippets)
+    except Exception:
+        return ""
 
 
 def _fmt_ts(seconds) -> str:
@@ -244,19 +294,19 @@ def _fmt_ts(seconds) -> str:
 # Merge + deduplicate video results from multiple sources
 # ---------------------------------------------------------------------------
 def _merge_video_results(
-    searxng: list[dict], filmot: list[dict]
+    searxng: list[dict], transcript_results: list[dict]
 ) -> list[dict]:
-    """Merge video results, preferring Filmot (richer transcript data).
+    """Merge video results, preferring TranscriptAPI (richer transcript data).
 
     Deduplicates by YouTube video ID.  When the same video appears in
-    both sources, the Filmot entry wins because it carries spoken-content
-    snippets that help the synthesis model judge relevance.
+    both sources, the TranscriptAPI entry wins because it carries
+    spoken-content snippets that help the synthesis model judge relevance.
     """
     seen_ids: set[str] = set()
     merged: list[dict] = []
 
-    # Filmot first (higher quality — has transcript snippets)
-    for item in filmot:
+    # TranscriptAPI first (higher quality — has transcript snippets)
+    for item in transcript_results:
         vid = _extract_youtube_id(item.get("url", ""))
         key = vid or item.get("url", "")
         if key and key not in seen_ids:
@@ -278,7 +328,7 @@ def _merge_video_results(
 # Main entry point
 # ---------------------------------------------------------------------------
 async def enrich_with_media(user_query: str, req_id: str = "") -> str:
-    """Run image + video + Filmot searches in parallel and return combined markdown.
+    """Run image + video + TranscriptAPI searches in parallel and return combined markdown.
 
     Fail-safe: any exception returns an empty string so the main answer
     is never blocked by media enrichment failures.
@@ -293,12 +343,12 @@ async def enrich_with_media(user_query: str, req_id: str = "") -> str:
         video_task = _searxng_media_query(
             user_query, "videos", MEDIA_ENRICHMENT_MAX_VIDEOS * 2  # extra for dedup
         )
-        filmot_task = _filmot_search(
+        transcript_task = _transcriptapi_search(
             user_query, MEDIA_ENRICHMENT_MAX_VIDEOS
         )
 
-        image_results, video_results, filmot_results = await asyncio.gather(
-            image_task, video_task, filmot_task, return_exceptions=True
+        image_results, video_results, transcript_results = await asyncio.gather(
+            image_task, video_task, transcript_task, return_exceptions=True
         )
 
         # If any search raised, treat its results as empty
@@ -314,15 +364,15 @@ async def enrich_with_media(user_query: str, req_id: str = "") -> str:
                 req_id, video_results,
             )
             video_results = []
-        if isinstance(filmot_results, BaseException):
+        if isinstance(transcript_results, BaseException):
             log.warning(
-                "[%s] Filmot spoken-content search failed: %s",
-                req_id, filmot_results,
+                "[%s] TranscriptAPI search failed: %s",
+                req_id, transcript_results,
             )
-            filmot_results = []
+            transcript_results = []
 
-        # Merge video sources (Filmot wins on duplicates)
-        all_videos = _merge_video_results(video_results, filmot_results)
+        # Merge video sources (TranscriptAPI wins on duplicates)
+        all_videos = _merge_video_results(video_results, transcript_results)
 
         images_md = _format_image_results(image_results, MEDIA_ENRICHMENT_MAX_IMAGES)
         videos_md = _format_video_results(all_videos, MEDIA_ENRICHMENT_MAX_VIDEOS)

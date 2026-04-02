@@ -857,6 +857,28 @@ async def _enrich_with_images(
     return synthesised_answer + image_section
 
 
+def _strip_media_images(media_section: str) -> str:
+    """Remove the '### Visual References' image block from media_enrichment output.
+
+    When our LLM-guided image enrichment is active it already provides a
+    targeted '### Visual References' section.  The generic media_enrichment
+    module may also produce one from a raw SearXNG image search.  To avoid
+    duplicate image sections, strip the images portion and keep only
+    '### Related Videos' (and anything after it).
+    """
+    if not media_section:
+        return media_section
+    videos_marker = "### Related Videos"
+    idx = media_section.find(videos_marker)
+    if idx != -1:
+        # Keep everything from the videos header onward
+        return "\n\n" + media_section[idx:]
+    # No videos section — the entire media_section is images; drop it
+    if "### Visual References" in media_section:
+        return ""
+    return media_section
+
+
 # ============================================================================
 # Tier Race — race models, store in Neo4j, synthesise the richest answer
 # ============================================================================
@@ -972,6 +994,10 @@ async def run_tier_race(
             media_section = await asyncio.wait_for(media_task, timeout=5.0)
         except Exception:
             media_section = ""
+        # Strip duplicate image section from media_enrichment when our
+        # LLM-guided image enrichment already produced one.
+        if enriched != valid[0]["content"]:
+            media_section = _strip_media_images(media_section)
         yield _chunk(enriched + media_section, finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
@@ -1003,6 +1029,10 @@ async def run_tier_race(
             yield _chunk("", reasoning=f"Found {image_count} relevant images.\n")
         else:
             yield _chunk("", reasoning="No relevant images found.\n")
+        # Strip duplicate image section from media_enrichment when our
+        # LLM-guided image enrichment already produced one.
+        if enriched != synthesised:
+            media_section = _strip_media_images(media_section)
         yield _chunk(enriched + media_section, finish_reason="stop")
     else:
         # Synthesis failed — return the longest response as a reasonable fallback

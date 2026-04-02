@@ -1007,34 +1007,39 @@ async def _enrich_with_images(
     if not IMAGE_ENRICHMENT_ENABLED:
         return synthesised_answer
 
-    subjects = await _extract_image_subjects(synthesised_answer, req_id)
-    if not subjects:
-        log.info(f"[{req_id}] No image subjects extracted")
+    try:
+        subjects = await _extract_image_subjects(synthesised_answer, req_id)
+        if not subjects:
+            log.info(f"[{req_id}] No image subjects extracted")
+            return synthesised_answer
+
+        log.info(f"[{req_id}] Searching images for {len(subjects)} subjects: {subjects}")
+        image_results = await _search_images_for_subjects(subjects, req_id)
+
+        if not image_results:
+            log.info(f"[{req_id}] No images found for any subject")
+            return synthesised_answer
+
+        # Build a visual references section
+        def _esc_url(url: str) -> str:
+            return url.replace('(', '%28').replace(')', '%29')
+
+        def _esc_text(text: str) -> str:
+            return text.replace('[', '\\[').replace(']', '\\]')
+
+        image_section = "\n\n---\n\n### Visual References\n\n"
+        for img in image_results:
+            # Markdown image with link to source
+            image_section += (
+                f"**{_esc_text(img['subject'])}**\n\n"
+                f"[![{_esc_text(img['title'])}]({_esc_url(img['img_src'])})]({_esc_url(img['source_url'])})\n\n"
+            )
+
+        return synthesised_answer + image_section
+
+    except Exception as exc:
+        log.warning(f"[{req_id}] Image enrichment failed (non-fatal): {exc}")
         return synthesised_answer
-
-    log.info(f"[{req_id}] Searching images for {len(subjects)} subjects: {subjects}")
-    image_results = await _search_images_for_subjects(subjects, req_id)
-
-    if not image_results:
-        log.info(f"[{req_id}] No images found for any subject")
-        return synthesised_answer
-
-    # Build a visual references section
-    def _esc_url(url: str) -> str:
-        return url.replace('(', '%28').replace(')', '%29')
-
-    def _esc_text(text: str) -> str:
-        return text.replace('[', '\\[').replace(']', '\\]')
-
-    image_section = "\n\n---\n\n### Visual References\n\n"
-    for img in image_results:
-        # Markdown image with link to source
-        image_section += (
-            f"**{_esc_text(img['subject'])}**\n\n"
-            f"[![{_esc_text(img['title'])}]({_esc_url(img['img_src'])})]({_esc_url(img['source_url'])})\n\n"
-        )
-
-    return synthesised_answer + image_section
 
 
 def _strip_media_images(media_section: str) -> str:

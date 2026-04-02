@@ -490,8 +490,11 @@ async def enrich_with_media_structured(
                 "img_src": img_src,
             })
 
-        # Videos (merged from SearXNG + TranscriptAPI)
+        # Videos (merged from SearXNG + TranscriptAPI, capped to configured max)
+        video_count = 0
         for item in all_videos:
+            if video_count >= MEDIA_ENRICHMENT_MAX_VIDEOS:
+                break
             url = item.get("url", "")
             if not url:
                 continue
@@ -508,6 +511,7 @@ async def enrich_with_media_structured(
                 "video_id": vid_id,
                 "thumbnail": thumbnail,
             })
+            video_count += 1
 
         return media
 

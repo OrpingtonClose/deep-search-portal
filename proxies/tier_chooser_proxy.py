@@ -825,6 +825,7 @@ async def run_tier_race(
         elif refusal_count:
             msg += f" ({refusal_count} refused)"
         msg += ". Try rephrasing."
+        media_task.cancel()
         yield _chunk(msg, finish_reason="stop")
         yield "data: [DONE]\n\n"
         return

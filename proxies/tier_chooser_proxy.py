@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""
-Tier Chooser Proxy — Three-tier model selection with author-direct routing.
+"""Tier Chooser Proxy — Two-tier model selection with author-direct routing.
 
-Provides Quick / Medium / Full Throttle tiers. Each tier races its models
-in parallel, scores responses, and returns the best. Individual model
-access is also supported.
+Provides Fast (speed-optimised) and Thinking (reasoning-optimised) tiers.
+Each tier races its models in parallel, scores responses, and returns the
+best.  Individual model access is also supported.
 
-All models route to their author's native API. Anthropic models use
-Anthropic's OpenAI-compatible endpoint (https://api.anthropic.com/v1/).
+All models route to their author's native API where an API key is
+available; models without a native key fall back to OpenRouter.
 
 Port: 9900 (configurable via TIER_CHOOSER_PORT)
 """
@@ -37,7 +36,7 @@ from shared import (
     stream_passthrough,
 )
 import knowledge_client
-from media_enrichment import enrich_with_media
+from media_enrichment import enrich_with_media, enrich_with_media_structured
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -116,36 +115,27 @@ log.info(
 )
 
 # ---------------------------------------------------------------------------
-# Three tiers
+# Two tiers: Fast (speed-optimised) and Thinking (reasoning-optimised)
 # ---------------------------------------------------------------------------
+# Models use ONLY native APIs (no OpenRouter fallback) where the
+# corresponding API key env-var is set.  Models whose providers have no
+# native API key (Phi-5, Llama 4, Command A, Yi-1.5, Hunyuan-Lite) are
+# excluded — they require OpenRouter which the user explicitly declined.
 
 TIER_MODELS = {
-    "quick": [
-        "google/gemini-2.5-flash",
-        "x-ai/grok-4.1-fast",
-        "deepseek/deepseek-chat",
-        "openai/gpt-4o",
-        "mistralai/mistral-medium-3.1",
-        "qwen/qwen-2.5-72b-instruct",
+    "fast": [
+        "google/gemini-3.1-flash-lite",          # Google — native GEMINI_API_KEY
+        "qwen/qwen3.5-35b-a3b",                  # Alibaba — native DASHSCOPE_API_KEY
+        "deepseek/deepseek-chat",                 # DeepSeek V3.2 Lite — native DEEPSEEK_API_KEY
+        "x-ai/grok-4.20-non-reasoning",           # xAI — native XAI_API_KEY
+        "mistralai/mistral-small-latest",          # Mistral Small 4 — native MISTRAL_NATIVE_API_KEY
     ],
-    "medium": [
-        "anthropic/claude-sonnet-4.6",
-        "google/gemini-2.5-pro",
-        "openai/gpt-5.4",
-        "x-ai/grok-4",
-        "deepseek/deepseek-v3.2",
-        "qwen/qwen3.5-35b-a3b",
-        "mistralai/mistral-large-2512",
-        "z-ai/glm-5",
-    ],
-    "full-throttle": [
-        "anthropic/claude-opus-4.6",
-        "google/gemini-3.1-pro-preview",
-        "openai/gpt-5",
-        "x-ai/grok-4.20",
-        "deepseek/deepseek-r1",
-        "qwen/qwen3-235b-a22b",
-        "z-ai/glm-4.7",
+    "thinking": [
+        "deepseek/deepseek-reasoner",              # DeepSeek-R1 — native DEEPSEEK_API_KEY
+        "openai/gpt-5.4",                          # GPT-5.4 o3-High — native OPENAI_API_KEY
+        "google/gemini-3.1-pro",                   # Gemini 3.1 Pro Deep Think — native GEMINI_API_KEY
+        "x-ai/grok-4.20-reasoning",               # Grok 4.20 Reasoning — native XAI_API_KEY
+        "z-ai/glm-5",                              # GLM-5 Thinking — native ZHIPU_API_KEY
     ],
 }
 
@@ -800,12 +790,34 @@ You also have access to the internal chain-of-thought (reasoning traces) from so
 - If reasoning reveals a model was uncertain about a claim, reflect that uncertainty
 - Do NOT reproduce the raw reasoning — distil the *insights* from it into the answer"""
 
+_SYNTHESIS_MEDIA_ADDENDUM = """
+
+You have been given a set of IMAGES and VIDEOS found for the user's query.
+Embed them INLINE at contextually appropriate positions in the answer using
+Markdown and LibreChat Artifacts:
+
+- For images: use `![<brief alt text>](<img_src URL>)` placed right after the
+  paragraph the image illustrates.  Verify the image title/description actually
+  matches the surrounding content before including it.
+- For YouTube videos: output a clickable thumbnail followed by an artifact:
+  `[![<title>](<thumbnail URL>)](<video URL>)`
+  then on a new line:
+  `:::artifact{title="<title>" type="text/html" identifier="vid-<N>"}`
+  `<iframe width="560" height="315" src="https://www.youtube.com/embed/<video_id>" frameborder="0" allowfullscreen></iframe>`
+  `:::`
+- For non-YouTube videos: use `[▶ <title>](<url>)` as a clickable link.
+- Aim for at least one image per major section when relevant media is available.
+- Do NOT dump all media at the end; scatter them throughout the text where they
+  add value.  Skip any item whose title/description does not match the content.
+- If no media is relevant to a section, omit media from that section entirely."""
+
 
 async def _synthesize_responses(
     user_query: str,
     valid_results: list[dict],
     req_id: str,
     harvested_thinking: Optional[dict[str, str]] = None,
+    media: Optional[list[dict]] = None,
 ) -> str:
     """Merge all valid model responses into a single comprehensive answer.
 
@@ -815,6 +827,10 @@ async def _synthesize_responses(
     When *harvested_thinking* is provided (model_name -> reasoning text),
     the reasoning traces are included so the synthesis can extract insights
     that only appeared in the chain-of-thought.
+
+    When *media* is provided (list of image/video dicts from
+    enrich_with_media_structured), the synthesis model is instructed to
+    embed them inline at contextually appropriate positions.
 
     Returns the synthesised text, or empty string on failure.
     """
@@ -850,6 +866,31 @@ async def _synthesize_responses(
                 "Model reasoning traces (chain-of-thought):\n"
                 + "\n".join(thinking_parts) + "\n\n"
             )
+
+    # Append media for inline placement
+    if media:
+        system_prompt += _SYNTHESIS_MEDIA_ADDENDUM
+        media_lines = []
+        for idx, item in enumerate(media, 1):
+            if item["type"] == "image":
+                media_lines.append(
+                    f"  IMAGE #{idx}: title={item['title']!r}, "
+                    f"description={item.get('description', '')!r}, "
+                    f"img_src={item['img_src']!r}"
+                )
+            elif item["type"] == "video":
+                vid_id = item.get("video_id", "")
+                thumb = item.get("thumbnail", "")
+                media_lines.append(
+                    f"  VIDEO #{idx}: title={item['title']!r}, "
+                    f"description={item.get('description', '')!r}, "
+                    f"url={item['url']!r}, video_id={vid_id!r}, "
+                    f"thumbnail={thumb!r}"
+                )
+        user_content += (
+            "Available media (embed inline where contextually relevant):\n"
+            + "\n".join(media_lines) + "\n\n"
+        )
 
     user_content += "Produce the most comprehensive, information-rich answer possible."
 
@@ -903,12 +944,12 @@ async def run_tier_race(
     yield _chunk("", reasoning=f"TIER CHOOSER [{tier.upper()}] \u2014 racing {len(models)} models...\n")
 
     # Fire media enrichment concurrently with model race (zero added latency)
-    media_task = asyncio.create_task(enrich_with_media(user_query, req_id))
+    media_task = asyncio.create_task(enrich_with_media_structured(user_query, req_id))
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_MODELS)
 
-    # Determine whether to harvest reasoning (full-throttle tier only)
-    is_full_throttle = (tier == "full-throttle")
+    # Determine whether to harvest reasoning (thinking tier only)
+    is_thinking_tier = (tier == "thinking")
     # Collected reasoning traces keyed by model name
     harvested_thinking: dict[str, str] = {}
     # Background tidbit tasks fired as models complete (full-throttle only)
@@ -920,9 +961,9 @@ async def run_tier_race(
             raw = await call_model(
                 model_name, messages,
                 temperature=0.7, max_tokens=4096, req_id=req_id,
-                harvest_reasoning=is_full_throttle,
+                harvest_reasoning=is_thinking_tier,
             )
-            if is_full_throttle and isinstance(raw, dict):
+            if is_thinking_tier and isinstance(raw, dict):
                 content = raw.get("content", "")
                 reasoning = raw.get("reasoning", "")
             else:
@@ -955,11 +996,11 @@ async def run_tier_race(
         short_model = result["model"].split("/")[-1]
         yield _chunk("", reasoning=f"  [{completed}/{len(models)}] {short_model}: {status}\n")
 
-        # --- Progressive thinking harvest (full-throttle only) ---
-        if is_full_throttle and result.get("reasoning") and status == "OK":
+        # --- Progressive thinking harvest (thinking tier only) ---
+        if is_thinking_tier and result.get("reasoning") and status == "OK":
             harvested_thinking[result["model"]] = result["reasoning"]
             # Fire a background task to produce a tidbit from this model's
-            # reasoning — we'll stream results every few seconds below.
+            # reasoning — streamed progressively as each completes.
             t = asyncio.create_task(
                 _harvest_thinking_tidbit(
                     result["model"], result["reasoning"],
@@ -967,6 +1008,17 @@ async def run_tier_race(
                 )
             )
             tidbit_tasks.append(t)
+
+        # Stream any completed tidbits immediately (progressive, not batched)
+        newly_done = [t for t in tidbit_tasks if t.done()]
+        for t in newly_done:
+            tidbit_tasks.remove(t)
+            try:
+                tidbit = t.result()
+                if tidbit:
+                    yield _chunk("", reasoning=f"• {tidbit}\n")
+            except Exception:
+                pass
 
     valid = [r for r in results if not r["is_refusal"] and not r.get("is_empty") and r["content"]]
     if not valid:
@@ -1002,11 +1054,9 @@ async def run_tier_race(
         f"Valid: {model_names}\n"
     ))
 
-    # --- Stream harvested thinking tidbits (full-throttle only) ---
+    # --- Drain any remaining thinking tidbits (most already streamed progressively) ---
     if tidbit_tasks:
-        yield _chunk("", reasoning="\n🧠 Harvesting model reasoning...\n")
-        # Wait for all tidbit tasks (max 10s) then stream results
-        done, pending = await asyncio.wait(tidbit_tasks, timeout=10.0)
+        done, pending = await asyncio.wait(tidbit_tasks, timeout=5.0)
         for t in pending:
             t.cancel()
         for t in done:
@@ -1015,7 +1065,8 @@ async def run_tier_race(
                 if tidbit:
                     yield _chunk("", reasoning=f"• {tidbit}\n")
             except Exception:
-                pass  # tidbit generation failed — skip silently
+                pass
+    if harvested_thinking:
         thinking_count = sum(1 for v in harvested_thinking.values() if v.strip())
         if thinking_count:
             yield _chunk("", reasoning=(
@@ -1023,15 +1074,26 @@ async def run_tier_race(
                 f"feeding into synthesis.\n"
             ))
 
+    # --- Collect structured media for inline embedding ---
+    try:
+        media_items: list[dict] = await asyncio.wait_for(media_task, timeout=8.0)
+    except Exception:
+        media_items = []
+
+    media_count = len(media_items)
+    if media_count:
+        img_count = sum(1 for m in media_items if m["type"] == "image")
+        vid_count = sum(1 for m in media_items if m["type"] == "video")
+        yield _chunk("", reasoning=(
+            f"\nMedia found: {img_count} images, {vid_count} videos "
+            f"— will embed inline.\n"
+        ))
+
     # --- Synthesise the richest answer from ALL valid responses ---
     if len(valid) == 1:
         # Only one valid response — return it directly, no synthesis needed
         yield _chunk("", reasoning="Single valid response — returning directly.\n")
-        try:
-            media_section = await asyncio.wait_for(media_task, timeout=5.0)
-        except Exception:
-            media_section = ""
-        yield _chunk(valid[0]["content"] + media_section, finish_reason="stop")
+        yield _chunk(valid[0]["content"], finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
 
@@ -1050,21 +1112,17 @@ async def run_tier_race(
     synthesised = await _synthesize_responses(
         user_query, valid, req_id,
         harvested_thinking=harvested_thinking if harvested_thinking else None,
+        media=media_items if media_items else None,
     )
-
-    try:
-        media_section = await asyncio.wait_for(media_task, timeout=5.0)
-    except Exception:
-        media_section = ""
 
     if synthesised:
         yield _chunk("", reasoning="Synthesis complete.\n")
-        yield _chunk(synthesised + media_section, finish_reason="stop")
+        yield _chunk(synthesised, finish_reason="stop")
     else:
         # Synthesis failed — return the longest response as a reasonable fallback
         fallback = max(valid, key=lambda r: len(r["content"]))
         yield _chunk("", reasoning="Synthesis failed — returning longest response as fallback.\n")
-        yield _chunk(fallback["content"] + media_section, finish_reason="stop")
+        yield _chunk(fallback["content"], finish_reason="stop")
     yield "data: [DONE]\n\n"
 
 
@@ -1160,7 +1218,7 @@ async def chat_completions(request: Request):
     if not messages:
         return JSONResponse(status_code=400, content={"error": {"message": "messages array is required", "type": "invalid_request"}})
 
-    requested_model = body.get("model", "tier-race-medium")
+    requested_model = body.get("model", "tier-race-fast")
     utility = is_utility_request(messages)
 
     log.info(f"[{req_id}] New request: model={requested_model}, messages={len(messages)}, utility={utility}")
@@ -1210,8 +1268,8 @@ async def chat_completions(request: Request):
             return JSONResponse(status_code=400, content={"error": {"message": f"Unknown model: {actual_model}", "type": "invalid_request"}})
         generator = _stream_single_model(actual_model, messages, req_id)
     else:
-        # Default to medium race for unknown model IDs
-        generator = run_tier_race("medium", messages, user_query, req_id)
+        # Default to fast race for unknown model IDs
+        generator = run_tier_race("fast", messages, user_query, req_id)
 
     async def tracked_generator():
         try:

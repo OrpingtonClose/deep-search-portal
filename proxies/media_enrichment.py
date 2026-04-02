@@ -241,6 +241,99 @@ def _extract_youtube_id(url: str) -> str:
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+async def enrich_with_media_structured(
+    user_query: str, req_id: str = "",
+) -> list[dict]:
+    """Run image + video searches and return structured media data.
+
+    Returns a list of dicts, each with keys:
+      - ``type``: ``"image"`` or ``"video"``
+      - ``url``: source page URL
+      - ``title``: human-readable title
+      - ``description``: caption / snippet
+      - ``img_src``: direct image URL (images only)
+      - ``video_id``: YouTube video ID (videos only, may be empty)
+      - ``thumbnail``: thumbnail URL (videos only)
+
+    This structured format lets the synthesis model decide where to place
+    each piece of media inline, instead of appending a block at the end.
+    """
+    if not MEDIA_ENRICHMENT_ENABLED:
+        return []
+
+    try:
+        searxng_image_task = _searxng_media_query(
+            user_query, "images", MEDIA_ENRICHMENT_MAX_IMAGES
+        )
+        video_task = _searxng_media_query(
+            user_query, "videos", MEDIA_ENRICHMENT_MAX_VIDEOS
+        )
+        brave_image_task = _brave_image_search(
+            user_query, MEDIA_ENRICHMENT_MAX_IMAGES
+        )
+
+        searxng_images, video_results, brave_images = await asyncio.gather(
+            searxng_image_task, video_task, brave_image_task,
+            return_exceptions=True,
+        )
+
+        if isinstance(searxng_images, BaseException):
+            log.warning("[%s] SearXNG image search failed: %s", req_id, searxng_images)
+            searxng_images = []
+        if isinstance(video_results, BaseException):
+            log.warning("[%s] Media enrichment video search failed: %s", req_id, video_results)
+            video_results = []
+        if isinstance(brave_images, BaseException):
+            log.warning("[%s] Brave image search failed: %s", req_id, brave_images)
+            brave_images = []
+
+        all_images = _merge_image_results(
+            searxng_images, brave_images, MEDIA_ENRICHMENT_MAX_IMAGES
+        )
+
+        media: list[dict] = []
+
+        # Images
+        seen_img: set[str] = set()
+        for item in all_images:
+            img_src = item.get("img_src", "")
+            if not img_src or img_src in seen_img:
+                continue
+            seen_img.add(img_src)
+            media.append({
+                "type": "image",
+                "url": item.get("url", img_src),
+                "title": (item.get("title", "") or "Image").strip(),
+                "description": (item.get("content", "") or "").strip(),
+                "img_src": img_src,
+            })
+
+        # Videos
+        for item in video_results:
+            url = item.get("url", "")
+            if not url:
+                continue
+            vid_id = _extract_youtube_id(url)
+            thumbnail = (
+                f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg"
+                if vid_id else ""
+            )
+            media.append({
+                "type": "video",
+                "url": url,
+                "title": (item.get("title", "") or "Video").strip(),
+                "description": (item.get("content", "") or "").strip(),
+                "video_id": vid_id,
+                "thumbnail": thumbnail,
+            })
+
+        return media
+
+    except Exception as exc:
+        log.warning("[%s] Media enrichment (structured) failed: %s", req_id, exc)
+        return []
+
+
 async def enrich_with_media(user_query: str, req_id: str = "") -> str:
     """Run image + video searches in parallel and return combined markdown.
 

@@ -58,9 +58,11 @@ class SearchResult:
     source: str  # provider name: "duckduckgo", "brave", "mojeek", "searxng"
     score: float = 0.0  # optional relevance score
     published_date: str = ""  # ISO date if available
+    img_src: str = ""         # Direct image URL (for image search results)
+    thumbnail_src: str = ""   # Thumbnail URL (for image search results)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "title": self.title,
             "url": self.url,
             "snippet": self.snippet,
@@ -68,6 +70,11 @@ class SearchResult:
             "score": self.score,
             "publishedDate": self.published_date,
         }
+        if self.img_src:
+            d["img_src"] = self.img_src
+        if self.thumbnail_src:
+            d["thumbnail_src"] = self.thumbnail_src
+        return d
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +288,8 @@ async def _search_searxng(
                     snippet=r.get("content", "")[:500],
                     source=f"searxng:{categories}",
                     published_date=r.get("publishedDate", ""),
+                    img_src=r.get("img_src", ""),
+                    thumbnail_src=r.get("thumbnail_src", ""),
                 ))
             return results
 

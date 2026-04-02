@@ -38,6 +38,7 @@ from shared import (
 )
 import knowledge_client
 from search_providers import _search_searxng
+from media_enrichment import enrich_with_media
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -894,6 +895,9 @@ async def run_tier_race(
 
     yield _chunk("", reasoning=f"TIER CHOOSER [{tier.upper()}] \u2014 racing {len(models)} models...\n")
 
+    # Fire media enrichment concurrently with model race (zero added latency)
+    media_task = asyncio.create_task(enrich_with_media(user_query, req_id))
+
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_MODELS)
 
     async def query_model(model_name: str) -> dict:
@@ -940,6 +944,7 @@ async def run_tier_race(
         elif refusal_count:
             msg += f" ({refusal_count} refused)"
         msg += ". Try rephrasing."
+        media_task.cancel()
         yield _chunk(msg, finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
@@ -963,7 +968,11 @@ async def run_tier_race(
     if len(valid) == 1:
         yield _chunk("", reasoning="Single valid response. Searching for relevant images...\n")
         enriched = await _enrich_with_images(valid[0]["content"], req_id)
-        yield _chunk(enriched, finish_reason="stop")
+        try:
+            media_section = await asyncio.wait_for(media_task, timeout=5.0)
+        except Exception:
+            media_section = ""
+        yield _chunk(enriched + media_section, finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
 
@@ -980,6 +989,12 @@ async def run_tier_race(
     ))
 
     synthesised = await _synthesize_responses(user_query, valid, req_id)
+
+    try:
+        media_section = await asyncio.wait_for(media_task, timeout=5.0)
+    except Exception:
+        media_section = ""
+
     if synthesised:
         yield _chunk("", reasoning="Synthesis complete. Searching for relevant images...\n")
         enriched = await _enrich_with_images(synthesised, req_id)
@@ -988,12 +1003,12 @@ async def run_tier_race(
             yield _chunk("", reasoning=f"Found {image_count} relevant images.\n")
         else:
             yield _chunk("", reasoning="No relevant images found.\n")
-        yield _chunk(enriched, finish_reason="stop")
+        yield _chunk(enriched + media_section, finish_reason="stop")
     else:
         # Synthesis failed — return the longest response as a reasonable fallback
         fallback = max(valid, key=lambda r: len(r["content"]))
         yield _chunk("", reasoning="Synthesis failed — returning longest response as fallback.\n")
-        yield _chunk(fallback["content"], finish_reason="stop")
+        yield _chunk(fallback["content"] + media_section, finish_reason="stop")
     yield "data: [DONE]\n\n"
 
 

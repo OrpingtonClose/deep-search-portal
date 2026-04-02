@@ -839,12 +839,18 @@ async def _enrich_with_images(
         return synthesised_answer
 
     # Build a visual references section
+    def _esc_url(url: str) -> str:
+        return url.replace('(', '%28').replace(')', '%29')
+
+    def _esc_text(text: str) -> str:
+        return text.replace('[', '\\[').replace(']', '\\]')
+
     image_section = "\n\n---\n\n### Visual References\n\n"
     for img in image_results:
         # Markdown image with link to source
         image_section += (
-            f"**{img['subject']}**\n\n"
-            f"[![{img['title']}]({img['img_src']})]({img['source_url']})\n\n"
+            f"**{_esc_text(img['subject'])}**\n\n"
+            f"[![{_esc_text(img['title'])}]({_esc_url(img['img_src'])})]({_esc_url(img['source_url'])})\n\n"
         )
 
     return synthesised_answer + image_section
@@ -978,7 +984,7 @@ async def run_tier_race(
         yield _chunk("", reasoning="Synthesis complete. Searching for relevant images...\n")
         enriched = await _enrich_with_images(synthesised, req_id)
         if enriched != synthesised:
-            image_count = enriched.count("![")
+            image_count = enriched.count("![") - synthesised.count("![")
             yield _chunk("", reasoning=f"Found {image_count} relevant images.\n")
         else:
             yield _chunk("", reasoning="No relevant images found.\n")

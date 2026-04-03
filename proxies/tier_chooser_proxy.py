@@ -1202,7 +1202,8 @@ async def run_tier_race(
     completed = 0
     first_valid_at: float | None = None
     image_task: asyncio.Task | None = None
-    GRACE_SECONDS = 4.0  # after first valid, wait up to 4s for more
+    # Per-tier grace period: full-throttle models take 10-60s, quick models ~1-3s
+    GRACE_SECONDS = {"quick": 4.0, "medium": 8.0, "full-throttle": 20.0}.get(tier, 8.0)
 
     # --- Progressive model collection with grace period ---
     pending_tasks = set(tasks)

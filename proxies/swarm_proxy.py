@@ -68,6 +68,7 @@ from shared import (
     require_env,
     setup_logging,
     stream_passthrough,
+    utility_passthrough_json,
 )
 
 import langfuse_config as lf
@@ -2214,6 +2215,20 @@ async def chat_completions(request: Request):
 
     # Utility requests pass through
     if utility:
+        client_wants_stream = body.get("stream", True)
+        if not client_wants_stream:
+            log.info(f"[{req_id}] Routing to NON-STREAMING utility passthrough")
+            lf.unregister_trace(req_id)
+            result = await utility_passthrough_json(
+                body,
+                req_id=req_id,
+                upstream_base=UPSTREAM_BASE,
+                upstream_key=UPSTREAM_KEY,
+                upstream_model=UPSTREAM_MODEL,
+                log=log,
+            )
+            tracker.finish(req_id)
+            return result
         log.info(f"[{req_id}] Routing to PASSTHROUGH")
         lf.unregister_trace(req_id)
         generator = stream_passthrough(

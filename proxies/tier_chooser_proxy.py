@@ -82,7 +82,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, str]] = {
     "perplexity":   {"base_url": "https://api.perplexity.ai",                                    "key_env": "PERPLEXITY_API_KEY"},
     "mistralai":    {"base_url": "https://api.mistral.ai/v1",                                    "key_env": "MISTRAL_NATIVE_API_KEY"},
     "qwen":         {"base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",       "key_env": "DASHSCOPE_API_KEY"},
-    "moonshotai":   {"base_url": "https://api.moonshot.cn/v1",                                   "key_env": "MOONSHOT_API_KEY"},
+    "moonshotai":   {"base_url": "https://api.moonshot.ai/v1",                                   "key_env": "MOONSHOT_API_KEY"},
     "cohere":       {"base_url": "https://api.cohere.com/compatibility/v1",                      "key_env": "COHERE_API_KEY"},
     "minimax":      {"base_url": "https://api.minimax.chat/v1",                                  "key_env": "MINIMAX_API_KEY"},
     "groq":         {"base_url": "https://api.groq.com/openai/v1",                               "key_env": "GROQ_API_KEY"},
@@ -127,8 +127,10 @@ NATIVE_MODEL_MAP: dict[str, str] = {
     # DeepSeek — native API model IDs
     "deepseek-v3.2-lite":  "deepseek-chat",
     "deepseek-r1":         "deepseek-reasoner",
-    # Anthropic — native API model IDs
-    "claude-haiku-4.6":    "claude-haiku-4-6-20260301",
+    # Anthropic — native API uses hyphens (not dots); no haiku 4.6 exists yet
+    "claude-haiku-4.6":    "claude-haiku-4-5-20251001",
+    "claude-sonnet-4.6":   "claude-sonnet-4-6",
+    "claude-opus-4.6":     "claude-opus-4-6",
 }
 
 

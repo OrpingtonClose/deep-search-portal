@@ -533,7 +533,17 @@ async def call_model(
     )
 
     provider_label = "OpenRouter" if is_openrouter else base_url.split("//")[1].split("/")[0]
-    _empty: str | dict = {"content": "", "reasoning": ""} if harvest_reasoning else ""
+    def _empty_result() -> str | dict:
+        base = {"content": "", "reasoning": ""} if harvest_reasoning else ""
+        return base
+
+    def _error_result(error_detail: str) -> str | dict:
+        """Return an empty result with error info attached (as a dict)."""
+        if harvest_reasoning:
+            return {"content": "", "reasoning": "", "error_detail": error_detail}
+        # For non-harvest mode, return a dict so callers can detect errors
+        return {"content": "", "error_detail": error_detail}
+
     client = http_client()
     try:
         resp = await asyncio.wait_for(
@@ -547,12 +557,12 @@ async def call_model(
         if resp.status_code != 200:
             error_text = resp.text[:500]
             log.warning(f"[{req_id}] {provider_label} {model} returned {resp.status_code}: {error_text}")
-            return _empty
+            return _error_result(f"[ERROR:{resp.status_code}] {provider_label} returned HTTP {resp.status_code}")
 
         data = resp.json()
         choices = data.get("choices", [])
         if not choices:
-            return _empty
+            return _empty_result()
         msg = choices[0].get("message", {})
         if harvest_reasoning:
             content, reasoning = _extract_content_and_reasoning(msg)
@@ -561,10 +571,10 @@ async def call_model(
 
     except asyncio.TimeoutError:
         log.warning(f"[{req_id}] {provider_label} {model} timed out after {MODEL_TIMEOUT}s")
-        return _empty
+        return _error_result(f"[TIMEOUT] {provider_label} timed out after {MODEL_TIMEOUT}s")
     except Exception as e:
         log.error(f"[{req_id}] {provider_label} {model} error: {e}")
-        return _empty
+        return _error_result(f"[ERROR] {provider_label}: {str(e)[:200]}")
 
 
 async def stream_model(
@@ -809,12 +819,12 @@ You also have access to the internal chain-of-thought (reasoning traces) from so
 _SYNTHESIS_MEDIA_ADDENDUM = """
 
 You have been given a curated set of IMAGES and VIDEOS that are relevant to the answer.
-Your job is to WEAVE them naturally into the text so the reader encounters them as
-they read — like an illustrated article or textbook chapter. NEVER dump media at
-the end or in a separate section.
+Your job is to DISTRIBUTE them throughout the text so the reader encounters visuals
+as they read — like a beautifully illustrated article or textbook chapter.
 
 Rules for embedding media:
-- Place each image/video IMMEDIATELY AFTER the paragraph or sentence it illustrates.
+- Place each image/video IMMEDIATELY AFTER the paragraph or sentence it best illustrates.
+- Distribute media throughout the ENTIRE text, not clustered in one section.
 - For images: `![<brief descriptive alt text>](<img_src URL>)` — the alt text must
   describe what the image shows, not just repeat the title.
 - For YouTube videos: output a clickable thumbnail followed by an artifact:
@@ -825,19 +835,20 @@ Rules for embedding media:
   `:::`
 - For non-YouTube videos: use `[▶ <title>](<url>)` as a clickable link.
 
-Strict relevance:
-- ONLY embed a media item if it DIRECTLY illustrates the text around it.
+Relevance:
+- ONLY embed a media item next to text it DIRECTLY illustrates.
 - Read the media title and description carefully. If it does not match the specific
-  topic being discussed in that paragraph, DO NOT include it.
-- It is far better to include NO media than to include irrelevant media.
+  topic being discussed in that paragraph, skip it for that location.
 - NEVER include a video just because it exists — only if it genuinely explains
   or demonstrates the concept being discussed.
-- If none of the provided media items are relevant to a section, leave that section
-  without media. Do not force-fit.
+- Try to place EVERY provided media item somewhere relevant in the text.
+  If you truly cannot find a fitting place for an item, it is okay to omit it,
+  but make an effort first.
 
 Layout:
 - Aim for images/videos to appear naturally every 2-3 paragraphs where relevant.
-- The result should read like a well-illustrated article, not text-with-appendix."""
+- The result should read like a well-illustrated article — visuals enhancing the text.
+- You MUST embed media items using their EXACT URLs as provided. Do not modify URLs."""
 
 
 async def _synthesize_responses(
@@ -1198,6 +1209,51 @@ def _strip_media_images(media_section: str) -> str:
     return media_section
 
 
+def _media_url(item: dict) -> str:
+    """Extract the primary URL from a media item for dedup / placement checking."""
+    if item.get("type") == "image":
+        return item.get("img_src", item.get("url", ""))
+    # Video — check url, then thumbnail
+    return item.get("url", item.get("thumbnail", ""))
+
+
+def _format_remaining_media(unplaced: list[dict]) -> str:
+    """Format media items that the synthesis model did not place inline.
+
+    Appends them as a nicely formatted section at the end so no relevant
+    media is lost — the user sees everything, with the best items already
+    distributed inline by the synthesis model.
+    """
+    if not unplaced:
+        return ""
+
+    def _esc_url(url: str) -> str:
+        return url.replace('(', '%28').replace(')', '%29')
+
+    def _esc_text(text: str) -> str:
+        return text.replace('[', '\\[').replace(']', '\\]')
+
+    parts: list[str] = ["\n\n---\n\n### Additional Visual References\n"]
+    for item in unplaced:
+        title = _esc_text(item.get("title", "Media"))
+        if item.get("type") == "image":
+            img_url = _esc_url(item.get("img_src", item.get("url", "")))
+            source_url = _esc_url(item.get("url", img_url))
+            parts.append(f"\n[![{title}]({img_url})]({source_url})\n")
+        elif item.get("type") == "video":
+            vid_url = item.get("url", "")
+            vid_id = item.get("video_id", "")
+            thumb = item.get("thumbnail", "")
+            if vid_id and "youtube" in vid_url:
+                thumb_url = thumb or f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg"
+                parts.append(
+                    f"\n[![{title}]({_esc_url(thumb_url)})]({_esc_url(vid_url)})\n"
+                )
+            else:
+                parts.append(f"\n[▶ {title}]({_esc_url(vid_url)})\n")
+    return "\n".join(parts)
+
+
 # ============================================================================
 # Tier Race — race models, store in Neo4j, synthesise the richest answer
 # ============================================================================
@@ -1256,21 +1312,27 @@ async def run_tier_race(
                 temperature=0.7, max_tokens=4096, req_id=req_id,
                 harvest_reasoning=is_thinking_tier,
             )
+            error_detail = ""
             if is_thinking_tier and isinstance(raw, dict):
                 content = raw.get("content", "")
                 reasoning = raw.get("reasoning", "")
+                error_detail = raw.get("error_detail", "")
+            elif isinstance(raw, dict):
+                content = raw.get("content", "")
+                reasoning = ""
+                error_detail = raw.get("error_detail", "")
             else:
-                content = raw if isinstance(raw, str) else raw.get("content", "")
+                content = raw if isinstance(raw, str) else ""
                 reasoning = ""
             if not content:
                 # Empty string means timeout, HTTP error, or exception — not a refusal
                 return {"model": model_name, "content": "", "reasoning": "",
-                        "score": -9999,
+                        "score": -9999, "error_detail": error_detail,
                         "is_refusal": False, "is_empty": True, "hedge_count": 0}
             result = score_response(content, user_query)
             result["is_empty"] = False
             return {"model": model_name, "content": content, "reasoning": reasoning,
-                    **result}
+                    "error_detail": "", **result}
 
     tasks = [asyncio.create_task(query_model(m)) for m in models]
     results: list[dict] = []
@@ -1294,7 +1356,8 @@ async def run_tier_race(
             completed += 1
 
             if result.get("is_empty"):
-                status = "ERROR/TIMEOUT"
+                err = result.get("error_detail", "")
+                status = err if err else "ERROR/TIMEOUT"
             elif result["is_refusal"]:
                 status = "REFUSAL"
             else:
@@ -1464,6 +1527,17 @@ async def run_tier_race(
 
     if synthesised:
         yield _chunk("", reasoning="Synthesis complete.\n")
+        # --- Append any relevant media the synthesis model didn't place inline ---
+        if media_items:
+            unplaced = [m for m in media_items if _media_url(m) not in synthesised]
+            if unplaced:
+                remainder = _format_remaining_media(unplaced)
+                if remainder:
+                    synthesised += remainder
+                    yield _chunk("", reasoning=(
+                        f"Appended {len(unplaced)} additional media item(s) "
+                        f"not placed inline by synthesis.\n"
+                    ))
         yield _chunk(synthesised, finish_reason="stop")
     else:
         # Synthesis failed — return the longest response as a reasonable fallback

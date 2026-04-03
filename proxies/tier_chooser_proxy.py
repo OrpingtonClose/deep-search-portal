@@ -56,7 +56,7 @@ MAX_CONCURRENT_MODELS = env_int("TIER_CHOOSER_MAX_CONCURRENT", 10, minimum=1)
 MODEL_TIMEOUT = int(os.getenv("TIER_CHOOSER_MODEL_TIMEOUT", "90"))
 
 # Synthesis configuration
-SYNTHESIS_MODEL = os.getenv("TIER_CHOOSER_SYNTHESIS_MODEL", "google/gemini-2.5-flash")
+SYNTHESIS_MODEL = os.getenv("TIER_CHOOSER_SYNTHESIS_MODEL", "google/gemini-3-flash-preview")
 KNOWLEDGE_NAMESPACE = os.getenv("TIER_CHOOSER_NAMESPACE", "tier-chooser")
 
 # ---------------------------------------------------------------------------
@@ -90,11 +90,27 @@ PROVIDER_REGISTRY: dict[str, dict[str, str]] = {
 }
 
 
+# Native API model name translations — some providers use different model
+# names on their native API vs the OpenRouter-style prefix/name convention.
+NATIVE_MODEL_MAP: dict[str, str] = {
+    # xAI — native API uses versioned names with reasoning/non-reasoning suffix
+    "grok-4.1-fast":       "grok-4-1-fast-non-reasoning",
+    "grok-4":              "grok-4-0709",
+    "grok-4.20":           "grok-4.20-0309-reasoning",
+    "grok-4.20-non-reasoning": "grok-4.20-0309-non-reasoning",
+    "grok-4.20-reasoning":    "grok-4.20-0309-reasoning",
+    # Mistral — native API uses "-latest" aliases, not versioned suffixes
+    "mistral-medium-3.1":  "mistral-medium-latest",
+    "mistral-large-2512":  "mistral-large-latest",
+}
+
+
 def resolve_provider(model: str) -> tuple[str, str, str]:
     """Resolve a model ID to (base_url, api_key, native_model_name).
 
     For models whose provider prefix is in PROVIDER_REGISTRY and whose
-    API key env var is set, returns the native endpoint.
+    API key env var is set, returns the native endpoint.  The bare model
+    name is translated via NATIVE_MODEL_MAP when a mapping exists.
     Otherwise falls back to OpenRouter (keeping the full model ID).
     """
     parts = model.split("/", 1)
@@ -104,7 +120,8 @@ def resolve_provider(model: str) -> tuple[str, str, str]:
         if entry:
             key = os.environ.get(entry["key_env"], "")
             if key:
-                return entry["base_url"], key, model_name
+                native_name = NATIVE_MODEL_MAP.get(model_name, model_name)
+                return entry["base_url"], key, native_name
     # Fallback: OpenRouter with full model ID
     return OPENROUTER_BASE, OPENROUTER_KEY, model
 
@@ -531,7 +548,10 @@ async def call_model(
         if resp.status_code != 200:
             error_text = resp.text[:500]
             log.warning(f"[{req_id}] {provider_label} {model} returned {resp.status_code}: {error_text}")
-            return _empty
+            if harvest_reasoning:
+                return {"content": "", "reasoning": "",
+                        "error": f"[ERROR:{resp.status_code}] {provider_label} returned HTTP {resp.status_code}"}
+            return ""
 
         data = resp.json()
         choices = data.get("choices", [])
@@ -545,10 +565,16 @@ async def call_model(
 
     except asyncio.TimeoutError:
         log.warning(f"[{req_id}] {provider_label} {model} timed out after {MODEL_TIMEOUT}s")
-        return _empty
+        if harvest_reasoning:
+            return {"content": "", "reasoning": "",
+                    "error": f"[TIMEOUT:{MODEL_TIMEOUT}s] {provider_label} did not respond in time"}
+        return ""
     except Exception as e:
         log.error(f"[{req_id}] {provider_label} {model} error: {e}")
-        return _empty
+        if harvest_reasoning:
+            return {"content": "", "reasoning": "",
+                    "error": f"[ERROR] {provider_label}: {type(e).__name__}"}
+        return ""
 
 
 async def stream_model(
@@ -971,8 +997,11 @@ async def run_tier_race(
                 reasoning = ""
             if not content:
                 # Empty string means timeout, HTTP error, or exception — not a refusal
+                error_detail = ""
+                if isinstance(raw, dict):
+                    error_detail = raw.get("error", "")
                 return {"model": model_name, "content": "", "reasoning": "",
-                        "score": -9999,
+                        "score": -9999, "error": error_detail,
                         "is_refusal": False, "is_empty": True, "hedge_count": 0}
             result = score_response(content, user_query)
             result["is_empty"] = False
@@ -988,7 +1017,8 @@ async def run_tier_race(
         results.append(result)
         completed += 1
         if result.get("is_empty"):
-            status = "ERROR/TIMEOUT"
+            error_detail = result.get("error", "")
+            status = f"FAILED \u2014 {error_detail}" if error_detail else "ERROR/TIMEOUT"
         elif result["is_refusal"]:
             status = "REFUSAL"
         else:

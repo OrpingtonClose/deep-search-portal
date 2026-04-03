@@ -582,20 +582,10 @@ async def stream_responses_api(
                             model_id=model_id,
                         )
                 elif event_type == "response.completed":
-                    # Extract any remaining output from the completed response
-                    response_obj = event.get("response", {})
-                    for output_item in response_obj.get("output", []):
-                        if output_item.get("type") == "message":
-                            for content_part in output_item.get("content", []):
-                                if content_part.get("type") == "output_text":
-                                    text = content_part.get("text", "")
-                                    if text:
-                                        yield make_sse_chunk(
-                                            text,
-                                            request_id=request_id,
-                                            created=created,
-                                            model_id=model_id,
-                                        )
+                    # The completed event contains the full response text,
+                    # which was already streamed via output_text.delta events.
+                    # We skip it to avoid duplicating the output.
+                    pass
 
     except asyncio.TimeoutError:
         log.warning(f"[{req_id}] xAI Responses API {model} timed out after {MODEL_TIMEOUT}s")

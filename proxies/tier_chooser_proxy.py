@@ -108,16 +108,25 @@ NATIVE_MODEL_MAP: dict[str, str] = {
     "mistral-large-2512":  "mistral-large-latest",
     "mistral-large-3":     "mistral-large-latest",
     "mistral-large-3-efficient": "mistral-medium-latest",
+    "mistral-large-4":     "mistral-large-latest",
     # Moonshot Kimi — native API model IDs
     "kimi-k2.5-instant":   "kimi-k2.5",
     "kimi-k2.5-thinking":  "kimi-k2.5",
     # Zhipu GLM — native API model IDs
     "glm-5-light":         "glm-5-turbo",
+    "glm-5-thinking":      "glm-5.1",
+    # Google Gemini — API uses "-preview" suffixes
+    "gemini-3.1-flash":    "gemini-3-flash-preview",
+    "gemini-3-pro":        "gemini-3-pro-preview",
+    # OpenAI — high-effort variant is called "pro"
+    "gpt-5.4-high":        "gpt-5.4-pro",
     # Qwen/DashScope — native API model IDs
     "qwen3.5-turbo":       "qwen3.5-flash",
     "qwen3.5-max":         "qwen3-max",
+    "qwen3.5-72b":         "qwen3.5-plus",
     # DeepSeek — native API model IDs
     "deepseek-v3.2-lite":  "deepseek-chat",
+    "deepseek-r1":         "deepseek-reasoner",
     # Anthropic — native API model IDs
     "claude-haiku-4.6":    "claude-haiku-4-6-20260301",
 }

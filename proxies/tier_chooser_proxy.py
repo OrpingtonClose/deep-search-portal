@@ -12,6 +12,7 @@ Port: 9900 (configurable via TIER_CHOOSER_PORT)
 """
 
 import asyncio
+import html as html_mod
 import json
 import os
 import re
@@ -882,20 +883,19 @@ async def _enrich_with_images(
             return synthesised_answer
 
         # Build a visual references section
-        def _esc_url(url: str) -> str:
-            return url.replace('(', '%28').replace(')', '%29')
-
-        def _esc_text(text: str) -> str:
-            return text.replace('[', '\\[').replace(']', '\\]')
+        def _esc_attr(text: str) -> str:
+            """Escape text for safe use inside HTML attribute values."""
+            return html_mod.escape(str(text), quote=True)
 
         image_section = "\n\n---\n\n### Visual References\n\n"
         for img in image_results:
             # Use HTML img with constrained width so images don't dominate
-            alt = _esc_text(img['title'])
-            src = _esc_url(img['img_src'])
-            link = _esc_url(img['source_url'])
+            alt = _esc_attr(img['title'])
+            src = _esc_attr(img['img_src'])
+            link = _esc_attr(img['source_url'])
+            subject = _esc_attr(img['subject'])
             image_section += (
-                f"**{_esc_text(img['subject'])}**\n\n"
+                f"**{subject}**\n\n"
                 f'<a href="{link}"><img src="{src}" alt="{alt}" '
                 f'style="max-width:320px; max-height:240px; border-radius:6px; '
                 f'margin-bottom:8px;" /></a>\n\n'

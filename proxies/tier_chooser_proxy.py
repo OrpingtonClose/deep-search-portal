@@ -945,10 +945,12 @@ async def run_tier_race(
     created = int(time.time())
     model_id = f"tier-race-{tier}"
 
-    def _chunk(content: str, finish_reason=None):
+    def _chunk(content: str, finish_reason=None, reasoning_content: str = None):
         delta = {}
         if content:
             delta["content"] = content
+        if reasoning_content:
+            delta["reasoning_content"] = reasoning_content
         data = {
             "id": request_id,
             "object": "chat.completion.chunk",
@@ -990,6 +992,9 @@ async def run_tier_race(
     results = []
     completed = 0
 
+    # Stream race status as reasoning_content (thought box)
+    yield _chunk("", reasoning_content=f"TIER CHOOSER [{tier.upper()}] \u2014 racing {len(models)} models...\n")
+
     for coro in asyncio.as_completed(tasks):
         result = await coro
         results.append(result)
@@ -1003,6 +1008,7 @@ async def run_tier_race(
             status = "OK"
         short_model = result["model"].split("/")[-1]
         log.info(f"[{req_id}] [{completed}/{len(models)}] {short_model}: {status}")
+        yield _chunk("", reasoning_content=f"  [{completed}/{len(models)}] {short_model}: {status}\n")
 
     valid = [r for r in results if not r["is_refusal"] and not r.get("is_empty") and r["content"]]
     if not valid:
@@ -1043,22 +1049,20 @@ async def run_tier_race(
         media_items = []
 
     # --- Synthesise the richest answer from ALL valid responses ---
-    if len(valid) == 1:
-        enriched = await _enrich_with_images(valid[0]["content"], req_id)
-        yield _chunk(enriched, finish_reason="stop")
-        yield "data: [DONE]\n\n"
-        return
+    valid_count = len(valid)
+    yield _chunk("", reasoning_content=f"\n{valid_count} model(s) responded. Synthesising best answer...\n")
 
+    # Synthesise — even with 1 response, run through synthesis so media
+    # gets embedded inline (the synthesis model also cleans up formatting)
     synthesised = await _synthesize_responses(
         user_query, valid, req_id,
         media=media_items if media_items else None,
     )
 
     if synthesised:
-        enriched = await _enrich_with_images(synthesised, req_id)
-        yield _chunk(enriched, finish_reason="stop")
+        yield _chunk(synthesised, finish_reason="stop")
     else:
-        # Synthesis failed \u2014 return the longest response as a reasonable fallback
+        # Synthesis failed — return the longest response as a reasonable fallback
         fallback = max(valid, key=lambda r: len(r["content"]))
         yield _chunk(fallback["content"], finish_reason="stop")
     yield "data: [DONE]\n\n"

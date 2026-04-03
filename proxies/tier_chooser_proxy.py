@@ -808,13 +808,15 @@ You also have access to the internal chain-of-thought (reasoning traces) from so
 
 _SYNTHESIS_MEDIA_ADDENDUM = """
 
-You have been given a set of IMAGES and VIDEOS found for the user's query.
-Embed them INLINE at contextually appropriate positions in the answer using
-Markdown and LibreChat Artifacts:
+You have been given a curated set of IMAGES and VIDEOS that are relevant to the answer.
+Your job is to WEAVE them naturally into the text so the reader encounters them as
+they read — like an illustrated article or textbook chapter. NEVER dump media at
+the end or in a separate section.
 
-- For images: use `![<brief alt text>](<img_src URL>)` placed right after the
-  paragraph the image illustrates.  Verify the image title/description actually
-  matches the surrounding content before including it.
+Rules for embedding media:
+- Place each image/video IMMEDIATELY AFTER the paragraph or sentence it illustrates.
+- For images: `![<brief descriptive alt text>](<img_src URL>)` — the alt text must
+  describe what the image shows, not just repeat the title.
 - For YouTube videos: output a clickable thumbnail followed by an artifact:
   `[![<title>](<thumbnail URL>)](<video URL>)`
   then on a new line:
@@ -822,10 +824,20 @@ Markdown and LibreChat Artifacts:
   `<iframe width="560" height="315" src="https://www.youtube.com/embed/<video_id>" frameborder="0" allowfullscreen></iframe>`
   `:::`
 - For non-YouTube videos: use `[▶ <title>](<url>)` as a clickable link.
-- Aim for at least one image per major section when relevant media is available.
-- Do NOT dump all media at the end; scatter them throughout the text where they
-  add value.  Skip any item whose title/description does not match the content.
-- If no media is relevant to a section, omit media from that section entirely."""
+
+Strict relevance:
+- ONLY embed a media item if it DIRECTLY illustrates the text around it.
+- Read the media title and description carefully. If it does not match the specific
+  topic being discussed in that paragraph, DO NOT include it.
+- It is far better to include NO media than to include irrelevant media.
+- NEVER include a video just because it exists — only if it genuinely explains
+  or demonstrates the concept being discussed.
+- If none of the provided media items are relevant to a section, leave that section
+  without media. Do not force-fit.
+
+Layout:
+- Aim for images/videos to appear naturally every 2-3 paragraphs where relevant.
+- The result should read like a well-illustrated article, not text-with-appendix."""
 
 
 async def _synthesize_responses(
@@ -1131,19 +1143,36 @@ def _filter_images_by_relevance(
 
 def _filter_media_by_relevance(
     media_items: list[dict],
-    final_text: str,
+    reference_text: str,
+    req_id: str = "",
 ) -> list[dict]:
-    """Discard media items (images/videos) that don't relate to the final synthesis."""
-    if not media_items or not final_text:
+    """Discard media items (images/videos) that don't relate to the reference text.
+
+    Uses both title AND description to check relevance. Requires at least
+    2 significant words (>3 chars) to overlap with the reference text,
+    or the entire short title to appear as a substring.
+    """
+    if not media_items or not reference_text:
         return media_items
-    final_lower = final_text.lower()
+    ref_lower = reference_text.lower()
     kept: list[dict] = []
     for item in media_items:
         title = item.get("title", "").lower()
-        # Keep if any significant word from title appears in synthesis
-        words = [w for w in title.split() if len(w) > 3]
-        if not words or any(w in final_lower for w in words):
+        desc = item.get("description", "").lower()
+        combined = f"{title} {desc}"
+        # Significant words from title+description
+        words = [w for w in combined.split() if len(w) > 3]
+        if not words:
+            # Very short title — keep only if whole title appears in reference
+            if title and title in ref_lower:
+                kept.append(item)
+            continue
+        matching = sum(1 for w in words if w in ref_lower)
+        # Require at least 2 matching words, or >40% of significant words
+        if matching >= 2 or (len(words) > 0 and matching / len(words) > 0.4):
             kept.append(item)
+        else:
+            log.info(f"[{req_id}] Discarding irrelevant media: {item.get('title', '')!r}")
     return kept
 
 
@@ -1369,37 +1398,52 @@ async def run_tier_race(
     except Exception:
         media_items = []
 
+    # --- Collect early images and merge into media list ---
+    early_images: list[dict] = []
+    if image_task:
+        try:
+            early_images = await asyncio.wait_for(image_task, timeout=6.0)
+        except Exception:
+            early_images = []
+
+    # Merge early-collected images into the media list so synthesis can
+    # weave them inline (no separate "Visual References" appendix).
+    if early_images:
+        seen_urls = {m.get("img_src", "") for m in media_items if m.get("type") == "image"}
+        for img in early_images:
+            if img.get("img_src") and img["img_src"] not in seen_urls:
+                media_items.append({
+                    "type": "image",
+                    "url": img.get("source_url", img["img_src"]),
+                    "title": img.get("title", img.get("subject", "Image")),
+                    "description": img.get("subject", ""),
+                    "img_src": img["img_src"],
+                })
+                seen_urls.add(img["img_src"])
+
+    # --- Filter ALL media by relevance BEFORE passing to synthesis ---
+    # Build a combined reference text from all valid model responses
+    combined_responses = "\n".join(r["content"] for r in valid)
+    if media_items:
+        before_count = len(media_items)
+        media_items = _filter_media_by_relevance(media_items, combined_responses, req_id)
+        dropped = before_count - len(media_items)
+        if dropped:
+            yield _chunk("", reasoning=f"Discarded {dropped} irrelevant media item(s).\n")
+
     if media_items:
         img_count = sum(1 for m in media_items if m["type"] == "image")
         vid_count = sum(1 for m in media_items if m["type"] == "video")
         yield _chunk("", reasoning=(
-            f"\nMedia found: {img_count} images, {vid_count} videos "
-            f"— will embed inline.\n"
+            f"\nMedia for inline embedding: {img_count} images, {vid_count} videos.\n"
         ))
 
-    # --- Single valid response: decorate with pre-collected images/media ---
+    # --- Single valid response: use synthesis with media for inline embedding ---
     if len(valid) == 1:
-        yield _chunk("", reasoning="Single valid response.\n")
-        enriched_content = valid[0]["content"]
-        # Filter media by relevance to the actual content
-        if media_items:
-            media_items = _filter_media_by_relevance(media_items, enriched_content)
-        if image_task:
-            try:
-                image_results = await asyncio.wait_for(image_task, timeout=6.0)
-                image_results = _filter_images_by_relevance(image_results, enriched_content)
-                img_section = _format_image_section(image_results)
-                if img_section:
-                    enriched_content += img_section
-                    yield _chunk("", reasoning=f"Added {len(image_results)} visual references.\n")
-            except Exception:
-                pass
-        yield _chunk(enriched_content, finish_reason="stop")
-        yield "data: [DONE]\n\n"
-        return
+        yield _chunk("", reasoning="Single valid response — synthesising with inline media...\n")
 
     # --- Tidbits analysis (skip for full-throttle — thinking harvest already covers it) ---
-    if tier != "full-throttle":
+    if tier != "full-throttle" and len(valid) > 1:
         yield _chunk("", reasoning=(
             f"\nAnalysing {len(valid)} responses for interesting tidbits...\n\n"
         ))
@@ -1408,7 +1452,7 @@ async def run_tier_race(
 
     # --- Synthesise the richest answer from available responses ---
     yield _chunk("", reasoning=(
-        f"\n\nSynthesising from {len(valid)} responses "
+        f"\n\nSynthesising from {len(valid)} response{'s' if len(valid) > 1 else ''} "
         f"(via {SYNTHESIS_MODEL.split('/')[-1]})...\n"
     ))
 
@@ -1420,28 +1464,6 @@ async def run_tier_race(
 
     if synthesised:
         yield _chunk("", reasoning="Synthesis complete.\n")
-        # Filter media by relevance to the final synthesis
-        if media_items:
-            before = len(media_items)
-            media_items = _filter_media_by_relevance(media_items, synthesised)
-            dropped = before - len(media_items)
-            if dropped:
-                yield _chunk("", reasoning=f"Discarded {dropped} irrelevant media item(s).\n")
-        # Decorate with pre-collected images (already running in parallel)
-        if image_task:
-            try:
-                image_results = await asyncio.wait_for(image_task, timeout=2.0)
-                before = len(image_results)
-                image_results = _filter_images_by_relevance(image_results, synthesised)
-                dropped = before - len(image_results)
-                if dropped:
-                    yield _chunk("", reasoning=f"Discarded {dropped} irrelevant image(s).\n")
-                img_section = _format_image_section(image_results)
-                if img_section:
-                    synthesised += img_section
-                    yield _chunk("", reasoning=f"Added {len(image_results)} visual references.\n")
-            except Exception:
-                yield _chunk("", reasoning="Image collection timed out.\n")
         yield _chunk(synthesised, finish_reason="stop")
     else:
         # Synthesis failed — return the longest response as a reasonable fallback

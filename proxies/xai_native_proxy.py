@@ -473,6 +473,165 @@ async def run_race(
 
 
 # ============================================================================
+# Responses API streaming (for multi-agent and models requiring /v1/responses)
+# ============================================================================
+
+async def stream_responses_api(
+    model: str,
+    messages: list[dict],
+    req_id: str,
+) -> AsyncGenerator[str, None]:
+    """Stream a model via xAI's /v1/responses endpoint.
+
+    Required for models like grok-4.20-multi-agent-0309 that reject
+    /v1/chat/completions with 'Multi Agent requests are not allowed
+    on chat completions'.
+
+    The Responses API accepts an 'input' string (or conversation) and
+    optional tools like web_search / x_search.  We convert the chat
+    messages into the format it expects and stream the output back as
+    standard OpenAI-compatible SSE chunks.
+    """
+    request_id = f"chatcmpl-xai-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+    model_id = f"xai-{model}"
+    model_info = XAI_MODELS.get(model, {})
+
+    headers = {
+        "Authorization": f"Bearer {XAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    # Build the /v1/responses body
+    # Convert messages to a single input string (last user message)
+    # and pass conversation history as 'instructions' (system prompt)
+    user_input = ""
+    system_instructions = ""
+    for msg in messages:
+        if msg.get("role") == "system":
+            system_instructions += msg.get("content", "") + "\n"
+        elif msg.get("role") == "user":
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                user_input = content
+            elif isinstance(content, list):
+                user_input = " ".join(
+                    p.get("text", "") for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+
+    body: dict = {
+        "model": model,
+        "input": user_input,
+        "stream": True,
+    }
+    if system_instructions.strip():
+        body["instructions"] = system_instructions.strip()
+
+    # Add built-in tools for models that support them
+    if model_info.get("responses_api"):
+        body["tools"] = [{"type": "web_search"}, {"type": "x_search"}]
+
+    log.info(f"[{req_id}] Responses API: model={model}, input={len(user_input)} chars")
+
+    client = http_client()
+    try:
+        async with client.stream(
+            "POST",
+            f"{XAI_BASE}/responses",
+            json=body,
+            headers=headers,
+            timeout=MODEL_TIMEOUT,
+        ) as resp:
+            if resp.status_code != 200:
+                error_text = (await resp.aread()).decode("utf-8", errors="replace")[:500]
+                log.warning(f"[{req_id}] xAI Responses API {model} error {resp.status_code}: {error_text}")
+                yield make_sse_chunk(
+                    f"Error from xAI Responses API: HTTP {resp.status_code}",
+                    request_id=request_id,
+                    created=created,
+                    model_id=model_id,
+                    finish_reason="stop",
+                )
+                yield "data: [DONE]\n\n"
+                return
+
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                payload = line[6:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    event = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+
+                # The Responses API emits events like:
+                # {"type": "response.output_text.delta", "delta": "text..."}
+                # {"type": "response.completed", ...}
+                event_type = event.get("type", "")
+
+                if event_type == "response.output_text.delta":
+                    delta_text = event.get("delta", "")
+                    if delta_text:
+                        yield make_sse_chunk(
+                            delta_text,
+                            request_id=request_id,
+                            created=created,
+                            model_id=model_id,
+                        )
+                elif event_type == "response.completed":
+                    # Extract any remaining output from the completed response
+                    response_obj = event.get("response", {})
+                    for output_item in response_obj.get("output", []):
+                        if output_item.get("type") == "message":
+                            for content_part in output_item.get("content", []):
+                                if content_part.get("type") == "output_text":
+                                    text = content_part.get("text", "")
+                                    if text:
+                                        yield make_sse_chunk(
+                                            text,
+                                            request_id=request_id,
+                                            created=created,
+                                            model_id=model_id,
+                                        )
+
+    except asyncio.TimeoutError:
+        log.warning(f"[{req_id}] xAI Responses API {model} timed out after {MODEL_TIMEOUT}s")
+        yield make_sse_chunk(
+            f"[TIMEOUT:{MODEL_TIMEOUT}s] xAI Responses API did not respond in time",
+            request_id=request_id,
+            created=created,
+            model_id=model_id,
+            finish_reason="stop",
+        )
+        yield "data: [DONE]\n\n"
+        return
+    except Exception as e:
+        log.error(f"[{req_id}] xAI Responses API {model} exception: {e}")
+        yield make_sse_chunk(
+            f"Error: {e}",
+            request_id=request_id,
+            created=created,
+            model_id=model_id,
+            finish_reason="stop",
+        )
+        yield "data: [DONE]\n\n"
+        return
+
+    # Final chunk
+    yield make_sse_chunk(
+        "",
+        request_id=request_id,
+        created=created,
+        model_id=model_id,
+        finish_reason="stop",
+    )
+    yield "data: [DONE]\n\n"
+
+
+# ============================================================================
 # Single model streaming
 # ============================================================================
 
@@ -688,7 +847,29 @@ async def chat_completions(request: Request):
                     status_code=501,
                 )
 
-            # Text model — stream response
+            # Text model — check if it needs Responses API
+            uses_responses_api = model_info.get("responses_api") and (
+                "multi-agent" in model or
+                model_info.get("requires_responses_api")
+            )
+
+            if uses_responses_api:
+                log.info(f"[{req_id}] Responses API model: {model}")
+
+                async def responses_gen():
+                    try:
+                        async for chunk in stream_responses_api(model, messages, req_id):
+                            yield chunk
+                    finally:
+                        tracker.finish(req_id)
+
+                return StreamingResponse(
+                    responses_gen(),
+                    media_type="text/event-stream",
+                    headers={"X-Request-Id": req_id},
+                )
+
+            # Regular Chat Completions model
             log.info(f"[{req_id}] Single model: {model}")
 
             async def single_gen():

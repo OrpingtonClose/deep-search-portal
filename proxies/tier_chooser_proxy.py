@@ -12,6 +12,7 @@ Port: 9900 (configurable via TIER_CHOOSER_PORT)
 """
 
 import asyncio
+import html as html_mod
 import json
 import os
 import re
@@ -476,17 +477,6 @@ def _build_body(
     return body
 
 
-# Models known to produce reasoning_content alongside their answer.
-# Thinking harvesting collects this chain-of-thought during the
-# full-throttle race and feeds it to the synthesis agent.
-_REASONING_MODELS = {
-    "grok-4.20", "grok-4.20-0309-reasoning",
-    "deepseek-r1", "deepseek-reasoner",
-    "glm-4.7", "glm-5",
-    "qwen3-235b-a22b", "qwen3-235b-a22b-thinking-2507",
-}
-
-
 def _extract_content(message: dict) -> str:
     """Extract text from a response message, falling back to reasoning_content.
 
@@ -500,21 +490,6 @@ def _extract_content(message: dict) -> str:
     return message.get("reasoning_content", "") or ""
 
 
-def _extract_content_and_reasoning(message: dict) -> tuple[str, str]:
-    """Extract both content and reasoning_content from a response message.
-
-    Returns (content, reasoning_content).  Content uses the same fallback
-    logic as ``_extract_content`` so that models which put everything in
-    reasoning_content still produce a usable answer.
-    """
-    content = message.get("content", "") or ""
-    reasoning = message.get("reasoning_content", "") or ""
-    if not content.strip() and reasoning.strip():
-        # Model put everything in reasoning_content — use it as content too
-        return reasoning, reasoning
-    return content, reasoning
-
-
 async def call_model(
     model: str,
     messages: list[dict],
@@ -522,13 +497,13 @@ async def call_model(
     temperature: float = 0.7,
     max_tokens: int = 4096,
     req_id: str = "",
-    harvest_reasoning: bool = False,
-) -> str | dict:
+    error_out: list | None = None,
+) -> str:
     """Call a single model via its native API (or OpenRouter fallback).
 
-    When *harvest_reasoning* is True, returns a dict
-    ``{"content": str, "reasoning": str}`` so callers can access the
-    chain-of-thought separately.  Otherwise returns a plain string.
+    Returns the model's text response, or empty string on failure.
+    When *error_out* is provided (a list), error details are appended
+    so callers can surface descriptive failure reasons.
     """
     base_url, api_key, native_model = resolve_provider(model)
     is_openrouter = (base_url == OPENROUTER_BASE)
@@ -550,7 +525,6 @@ async def call_model(
     )
 
     provider_label = "OpenRouter" if is_openrouter else base_url.split("//")[1].split("/")[0]
-    _empty: str | dict = {"content": "", "reasoning": ""} if harvest_reasoning else ""
     client = http_client()
     try:
         resp = await asyncio.wait_for(
@@ -564,32 +538,26 @@ async def call_model(
         if resp.status_code != 200:
             error_text = resp.text[:500]
             log.warning(f"[{req_id}] {provider_label} {model} returned {resp.status_code}: {error_text}")
-            if harvest_reasoning:
-                return {"content": "", "reasoning": "",
-                        "error": f"[ERROR:{resp.status_code}] {provider_label} returned HTTP {resp.status_code}"}
+            if error_out is not None:
+                error_out.append(f"[ERROR:{resp.status_code}] {provider_label} returned HTTP {resp.status_code}")
             return ""
 
         data = resp.json()
         choices = data.get("choices", [])
         if not choices:
-            return _empty
+            return ""
         msg = choices[0].get("message", {})
-        if harvest_reasoning:
-            content, reasoning = _extract_content_and_reasoning(msg)
-            return {"content": content, "reasoning": reasoning}
         return _extract_content(msg)
 
     except asyncio.TimeoutError:
         log.warning(f"[{req_id}] {provider_label} {model} timed out after {MODEL_TIMEOUT}s")
-        if harvest_reasoning:
-            return {"content": "", "reasoning": "",
-                    "error": f"[TIMEOUT:{MODEL_TIMEOUT}s] {provider_label} did not respond in time"}
+        if error_out is not None:
+            error_out.append(f"[TIMEOUT:{MODEL_TIMEOUT}s] {provider_label} did not respond in time")
         return ""
     except Exception as e:
         log.error(f"[{req_id}] {provider_label} {model} error: {e}")
-        if harvest_reasoning:
-            return {"content": "", "reasoning": "",
-                    "error": f"[ERROR] {provider_label}: {type(e).__name__}"}
+        if error_out is not None:
+            error_out.append(f"[ERROR] {provider_label}: {type(e).__name__}: {e}")
         return ""
 
 
@@ -705,109 +673,6 @@ async def _store_race_results_neo4j(
 
 
 # ============================================================================
-# Tidbits — stream interesting observations from model responses as thoughts
-# ============================================================================
-
-_TIDBITS_PROMPT = """You are an insightful observer analysing multiple AI model responses to the same question. Your job is to provide a brief, engaging stream of interesting tidbits — surprising agreements, notable disagreements, unique angles, or fascinating details that individual models contributed.
-
-Rules:
-- Be concise: 3-6 short bullet points, each one line
-- Use an engaging, conversational tone — like a knowledgeable friend pointing things out
-- Highlight: surprising facts one model found that others missed, interesting disagreements, unexpected angles, particularly clever explanations
-- Use model names (short form) when attributing observations
-- Do NOT summarise the responses — only highlight what's *interesting* about them
-- Do NOT add disclaimers or meta-commentary
-- Use bullet points (•) with no headers"""
-
-
-async def _stream_tidbits(
-    user_query: str,
-    valid_results: list[dict],
-    req_id: str,
-) -> AsyncGenerator[str, None]:
-    """Stream interesting tidbits from model responses as thinking content.
-
-    Calls the SYNTHESIS_MODEL in streaming mode to highlight notable
-    observations about how the models responded differently.
-    """
-    response_parts = []
-    for r in valid_results:
-        short = r["model"].split("/")[-1]
-        # Truncate to keep the tidbits prompt fast
-        snippet = r["content"][:3000]
-        response_parts.append(f"--- {short} ---\n{snippet}\n")
-    responses_text = "\n".join(response_parts)
-
-    messages = [
-        {"role": "system", "content": _TIDBITS_PROMPT},
-        {"role": "user", "content": (
-            f"User question: {user_query}\n\n"
-            f"Model responses:\n{responses_text}\n\n"
-            f"What's interesting about these responses?"
-        )},
-    ]
-
-    async for chunk in stream_model(
-        SYNTHESIS_MODEL, messages,
-        temperature=0.5, max_tokens=1024, req_id=req_id,
-    ):
-        yield chunk
-
-
-# ============================================================================
-# Thinking Harvest — extract a tidbit from a single model's chain-of-thought
-# ============================================================================
-
-_THINKING_TIDBIT_PROMPT = """You are reading the internal chain-of-thought (reasoning trace) of an AI model that just answered a question. Extract ONE concise, interesting insight from this reasoning — something the model considered, a surprising connection it made, an internal debate it had, or a key step in its logic that a reader would find illuminating.
-
-Rules:
-- ONE sentence only, 20-40 words
-- Be specific — reference the actual thought, not a vague summary
-- Start with the model name in bold: **ModelName** thought...
-- Capture the *flavour* of the reasoning — was it cautious? creative? methodical? conflicted?
-- Do NOT add disclaimers
-- If the reasoning is empty or trivial, respond with exactly: SKIP"""
-
-
-async def _harvest_thinking_tidbit(
-    model_name: str,
-    reasoning: str,
-    user_query: str,
-    req_id: str,
-) -> str:
-    """Produce a single interesting tidbit from a model's reasoning trace.
-
-    Returns a short string suitable for streaming as reasoning_content,
-    or empty string if the reasoning is empty/trivial.
-    """
-    if not reasoning or len(reasoning.strip()) < 50:
-        return ""
-
-    short = model_name.split("/")[-1]
-    # Take first 2000 chars of reasoning to keep the call fast
-    snippet = reasoning[:2000]
-
-    messages = [
-        {"role": "system", "content": _THINKING_TIDBIT_PROMPT},
-        {"role": "user", "content": (
-            f"Question: {user_query}\n\n"
-            f"Model: {short}\n\n"
-            f"Internal reasoning:\n{snippet}"
-        )},
-    ]
-
-    result = await call_model(
-        SYNTHESIS_MODEL, messages,
-        temperature=0.5, max_tokens=100, req_id=req_id,
-    )
-    if isinstance(result, dict):
-        result = result.get("content", "")
-    if not result or result.strip() == "SKIP":
-        return ""
-    return result.strip()
-
-
-# ============================================================================
 # Synthesis — merge all valid responses into the richest possible answer
 # ============================================================================
 
@@ -823,14 +688,6 @@ Rules:
 - The final answer must read as a single authoritative response, not a compilation
 - Prioritize depth, specificity, and completeness over brevity
 - If one model provides a unique insight or example that others missed, ALWAYS include it"""
-
-_SYNTHESIS_THINKING_ADDENDUM = """
-
-You also have access to the internal chain-of-thought (reasoning traces) from some of the models. These reveal how the models actually thought through the problem — their doubts, alternative approaches they considered, and internal debates. Use these to:
-- Identify insights that only appear in the reasoning but not in the final answers
-- Note where a model's internal reasoning was more nuanced than its public answer
-- If reasoning reveals a model was uncertain about a claim, reflect that uncertainty
-- Do NOT reproduce the raw reasoning — distil the *insights* from it into the answer"""
 
 _SYNTHESIS_MEDIA_ADDENDUM = """
 
@@ -858,17 +715,12 @@ async def _synthesize_responses(
     user_query: str,
     valid_results: list[dict],
     req_id: str,
-    harvested_thinking: Optional[dict[str, str]] = None,
     media: Optional[list[dict]] = None,
 ) -> str:
     """Merge all valid model responses into a single comprehensive answer.
 
     Uses the SYNTHESIS_MODEL (default: Gemini Flash for speed and large
     context window) to combine the best information from every response.
-
-    When *harvested_thinking* is provided (model_name -> reasoning text),
-    the reasoning traces are included so the synthesis can extract insights
-    that only appeared in the chain-of-thought.
 
     When *media* is provided (list of image/video dicts from
     enrich_with_media_structured), the synthesis model is instructed to
@@ -891,23 +743,7 @@ async def _synthesize_responses(
         f"Model responses:\n{responses_text}\n\n"
     )
 
-    # Append harvested reasoning traces if available
     system_prompt = _SYNTHESIS_PROMPT
-    if harvested_thinking:
-        thinking_parts = []
-        for model_name, reasoning in harvested_thinking.items():
-            if reasoning and len(reasoning.strip()) > 50:
-                short = model_name.split("/")[-1]
-                # Cap each reasoning trace to keep the prompt manageable
-                thinking_parts.append(
-                    f"--- {short} internal reasoning ---\n{reasoning[:3000]}\n"
-                )
-        if thinking_parts:
-            system_prompt += _SYNTHESIS_THINKING_ADDENDUM
-            user_content += (
-                "Model reasoning traces (chain-of-thought):\n"
-                + "\n".join(thinking_parts) + "\n\n"
-            )
 
     # Append media for inline placement
     if media:
@@ -1047,18 +883,22 @@ async def _enrich_with_images(
             return synthesised_answer
 
         # Build a visual references section
-        def _esc_url(url: str) -> str:
-            return url.replace('(', '%28').replace(')', '%29')
-
-        def _esc_text(text: str) -> str:
-            return text.replace('[', '\\[').replace(']', '\\]')
+        def _esc_attr(text: str) -> str:
+            """Escape text for safe use inside HTML attribute values."""
+            return html_mod.escape(str(text), quote=True)
 
         image_section = "\n\n---\n\n### Visual References\n\n"
         for img in image_results:
-            # Markdown image with link to source
+            # Use HTML img with constrained width so images don't dominate
+            alt = _esc_attr(img['title'])
+            src = _esc_attr(img['img_src'])
+            link = _esc_attr(img['source_url'])
+            subject = _esc_attr(img['subject'])
             image_section += (
-                f"**{_esc_text(img['subject'])}**\n\n"
-                f"[![{_esc_text(img['title'])}]({_esc_url(img['img_src'])})]({_esc_url(img['source_url'])})\n\n"
+                f"**{subject}**\n\n"
+                f'<a href="{link}"><img src="{src}" alt="{alt}" '
+                f'style="max-width:320px; max-height:240px; border-radius:6px; '
+                f'margin-bottom:8px;" /></a>\n\n'
             )
 
         return synthesised_answer + image_section
@@ -1105,10 +945,8 @@ async def run_tier_race(
     created = int(time.time())
     model_id = f"tier-race-{tier}"
 
-    def _chunk(content: str, finish_reason=None, reasoning=None):
+    def _chunk(content: str, finish_reason=None):
         delta = {}
-        if reasoning is not None:
-            delta["reasoning_content"] = reasoning
         if content:
             delta["content"] = content
         data = {
@@ -1126,46 +964,27 @@ async def run_tier_race(
         yield "data: [DONE]\n\n"
         return
 
-    yield _chunk("", reasoning=f"TIER CHOOSER [{tier.upper()}] \u2014 racing {len(models)} models...\n")
-
     # Fire media enrichment concurrently with model race (zero added latency)
     media_task = asyncio.create_task(enrich_with_media_structured(user_query, req_id))
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_MODELS)
 
-    # Determine whether to harvest reasoning (thinking tier only)
-    is_thinking_tier = (tier == "full-throttle")
-    # Collected reasoning traces keyed by model name
-    harvested_thinking: dict[str, str] = {}
-    # Background tidbit tasks fired as models complete (full-throttle only)
-    tidbit_tasks: list[asyncio.Task] = []
-
     async def query_model(model_name: str) -> dict:
         async with semaphore:
-            # Pass messages as-is — NO system prompt injection
-            raw = await call_model(
+            errors: list[str] = []
+            content = await call_model(
                 model_name, messages,
                 temperature=0.7, max_tokens=4096, req_id=req_id,
-                harvest_reasoning=is_thinking_tier,
+                error_out=errors,
             )
-            if is_thinking_tier and isinstance(raw, dict):
-                content = raw.get("content", "")
-                reasoning = raw.get("reasoning", "")
-            else:
-                content = raw if isinstance(raw, str) else raw.get("content", "")
-                reasoning = ""
             if not content:
-                # Empty string means timeout, HTTP error, or exception — not a refusal
-                error_detail = ""
-                if isinstance(raw, dict):
-                    error_detail = raw.get("error", "")
-                return {"model": model_name, "content": "", "reasoning": "",
+                error_detail = errors[0] if errors else ""
+                return {"model": model_name, "content": "",
                         "score": -9999, "error": error_detail,
                         "is_refusal": False, "is_empty": True, "hedge_count": 0}
             result = score_response(content, user_query)
             result["is_empty"] = False
-            return {"model": model_name, "content": content, "reasoning": reasoning,
-                    **result}
+            return {"model": model_name, "content": content, **result}
 
     tasks = [asyncio.create_task(query_model(m)) for m in models]
     results = []
@@ -1177,37 +996,13 @@ async def run_tier_race(
         completed += 1
         if result.get("is_empty"):
             error_detail = result.get("error", "")
-            status = f"FAILED \u2014 {error_detail}" if error_detail else "ERROR/TIMEOUT"
+            status = f"FAILED \u2014 {error_detail}" if error_detail else "FAILED \u2014 unknown error"
         elif result["is_refusal"]:
             status = "REFUSAL"
         else:
             status = "OK"
         short_model = result["model"].split("/")[-1]
-        yield _chunk("", reasoning=f"  [{completed}/{len(models)}] {short_model}: {status}\n")
-
-        # --- Progressive thinking harvest (thinking tier only) ---
-        if is_thinking_tier and result.get("reasoning") and status == "OK":
-            harvested_thinking[result["model"]] = result["reasoning"]
-            # Fire a background task to produce a tidbit from this model's
-            # reasoning — streamed progressively as each completes.
-            t = asyncio.create_task(
-                _harvest_thinking_tidbit(
-                    result["model"], result["reasoning"],
-                    user_query, req_id,
-                )
-            )
-            tidbit_tasks.append(t)
-
-        # Stream any completed tidbits immediately (progressive, not batched)
-        newly_done = [t for t in tidbit_tasks if t.done()]
-        for t in newly_done:
-            tidbit_tasks.remove(t)
-            try:
-                tidbit = t.result()
-                if tidbit:
-                    yield _chunk("", reasoning=f"• {tidbit}\n")
-            except Exception:
-                pass
+        log.info(f"[{req_id}] [{completed}/{len(models)}] {short_model}: {status}")
 
     valid = [r for r in results if not r["is_refusal"] and not r.get("is_empty") and r["content"]]
     if not valid:
@@ -1220,10 +1015,18 @@ async def run_tier_race(
             msg += f" ({empty_count} timed out/errored)"
         elif refusal_count:
             msg += f" ({refusal_count} refused)"
-        msg += ". Try rephrasing."
+        details = []
+        for r in results:
+            short = r["model"].split("/")[-1]
+            err = r.get("error", "")
+            if err:
+                details.append(f"  \u2022 {short}: {err}")
+            elif r.get("is_refusal"):
+                details.append(f"  \u2022 {short}: refused to answer")
+        if details:
+            msg += "\n\nDetails:\n" + "\n".join(details)
+        msg += "\n\nTry rephrasing your question."
         media_task.cancel()
-        for t in tidbit_tasks:
-            t.cancel()
         yield _chunk(msg, finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
@@ -1233,92 +1036,33 @@ async def run_tier_race(
     _background_tasks.add(_task)
     _task.add_done_callback(_background_tasks.discard)
 
-    refusal_count = sum(1 for r in results if r["is_refusal"] and not r.get("is_empty"))
-    empty_count = sum(1 for r in results if r.get("is_empty"))
-    model_names = ", ".join(r["model"].split("/")[-1] for r in valid)
-
-    yield _chunk("", reasoning=(
-        f"\nResults: {len(valid)} valid / {refusal_count} refused / "
-        f"{empty_count} error\n"
-        f"Valid: {model_names}\n"
-    ))
-
-    # --- Drain any remaining thinking tidbits (most already streamed progressively) ---
-    if tidbit_tasks:
-        done, pending = await asyncio.wait(tidbit_tasks, timeout=5.0)
-        for t in pending:
-            t.cancel()
-        for t in done:
-            try:
-                tidbit = t.result()
-                if tidbit:
-                    yield _chunk("", reasoning=f"• {tidbit}\n")
-            except Exception:
-                pass
-    if harvested_thinking:
-        thinking_count = sum(1 for v in harvested_thinking.values() if v.strip())
-        if thinking_count:
-            yield _chunk("", reasoning=(
-                f"\nCaptured reasoning from {thinking_count} model(s) — "
-                f"feeding into synthesis.\n"
-            ))
-
     # --- Collect structured media for inline embedding ---
     try:
         media_items: list[dict] = await asyncio.wait_for(media_task, timeout=8.0)
     except Exception:
         media_items = []
 
-    media_count = len(media_items)
-    if media_count:
-        img_count = sum(1 for m in media_items if m["type"] == "image")
-        vid_count = sum(1 for m in media_items if m["type"] == "video")
-        yield _chunk("", reasoning=(
-            f"\nMedia found: {img_count} images, {vid_count} videos "
-            f"— will embed inline.\n"
-        ))
-
     # --- Synthesise the richest answer from ALL valid responses ---
     if len(valid) == 1:
-        yield _chunk("", reasoning="Single valid response. Searching for relevant images...\n")
         enriched = await _enrich_with_images(valid[0]["content"], req_id)
         yield _chunk(enriched, finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
 
-    # Stream interesting tidbits from the responses as thinking content
-    yield _chunk("", reasoning=(
-        f"\nAnalysing {len(valid)} responses for interesting tidbits...\n\n"
-    ))
-    async for tidbit_chunk in _stream_tidbits(user_query, valid, req_id):
-        yield _chunk("", reasoning=tidbit_chunk)
-
-    yield _chunk("", reasoning=(
-        f"\n\nSynthesising comprehensive answer from {len(valid)} responses "
-        f"(via {SYNTHESIS_MODEL.split('/')[-1]})...\n"
-    ))
-
     synthesised = await _synthesize_responses(
         user_query, valid, req_id,
-        harvested_thinking=harvested_thinking if harvested_thinking else None,
         media=media_items if media_items else None,
     )
 
     if synthesised:
-        yield _chunk("", reasoning="Synthesis complete. Searching for relevant images...\n")
         enriched = await _enrich_with_images(synthesised, req_id)
-        if enriched != synthesised:
-            image_count = enriched.count("![") - synthesised.count("![")
-            yield _chunk("", reasoning=f"Found {image_count} relevant images.\n")
-        else:
-            yield _chunk("", reasoning="No relevant images found.\n")
         yield _chunk(enriched, finish_reason="stop")
     else:
-        # Synthesis failed — return the longest response as a reasonable fallback
+        # Synthesis failed \u2014 return the longest response as a reasonable fallback
         fallback = max(valid, key=lambda r: len(r["content"]))
-        yield _chunk("", reasoning="Synthesis failed — returning longest response as fallback.\n")
         yield _chunk(fallback["content"], finish_reason="stop")
     yield "data: [DONE]\n\n"
+
 
 
 # ============================================================================

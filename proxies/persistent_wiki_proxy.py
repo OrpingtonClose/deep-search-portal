@@ -169,7 +169,7 @@ async def chat_completions(request: Request):
     tracker.start(req_id, utility=utility, messages=len(messages), phase="init")
 
     if utility:
-        client_wants_stream = body.get("stream", True)
+        client_wants_stream = body.get("stream", False)
         if not client_wants_stream:
             log.info(f"[{req_id}] Routing to NON-STREAMING utility passthrough")
             result = await utility_passthrough_json(

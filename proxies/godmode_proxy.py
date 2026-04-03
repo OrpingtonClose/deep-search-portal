@@ -1074,7 +1074,7 @@ async def chat_completions(request: Request):
 
     # Utility requests bypass G0DM0D3 processing — passthrough to first available model
     if utility:
-        client_wants_stream = body.get("stream", True)
+        client_wants_stream = body.get("stream", False)
         if not client_wants_stream:
             log.info(f"[{req_id}] Utility request — NON-STREAMING passthrough")
             from shared import utility_passthrough_json

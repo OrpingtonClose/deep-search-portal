@@ -2215,7 +2215,7 @@ async def chat_completions(request: Request):
 
     # Utility requests pass through
     if utility:
-        client_wants_stream = body.get("stream", True)
+        client_wants_stream = body.get("stream", False)
         if not client_wants_stream:
             log.info(f"[{req_id}] Routing to NON-STREAMING utility passthrough")
             lf.unregister_trace(req_id)

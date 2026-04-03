@@ -1436,7 +1436,7 @@ async def chat_completions(request: Request):
 
     # Utility requests — passthrough to a cheap fast model
     if utility:
-        client_wants_stream = body.get("stream", True)
+        client_wants_stream = body.get("stream", False)
         base_url, api_key, native_model = resolve_provider("google/gemini-2.5-flash")
         if not client_wants_stream:
             log.info(f"[{req_id}] Utility request \u2014 NON-STREAMING passthrough")

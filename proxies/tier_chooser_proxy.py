@@ -149,9 +149,9 @@ TIER_MODELS = {
         "google/gemini-3.1-pro-preview",  # Often #1 or #2 overall
         "openai/gpt-5.4-pro",             # Highest-effort GPT-5 variant
         "x-ai/grok-4.20",                 # Competitive frontier model
-        "deepseek/deepseek-r1",           # Top reasoning/value performer
+        "deepseek/deepseek-reasoner",      # Top reasoning/value performer
         "qwen/qwen3-235b-a22b",           # Massive MoE power
-        "z-ai/glm-5-thinking",            # Max-effort GLM variant
+        "z-ai/glm-5",                     # Max-effort GLM variant
     ],
 }
 
@@ -1042,6 +1042,45 @@ async def _enrich_with_images(
         return synthesised_answer
 
 
+async def _collect_images_early(content: str, req_id: str) -> list[dict]:
+    """Extract image subjects from content and search for images.
+
+    Designed to run as a background task in parallel with model collection
+    and synthesis so that image results are ready when synthesis completes.
+    Returns a list of image result dicts, or empty list on failure.
+    """
+    if not IMAGE_ENRICHMENT_ENABLED:
+        return []
+    try:
+        subjects = await _extract_image_subjects(content, req_id)
+        if not subjects:
+            return []
+        return await _search_images_for_subjects(subjects, req_id)
+    except Exception as exc:
+        log.warning(f"[{req_id}] Early image collection failed (non-fatal): {exc}")
+        return []
+
+
+def _format_image_section(image_results: list[dict]) -> str:
+    """Format pre-collected image results into a Visual References markdown section."""
+    if not image_results:
+        return ""
+
+    def _esc_url(url: str) -> str:
+        return url.replace('(', '%28').replace(')', '%29')
+
+    def _esc_text(text: str) -> str:
+        return text.replace('[', '\\[').replace(']', '\\]')
+
+    section = "\n\n---\n\n### Visual References\n\n"
+    for img in image_results:
+        section += (
+            f"**{_esc_text(img['subject'])}**\n\n"
+            f"[![{_esc_text(img['title'])}]({_esc_url(img['img_src'])})]({_esc_url(img['source_url'])})\n\n"
+        )
+    return section
+
+
 def _strip_media_images(media_section: str) -> str:
     """Remove the '### Visual References' image block from media_enrichment output.
 
@@ -1139,45 +1178,113 @@ async def run_tier_race(
                     **result}
 
     tasks = [asyncio.create_task(query_model(m)) for m in models]
-    results = []
+    results: list[dict] = []
     completed = 0
+    first_valid_at: float | None = None
+    image_task: asyncio.Task | None = None
+    GRACE_SECONDS = 4.0  # after first valid, wait up to 4s for more
 
-    for coro in asyncio.as_completed(tasks):
-        result = await coro
-        results.append(result)
-        completed += 1
-        if result.get("is_empty"):
-            status = "ERROR/TIMEOUT"
-        elif result["is_refusal"]:
-            status = "REFUSAL"
+    # --- Progressive model collection with grace period ---
+    pending_tasks = set(tasks)
+    while pending_tasks:
+        if first_valid_at is not None:
+            remaining = GRACE_SECONDS - (time.monotonic() - first_valid_at)
+            if remaining <= 0:
+                break
         else:
-            status = "OK"
-        short_model = result["model"].split("/")[-1]
-        yield _chunk("", reasoning=f"  [{completed}/{len(models)}] {short_model}: {status}\n")
+            remaining = None  # no timeout until first valid arrives
 
-        # --- Progressive thinking harvest (thinking tier only) ---
-        if is_thinking_tier and result.get("reasoning") and status == "OK":
-            harvested_thinking[result["model"]] = result["reasoning"]
-            # Fire a background task to produce a tidbit from this model's
-            # reasoning — streamed progressively as each completes.
-            t = asyncio.create_task(
-                _harvest_thinking_tidbit(
-                    result["model"], result["reasoning"],
-                    user_query, req_id,
-                )
-            )
-            tidbit_tasks.append(t)
+        done, pending_tasks = await asyncio.wait(
+            pending_tasks, timeout=remaining,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
 
-        # Stream any completed tidbits immediately (progressive, not batched)
-        newly_done = [t for t in tidbit_tasks if t.done()]
-        for t in newly_done:
-            tidbit_tasks.remove(t)
+        if not done:
+            # Grace period timeout expired
+            break
+
+        for task in done:
             try:
-                tidbit = t.result()
-                if tidbit:
-                    yield _chunk("", reasoning=f"• {tidbit}\n")
+                result = task.result()
             except Exception:
-                pass
+                continue
+            results.append(result)
+            completed += 1
+
+            if result.get("is_empty"):
+                status = "ERROR/TIMEOUT"
+            elif result["is_refusal"]:
+                status = "REFUSAL"
+            else:
+                status = "OK"
+            short_model = result["model"].split("/")[-1]
+            yield _chunk("", reasoning=f"  [{completed}/{len(models)}] {short_model}: {status}\n")
+
+            # --- Progressive thinking harvest (thinking tier only) ---
+            if is_thinking_tier and result.get("reasoning") and status == "OK":
+                harvested_thinking[result["model"]] = result["reasoning"]
+                t = asyncio.create_task(
+                    _harvest_thinking_tidbit(
+                        result["model"], result["reasoning"],
+                        user_query, req_id,
+                    )
+                )
+                tidbit_tasks.append(t)
+
+            # Stream any completed tidbits immediately
+            newly_done = [t for t in tidbit_tasks if t.done()]
+            for t in newly_done:
+                tidbit_tasks.remove(t)
+                try:
+                    tidbit = t.result()
+                    if tidbit:
+                        yield _chunk("", reasoning=f"• {tidbit}\n")
+                except Exception:
+                    pass
+
+            # Fire early image collection on first valid response
+            if status == "OK" and first_valid_at is None:
+                first_valid_at = time.monotonic()
+                if IMAGE_ENRICHMENT_ENABLED:
+                    image_task = asyncio.create_task(
+                        _collect_images_early(result["content"], req_id)
+                    )
+                    log.info(f"[{req_id}] Started early image collection from {short_model}")
+
+    # --- Handle late model tasks (background Neo4j storage) ---
+    late_tasks = list(pending_tasks)
+    if late_tasks:
+        late_count = len(late_tasks)
+        yield _chunk("", reasoning=(
+            f"Proceeding with {completed} responses "
+            f"({late_count} model{'s' if late_count != 1 else ''} still running)...\n"
+        ))
+
+        async def _finish_late(
+            late: list[asyncio.Task],
+            existing: list[dict],
+        ) -> None:
+            late_results: list[dict] = []
+            for coro in asyncio.as_completed(late):
+                try:
+                    r = await coro
+                    late_results.append(r)
+                except Exception:
+                    pass
+            await _store_race_results_neo4j(
+                req_id, user_query, tier, existing + late_results,
+            )
+
+        bg = asyncio.create_task(_finish_late(late_tasks, results.copy()))
+        _background_tasks.add(bg)
+        bg.add_done_callback(_background_tasks.discard)
+    else:
+        # All models completed — store normally
+        _task = asyncio.create_task(
+            _store_race_results_neo4j(req_id, user_query, tier, results)
+        )
+        _background_tasks.add(_task)
+        _task.add_done_callback(_background_tasks.discard)
 
     valid = [r for r in results if not r["is_refusal"] and not r.get("is_empty") and r["content"]]
     if not valid:
@@ -1192,16 +1299,15 @@ async def run_tier_race(
             msg += f" ({refusal_count} refused)"
         msg += ". Try rephrasing."
         media_task.cancel()
+        if image_task:
+            image_task.cancel()
         for t in tidbit_tasks:
+            t.cancel()
+        for t in late_tasks:
             t.cancel()
         yield _chunk(msg, finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
-
-    # --- Persist ALL results to Neo4j (fire-and-forget) ---
-    _task = asyncio.create_task(_store_race_results_neo4j(req_id, user_query, tier, results))
-    _background_tasks.add(_task)
-    _task.add_done_callback(_background_tasks.discard)
 
     refusal_count = sum(1 for r in results if r["is_refusal"] and not r.get("is_empty"))
     empty_count = sum(1 for r in results if r.get("is_empty"))
@@ -1213,12 +1319,12 @@ async def run_tier_race(
         f"Valid: {model_names}\n"
     ))
 
-    # --- Drain any remaining thinking tidbits (most already streamed progressively) ---
+    # --- Drain any remaining thinking tidbits (brief wait) ---
     if tidbit_tasks:
-        done, pending = await asyncio.wait(tidbit_tasks, timeout=5.0)
-        for t in pending:
+        done_tidbits, pending_tidbits = await asyncio.wait(tidbit_tasks, timeout=3.0)
+        for t in pending_tidbits:
             t.cancel()
-        for t in done:
+        for t in done_tidbits:
             try:
                 tidbit = t.result()
                 if tidbit:
@@ -1233,14 +1339,13 @@ async def run_tier_race(
                 f"feeding into synthesis.\n"
             ))
 
-    # --- Collect structured media for inline embedding ---
+    # --- Collect structured media for inline embedding (already running) ---
     try:
         media_items: list[dict] = await asyncio.wait_for(media_task, timeout=8.0)
     except Exception:
         media_items = []
 
-    media_count = len(media_items)
-    if media_count:
+    if media_items:
         img_count = sum(1 for m in media_items if m["type"] == "image")
         vid_count = sum(1 for m in media_items if m["type"] == "video")
         yield _chunk("", reasoning=(
@@ -1248,23 +1353,34 @@ async def run_tier_race(
             f"— will embed inline.\n"
         ))
 
-    # --- Synthesise the richest answer from ALL valid responses ---
+    # --- Single valid response: decorate with pre-collected images ---
     if len(valid) == 1:
-        yield _chunk("", reasoning="Single valid response. Searching for relevant images...\n")
-        enriched = await _enrich_with_images(valid[0]["content"], req_id)
-        yield _chunk(enriched, finish_reason="stop")
+        yield _chunk("", reasoning="Single valid response.\n")
+        enriched_content = valid[0]["content"]
+        if image_task:
+            try:
+                image_results = await asyncio.wait_for(image_task, timeout=6.0)
+                img_section = _format_image_section(image_results)
+                if img_section:
+                    enriched_content += img_section
+                    yield _chunk("", reasoning=f"Added {len(image_results)} visual references.\n")
+            except Exception:
+                pass
+        yield _chunk(enriched_content, finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
 
-    # Stream interesting tidbits from the responses as thinking content
-    yield _chunk("", reasoning=(
-        f"\nAnalysing {len(valid)} responses for interesting tidbits...\n\n"
-    ))
-    async for tidbit_chunk in _stream_tidbits(user_query, valid, req_id):
-        yield _chunk("", reasoning=tidbit_chunk)
+    # --- Tidbits analysis (skip for full-throttle — thinking harvest already covers it) ---
+    if tier != "full-throttle":
+        yield _chunk("", reasoning=(
+            f"\nAnalysing {len(valid)} responses for interesting tidbits...\n\n"
+        ))
+        async for tidbit_chunk in _stream_tidbits(user_query, valid, req_id):
+            yield _chunk("", reasoning=tidbit_chunk)
 
+    # --- Synthesise the richest answer from available responses ---
     yield _chunk("", reasoning=(
-        f"\n\nSynthesising comprehensive answer from {len(valid)} responses "
+        f"\n\nSynthesising from {len(valid)} responses "
         f"(via {SYNTHESIS_MODEL.split('/')[-1]})...\n"
     ))
 
@@ -1275,18 +1391,22 @@ async def run_tier_race(
     )
 
     if synthesised:
-        yield _chunk("", reasoning="Synthesis complete. Searching for relevant images...\n")
-        enriched = await _enrich_with_images(synthesised, req_id)
-        if enriched != synthesised:
-            image_count = enriched.count("![") - synthesised.count("![")
-            yield _chunk("", reasoning=f"Found {image_count} relevant images.\n")
-        else:
-            yield _chunk("", reasoning="No relevant images found.\n")
-        yield _chunk(enriched, finish_reason="stop")
+        yield _chunk("", reasoning="Synthesis complete.\n")
+        # Decorate with pre-collected images (already running in parallel)
+        if image_task:
+            try:
+                image_results = await asyncio.wait_for(image_task, timeout=2.0)
+                img_section = _format_image_section(image_results)
+                if img_section:
+                    synthesised += img_section
+                    yield _chunk("", reasoning=f"Added {len(image_results)} visual references.\n")
+            except Exception:
+                yield _chunk("", reasoning="Image collection timed out.\n")
+        yield _chunk(synthesised, finish_reason="stop")
     else:
         # Synthesis failed — return the longest response as a reasonable fallback
         fallback = max(valid, key=lambda r: len(r["content"]))
-        yield _chunk("", reasoning="Synthesis failed — returning longest response as fallback.\n")
+        yield _chunk("", reasoning="Synthesis failed — returning longest response.\n")
         yield _chunk(fallback["content"], finish_reason="stop")
     yield "data: [DONE]\n\n"
 

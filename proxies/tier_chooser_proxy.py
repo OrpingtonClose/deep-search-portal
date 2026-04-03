@@ -945,7 +945,7 @@ async def _extract_image_subjects(
     ]
     result = await call_model(
         SYNTHESIS_MODEL, messages,
-        temperature=0.1, max_tokens=512, req_id=req_id,
+        temperature=0.1, max_tokens=8192, req_id=req_id,
     )
     if not result:
         log.warning(f"[{req_id}] Image subject extraction: model returned empty response")

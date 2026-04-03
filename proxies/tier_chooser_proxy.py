@@ -1077,14 +1077,16 @@ async def run_tier_race(
 
     # --- Synthesise the richest answer from ALL valid responses ---
     valid_count = len(valid)
-    yield _chunk("", reasoning_content=f"\n{valid_count} model(s) responded. Synthesising best answer...\n")
 
     # Quick tier: skip synthesis and media — just return the best single response
     if is_quick_tier:
+        yield _chunk("", reasoning_content=f"\n{valid_count} model(s) responded. Selecting best answer...\n")
         best = max(valid, key=lambda r: r["score"])
         yield _chunk(best["content"], finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
+
+    yield _chunk("", reasoning_content=f"\n{valid_count} model(s) responded. Synthesising best answer...\n")
 
     # Synthesise — even with 1 response, run through synthesis so media
     # gets embedded inline (the synthesis model also cleans up formatting)

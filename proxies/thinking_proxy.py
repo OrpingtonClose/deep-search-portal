@@ -598,10 +598,7 @@ async def chat_completions(request: Request):
         tracker.finish(req_id)
         return result
 
-    # --- Streaming requests ---
-    if not client_wants_stream:
-        log.info(f"[{req_id}] Overriding stream=false -> stream=true (proxy always streams for chat)")
-
+    # --- Streaming requests (stream=true or stream omitted) ---
     if utility:
         log.info(f"[{req_id}] Routing to PASSTHROUGH (utility request — no thinking injection)")
         generator = stream_passthrough(

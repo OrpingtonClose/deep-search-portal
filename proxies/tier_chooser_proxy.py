@@ -945,8 +945,14 @@ async def _extract_image_subjects(
     ]
     result = await call_model(
         SYNTHESIS_MODEL, messages,
-        temperature=0.1, max_tokens=256, req_id=req_id,
+        temperature=0.1, max_tokens=512, req_id=req_id,
     )
+    if not result:
+        log.warning(f"[{req_id}] Image subject extraction: model returned empty response")
+        return []
+    # call_model may return a dict when harvest_reasoning is involved
+    if isinstance(result, dict):
+        result = result.get("content", "")
     if not result:
         return []
     try:
@@ -958,7 +964,21 @@ async def _extract_image_subjects(
         if isinstance(subjects, list):
             return [s for s in subjects if isinstance(s, str)][:5]
     except (json.JSONDecodeError, ValueError):
-        log.warning(f"[{req_id}] Image subject extraction JSON parse error")
+        # Attempt to repair truncated JSON arrays (e.g. '["a", "b",')
+        try:
+            repaired = re.sub(r',\s*$', '', cleaned) + "]"
+            subjects = json.loads(repaired)
+            if isinstance(subjects, list):
+                valid = [s for s in subjects if isinstance(s, str)][:5]
+                if valid:
+                    log.info(f"[{req_id}] Repaired truncated image subjects JSON: {valid}")
+                    return valid
+        except (json.JSONDecodeError, ValueError):
+            pass
+        log.warning(
+            f"[{req_id}] Image subject extraction JSON parse failed. "
+            f"Raw response ({len(result)} chars): {result[:300]!r}"
+        )
     return []
 
 

@@ -601,6 +601,21 @@ async def chat_completions(request: Request):
     try:
         # Utility requests (title generation, etc.) — passthrough to a fast model
         if is_utility_request(messages):
+            client_wants_stream = body.get("stream", True)
+            if not client_wants_stream:
+                log.info(f"[{req_id}] Utility request → NON-STREAMING grok-3-fast")
+                from shared import utility_passthrough_json
+                result = await utility_passthrough_json(
+                    body,
+                    req_id=req_id,
+                    upstream_base=XAI_BASE,
+                    upstream_key=XAI_API_KEY,
+                    upstream_model="grok-3-fast",
+                    log=log,
+                )
+                tracker.finish(req_id)
+                return result
+
             log.info(f"[{req_id}] Utility request → grok-3-fast passthrough")
 
             async def utility_gen():

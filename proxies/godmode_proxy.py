@@ -1074,6 +1074,24 @@ async def chat_completions(request: Request):
 
     # Utility requests bypass G0DM0D3 processing — passthrough to first available model
     if utility:
+        client_wants_stream = body.get("stream", True)
+        if not client_wants_stream:
+            log.info(f"[{req_id}] Utility request — NON-STREAMING passthrough")
+            from shared import utility_passthrough_json
+            result = await utility_passthrough_json(
+                body,
+                req_id=req_id,
+                upstream_base=OPENROUTER_BASE,
+                upstream_key=OPENROUTER_KEY,
+                upstream_model="openai/gpt-4o",
+                log=log,
+                extra_headers={
+                    "HTTP-Referer": "https://deep-search.uk",
+                    "X-Title": "Deep Search G0DM0D3 Proxy",
+                },
+            )
+            tracker.finish(req_id)
+            return result
         log.info(f"[{req_id}] Utility request — passthrough")
         from shared import stream_passthrough
         generator = stream_passthrough(

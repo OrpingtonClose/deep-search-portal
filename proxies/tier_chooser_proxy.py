@@ -458,7 +458,7 @@ _MAX_COMPLETION_TOKENS_PREFIXES = {"openai"}
 _THINKING_MODELS = {
     "qwen3-235b-a22b", "qwen3-235b-a22b-instruct-2507",
     "qwen3-235b-a22b-thinking-2507",
-    "qwen3.5-max",
+    "qwen3-max",
 }
 
 # Models that do not support custom temperature (only default=1)

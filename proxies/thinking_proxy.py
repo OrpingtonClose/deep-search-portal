@@ -582,10 +582,11 @@ async def chat_completions(request: Request):
 
     tracker.start(req_id, stream=client_wants_stream, utility=utility, messages=len(messages))
 
-    # --- Non-streaming utility requests (title/tag generation) ---
-    # LibreChat sends stream=false for these and expects a JSON response.
-    if utility and not client_wants_stream:
-        log.info(f"[{req_id}] Routing to NON-STREAMING passthrough (utility, stream=false)")
+    # --- Non-streaming requests (title/tag generation, any stream=false) ---
+    # LibreChat sends stream=false for title gen and expects a JSON response.
+    # The request may or may not match utility patterns — always return JSON.
+    if not client_wants_stream:
+        log.info(f"[{req_id}] Routing to NON-STREAMING passthrough (stream=false)")
         result = await utility_passthrough_json(
             body,
             req_id=req_id,

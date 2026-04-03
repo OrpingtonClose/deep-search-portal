@@ -604,6 +604,67 @@ async def stream_passthrough(
         tracker.finish(req_id)
 
 
+async def utility_passthrough_json(
+    body: dict,
+    *,
+    req_id: str,
+    upstream_base: str,
+    upstream_key: str,
+    upstream_model: str,
+    log: logging.Logger,
+    extra_headers: Optional[dict[str, str]] = None,
+) -> JSONResponse:
+    """
+    Handle utility requests (title/tag generation) as non-streaming JSON.
+
+    LibreChat sends ``stream=false`` for these and expects a single JSON
+    response — NOT an SSE stream.  Every proxy should call this when
+    ``is_utility_request(messages) and not body.get("stream", False)``.
+    """
+    upstream_body = {
+        **body,
+        "model": upstream_model,
+        "stream": False,
+    }
+    for key in ("user", "chat_id", "tools", "tool_choice",
+                "functions", "function_call"):
+        upstream_body.pop(key, None)
+
+    headers = {
+        "Authorization": f"Bearer {upstream_key}",
+        "Content-Type": "application/json",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+
+    try:
+        client = http_client()
+        resp = await client.post(
+            f"{upstream_base}/chat/completions",
+            json=upstream_body,
+            headers=headers,
+            timeout=30.0,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            log.info(f"[{req_id}] Utility JSON response OK")
+            return JSONResponse(content=data)
+        error_text = resp.text[:500]
+        log.error(
+            f"[{req_id}] Utility upstream error {resp.status_code}: {error_text}"
+        )
+        return JSONResponse(
+            status_code=resp.status_code,
+            content={"error": {"message": error_text, "type": "upstream_error"}},
+        )
+    except Exception as e:
+        log.error(f"[{req_id}] Utility request failed: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={"error": {"message": str(e), "type": "proxy_error"}},
+        )
+
+
 # ============================================================================
 # Standard FastAPI endpoints (health + logs)
 # ============================================================================

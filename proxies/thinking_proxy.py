@@ -45,6 +45,7 @@ from shared import (
     require_env,
     setup_logging,
     stream_passthrough,
+    utility_passthrough_json,
 )
 
 # --- Logging ---
@@ -579,12 +580,25 @@ async def chat_completions(request: Request):
         f"messages={len(messages)}, model={body.get('model', '?')}, utility={utility}"
     )
 
-    # ALWAYS stream — the thinking proxy needs streaming for the state machine
+    tracker.start(req_id, stream=client_wants_stream, utility=utility, messages=len(messages))
+
+    # --- Non-streaming requests (title/tag generation, any stream=false) ---
+    # LibreChat sends stream=false for title gen and expects a JSON response.
+    # The request may or may not match utility patterns — always return JSON.
     if not client_wants_stream:
-        log.info(f"[{req_id}] Overriding stream=false -> stream=true (proxy always streams)")
+        log.info(f"[{req_id}] Routing to NON-STREAMING passthrough (stream=false)")
+        result = await utility_passthrough_json(
+            body,
+            req_id=req_id,
+            upstream_base=UPSTREAM_BASE,
+            upstream_key=UPSTREAM_KEY,
+            upstream_model=UPSTREAM_MODEL,
+            log=log,
+        )
+        tracker.finish(req_id)
+        return result
 
-    tracker.start(req_id, stream=True, utility=utility, messages=len(messages))
-
+    # --- Streaming requests (stream=true or stream omitted) ---
     if utility:
         log.info(f"[{req_id}] Routing to PASSTHROUGH (utility request — no thinking injection)")
         generator = stream_passthrough(

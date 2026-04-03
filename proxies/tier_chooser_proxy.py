@@ -1052,14 +1052,8 @@ async def run_tier_race(
     valid_count = len(valid)
     yield _chunk("", reasoning_content=f"\n{valid_count} model(s) responded. Synthesising best answer...\n")
 
-    if valid_count == 1:
-        # Single valid response — use it directly, no synthesis needed
-        yield _chunk(valid[0]["content"], finish_reason="stop")
-        yield "data: [DONE]\n\n"
-        return
-
-    # Synthesise from multiple responses — media is passed to synthesis for
-    # inline placement (no post-synthesis image dump)
+    # Synthesise — even with 1 response, run through synthesis so media
+    # gets embedded inline (the synthesis model also cleans up formatting)
     synthesised = await _synthesize_responses(
         user_query, valid, req_id,
         media=media_items if media_items else None,

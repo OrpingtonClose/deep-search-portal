@@ -125,6 +125,7 @@ NATIVE_MODEL_MAP: dict[str, str] = {
     "qwen3.5-max":         "qwen3-max",
     "qwen3.5-72b":         "qwen3.5-plus",
     # DeepSeek — native API model IDs
+    "deepseek-v3.2":       "deepseek-chat",
     "deepseek-v3.2-lite":  "deepseek-chat",
     "deepseek-r1":         "deepseek-reasoner",
     # Anthropic — native API uses hyphens (not dots); no haiku 4.6 exists yet

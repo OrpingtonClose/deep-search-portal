@@ -1101,6 +1101,52 @@ def _format_image_section(image_results: list[dict]) -> str:
     return section
 
 
+def _filter_images_by_relevance(
+    image_results: list[dict],
+    final_text: str,
+) -> list[dict]:
+    """Discard pre-collected images whose subject doesn't appear in the final text.
+
+    Images are collected early (from the first valid response) but the final
+    synthesis may cover different/broader topics.  Drop any image whose subject
+    words don't overlap meaningfully with the synthesis.
+    """
+    if not image_results or not final_text:
+        return image_results
+    final_lower = final_text.lower()
+    kept: list[dict] = []
+    for img in image_results:
+        subject = img.get("subject", "")
+        # Check if at least one significant word (>3 chars) from the subject
+        # appears in the final synthesis text
+        words = [w for w in subject.lower().split() if len(w) > 3]
+        if not words:
+            # Very short subject — keep it if the whole subject appears
+            if subject.lower() in final_lower:
+                kept.append(img)
+        elif any(w in final_lower for w in words):
+            kept.append(img)
+    return kept
+
+
+def _filter_media_by_relevance(
+    media_items: list[dict],
+    final_text: str,
+) -> list[dict]:
+    """Discard media items (images/videos) that don't relate to the final synthesis."""
+    if not media_items or not final_text:
+        return media_items
+    final_lower = final_text.lower()
+    kept: list[dict] = []
+    for item in media_items:
+        title = item.get("title", "").lower()
+        # Keep if any significant word from title appears in synthesis
+        words = [w for w in title.split() if len(w) > 3]
+        if not words or any(w in final_lower for w in words):
+            kept.append(item)
+    return kept
+
+
 def _strip_media_images(media_section: str) -> str:
     """Remove the '### Visual References' image block from media_enrichment output.
 
@@ -1200,29 +1246,15 @@ async def run_tier_race(
     tasks = [asyncio.create_task(query_model(m)) for m in models]
     results: list[dict] = []
     completed = 0
-    first_valid_at: float | None = None
     image_task: asyncio.Task | None = None
-    # Per-tier grace period: full-throttle models take 10-60s, quick models ~1-3s
-    GRACE_SECONDS = {"quick": 4.0, "medium": 8.0, "full-throttle": 20.0}.get(tier, 8.0)
+    first_valid_seen = False
 
-    # --- Progressive model collection with grace period ---
+    # --- Wait for ALL models, streaming status as each completes ---
     pending_tasks = set(tasks)
     while pending_tasks:
-        if first_valid_at is not None:
-            remaining = GRACE_SECONDS - (time.monotonic() - first_valid_at)
-            if remaining <= 0:
-                break
-        else:
-            remaining = None  # no timeout until first valid arrives
-
         done, pending_tasks = await asyncio.wait(
-            pending_tasks, timeout=remaining,
-            return_when=asyncio.FIRST_COMPLETED,
+            pending_tasks, return_when=asyncio.FIRST_COMPLETED,
         )
-
-        if not done:
-            # Grace period timeout expired
-            break
 
         for task in done:
             try:
@@ -1264,48 +1296,21 @@ async def run_tier_race(
                     pass
 
             # Fire early image collection on first valid response
-            if status == "OK" and first_valid_at is None:
-                first_valid_at = time.monotonic()
+            # (runs in parallel while remaining models finish)
+            if status == "OK" and not first_valid_seen:
+                first_valid_seen = True
                 if IMAGE_ENRICHMENT_ENABLED:
                     image_task = asyncio.create_task(
                         _collect_images_early(result["content"], req_id)
                     )
                     log.info(f"[{req_id}] Started early image collection from {short_model}")
 
-    # --- Handle late model tasks (background Neo4j storage) ---
-    late_tasks = list(pending_tasks)
-    if late_tasks:
-        late_count = len(late_tasks)
-        yield _chunk("", reasoning=(
-            f"Proceeding with {completed} responses "
-            f"({late_count} model{'s' if late_count != 1 else ''} still running)...\n"
-        ))
-
-        async def _finish_late(
-            late: list[asyncio.Task],
-            existing: list[dict],
-        ) -> None:
-            late_results: list[dict] = []
-            for coro in asyncio.as_completed(late):
-                try:
-                    r = await coro
-                    late_results.append(r)
-                except Exception:
-                    pass
-            await _store_race_results_neo4j(
-                req_id, user_query, tier, existing + late_results,
-            )
-
-        bg = asyncio.create_task(_finish_late(late_tasks, results.copy()))
-        _background_tasks.add(bg)
-        bg.add_done_callback(_background_tasks.discard)
-    else:
-        # All models completed — store normally
-        _task = asyncio.create_task(
-            _store_race_results_neo4j(req_id, user_query, tier, results)
-        )
-        _background_tasks.add(_task)
-        _task.add_done_callback(_background_tasks.discard)
+    # --- All models finished — store results in Neo4j ---
+    _task = asyncio.create_task(
+        _store_race_results_neo4j(req_id, user_query, tier, results)
+    )
+    _background_tasks.add(_task)
+    _task.add_done_callback(_background_tasks.discard)
 
     valid = [r for r in results if not r["is_refusal"] and not r.get("is_empty") and r["content"]]
     if not valid:
@@ -1323,8 +1328,6 @@ async def run_tier_race(
         if image_task:
             image_task.cancel()
         for t in tidbit_tasks:
-            t.cancel()
-        for t in late_tasks:
             t.cancel()
         yield _chunk(msg, finish_reason="stop")
         yield "data: [DONE]\n\n"
@@ -1374,13 +1377,17 @@ async def run_tier_race(
             f"— will embed inline.\n"
         ))
 
-    # --- Single valid response: decorate with pre-collected images ---
+    # --- Single valid response: decorate with pre-collected images/media ---
     if len(valid) == 1:
         yield _chunk("", reasoning="Single valid response.\n")
         enriched_content = valid[0]["content"]
+        # Filter media by relevance to the actual content
+        if media_items:
+            media_items = _filter_media_by_relevance(media_items, enriched_content)
         if image_task:
             try:
                 image_results = await asyncio.wait_for(image_task, timeout=6.0)
+                image_results = _filter_images_by_relevance(image_results, enriched_content)
                 img_section = _format_image_section(image_results)
                 if img_section:
                     enriched_content += img_section
@@ -1413,10 +1420,22 @@ async def run_tier_race(
 
     if synthesised:
         yield _chunk("", reasoning="Synthesis complete.\n")
+        # Filter media by relevance to the final synthesis
+        if media_items:
+            before = len(media_items)
+            media_items = _filter_media_by_relevance(media_items, synthesised)
+            dropped = before - len(media_items)
+            if dropped:
+                yield _chunk("", reasoning=f"Discarded {dropped} irrelevant media item(s).\n")
         # Decorate with pre-collected images (already running in parallel)
         if image_task:
             try:
                 image_results = await asyncio.wait_for(image_task, timeout=2.0)
+                before = len(image_results)
+                image_results = _filter_images_by_relevance(image_results, synthesised)
+                dropped = before - len(image_results)
+                if dropped:
+                    yield _chunk("", reasoning=f"Discarded {dropped} irrelevant image(s).\n")
                 img_section = _format_image_section(image_results)
                 if img_section:
                     synthesised += img_section

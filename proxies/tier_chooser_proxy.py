@@ -36,6 +36,7 @@ from shared import (
     stream_passthrough,
 )
 import knowledge_client
+from search_providers import _search_searxng
 from media_enrichment import enrich_with_media, enrich_with_media_structured
 
 # ---------------------------------------------------------------------------
@@ -58,6 +59,8 @@ MODEL_TIMEOUT = int(os.getenv("TIER_CHOOSER_MODEL_TIMEOUT", "90"))
 # Synthesis configuration
 SYNTHESIS_MODEL = os.getenv("TIER_CHOOSER_SYNTHESIS_MODEL", "google/gemini-3-flash-preview")
 KNOWLEDGE_NAMESPACE = os.getenv("TIER_CHOOSER_NAMESPACE", "tier-chooser")
+
+IMAGE_ENRICHMENT_ENABLED = os.getenv("TIER_CHOOSER_IMAGE_ENRICHMENT", "true").lower() in ("1", "true", "yes")
 
 # ---------------------------------------------------------------------------
 # Provider Registry — route models to their native APIs
@@ -140,19 +143,32 @@ log.info(
 # excluded — they require OpenRouter which the user explicitly declined.
 
 TIER_MODELS = {
-    "fast": [
-        "google/gemini-3.1-flash-lite",          # Google — native GEMINI_API_KEY
-        "qwen/qwen3.5-35b-a3b",                  # Alibaba — native DASHSCOPE_API_KEY
-        "deepseek/deepseek-chat",                 # DeepSeek V3.2 Lite — native DEEPSEEK_API_KEY
-        "x-ai/grok-4.20-non-reasoning",           # xAI — native XAI_API_KEY
-        "mistralai/mistral-small-latest",          # Mistral Small 4 — native MISTRAL_NATIVE_API_KEY
+    "quick": [  # Fastest inference, lowest cost, still usable quality
+        "google/gemini-3-flash",          # Top fast multimodal + reasoning
+        "x-ai/grok-4.1-fast",             # Proven high-throughput & cheap
+        "deepseek/deepseek-v3.2-chat",    # Excellent speed/quality MoE
+        "openai/gpt-5.4-mini",            # Upgraded from gpt-4o (faster + smarter)
+        "mistralai/mistral-medium-4",     # Latest fast Mistral variant
+        "qwen/qwen3-72b-instruct-fast",   # Strong fast Chinese option
     ],
-    "thinking": [
-        "deepseek/deepseek-reasoner",              # DeepSeek-R1 — native DEEPSEEK_API_KEY
-        "openai/gpt-5.4",                          # GPT-5.4 o3-High — native OPENAI_API_KEY
-        "google/gemini-3.1-pro",                   # Gemini 3.1 Pro Deep Think — native GEMINI_API_KEY
-        "x-ai/grok-4.20-reasoning",               # Grok 4.20 Reasoning — native XAI_API_KEY
-        "z-ai/glm-5",                              # GLM-5 Thinking — native ZHIPU_API_KEY
+    "medium": [  # Best price/performance balance
+        "anthropic/claude-sonnet-4.6",    # Outstanding coding/writing balance
+        "google/gemini-3-pro",            # Broad reasoning + multimodal leader
+        "openai/gpt-5.4",                 # Versatile all-rounder
+        "x-ai/grok-4",                    # Strong real-time/unfiltered edge
+        "deepseek/deepseek-v3.2",         # Insane value MoE
+        "qwen/qwen3.5-72b",               # Upgraded Qwen MoE
+        "mistralai/mistral-large-4",      # Latest Mistral large
+        "z-ai/glm-5",                     # Strong Chinese contender
+    ],
+    "full-throttle": [  # Maximum capability, no compromises
+        "anthropic/claude-opus-4.6",      # Current coding/agentic king
+        "google/gemini-3.1-pro-preview",  # Often #1 or #2 overall
+        "openai/gpt-5.4-high",            # Highest-effort GPT-5 variant
+        "x-ai/grok-4.20",                 # Competitive frontier model
+        "deepseek/deepseek-r1",           # Top reasoning/value performer
+        "qwen/qwen3-235b-a22b",           # Massive MoE power
+        "z-ai/glm-5-thinking",            # Max-effort GLM variant
     ],
 }
 
@@ -932,6 +948,149 @@ async def _synthesize_responses(
 
 
 # ============================================================================
+# Image Enrichment — extract visual subjects and search for images
+# ============================================================================
+
+_IMAGE_SUBJECTS_PROMPT = """You are a visual editor. Given an answer text, identify 3-5 specific items, concepts, or entities mentioned in the answer that would benefit from an accompanying image. For each, output a short image search query (2-5 words) that would find a relevant, informative image.
+
+Rules:
+- Pick concrete, visual items (people, places, objects, diagrams, species, landmarks, etc.)
+- Avoid abstract concepts that won't have good image results
+- Output ONLY a JSON array of strings, e.g. ["query1", "query2", "query3"]
+- No explanation, no markdown fences, just the JSON array"""
+
+
+async def _extract_image_subjects(
+    synthesised_answer: str,
+    req_id: str,
+) -> list[str]:
+    """Use the synthesis model to identify items in the answer that deserve images."""
+    messages = [
+        {"role": "system", "content": _IMAGE_SUBJECTS_PROMPT},
+        {"role": "user", "content": f"Answer text:\n{synthesised_answer[:6000]}"},
+    ]
+    result = await call_model(
+        SYNTHESIS_MODEL, messages,
+        temperature=0.1, max_tokens=256, req_id=req_id,
+    )
+    if not result:
+        return []
+    try:
+        cleaned = result.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+            cleaned = re.sub(r'\s*```$', '', cleaned)
+        subjects = json.loads(cleaned)
+        if isinstance(subjects, list):
+            return [s for s in subjects if isinstance(s, str)][:5]
+    except (json.JSONDecodeError, ValueError):
+        log.warning(f"[{req_id}] Image subject extraction JSON parse error")
+    return []
+
+
+async def _search_images_for_subjects(
+    subjects: list[str],
+    req_id: str,
+) -> list[dict]:
+    """Search for images for each subject via SearXNG images category.
+
+    Returns list of {"subject": str, "img_src": str, "title": str, "source_url": str}
+    for subjects where an image was found.
+    """
+    async def search_one(subject: str) -> dict | None:
+        try:
+            results = await _search_searxng(
+                subject, categories="images", max_results=5,
+            )
+            # Pick the first result that has an img_src
+            for r in results:
+                if r.img_src:
+                    return {
+                        "subject": subject,
+                        "img_src": r.img_src,
+                        "title": r.title or subject,
+                        "source_url": r.url,
+                    }
+            return None
+        except Exception as e:
+            log.warning(f"[{req_id}] Image search for '{subject}' failed: {e}")
+            return None
+
+    tasks = [asyncio.create_task(search_one(s)) for s in subjects]
+    results = await asyncio.gather(*tasks)
+    return [r for r in results if r is not None]
+
+
+async def _enrich_with_images(
+    synthesised_answer: str,
+    req_id: str,
+) -> str:
+    """Extract visual subjects from the answer, search for images, and append them.
+
+    Returns the enriched answer with a 'Visual References' section appended,
+    or the original answer unchanged if no images were found.
+    """
+    if not IMAGE_ENRICHMENT_ENABLED:
+        return synthesised_answer
+
+    try:
+        subjects = await _extract_image_subjects(synthesised_answer, req_id)
+        if not subjects:
+            log.info(f"[{req_id}] No image subjects extracted")
+            return synthesised_answer
+
+        log.info(f"[{req_id}] Searching images for {len(subjects)} subjects: {subjects}")
+        image_results = await _search_images_for_subjects(subjects, req_id)
+
+        if not image_results:
+            log.info(f"[{req_id}] No images found for any subject")
+            return synthesised_answer
+
+        # Build a visual references section
+        def _esc_url(url: str) -> str:
+            return url.replace('(', '%28').replace(')', '%29')
+
+        def _esc_text(text: str) -> str:
+            return text.replace('[', '\\[').replace(']', '\\]')
+
+        image_section = "\n\n---\n\n### Visual References\n\n"
+        for img in image_results:
+            # Markdown image with link to source
+            image_section += (
+                f"**{_esc_text(img['subject'])}**\n\n"
+                f"[![{_esc_text(img['title'])}]({_esc_url(img['img_src'])})]({_esc_url(img['source_url'])})\n\n"
+            )
+
+        return synthesised_answer + image_section
+
+    except Exception as exc:
+        log.warning(f"[{req_id}] Image enrichment failed (non-fatal): {exc}")
+        return synthesised_answer
+
+
+def _strip_media_images(media_section: str) -> str:
+    """Remove the '### Visual References' image block from media_enrichment output.
+
+    When our LLM-guided image enrichment is active it already provides a
+    targeted '### Visual References' section.  The generic media_enrichment
+    module may also produce one from a raw SearXNG image search.  To avoid
+    duplicate image sections, strip the images portion and keep only
+    '### Related Videos' (and anything after it).
+    """
+    if not media_section:
+        return media_section
+    videos_marker = "### Related Videos"
+    idx = media_section.find(videos_marker)
+    if idx != -1:
+        # Keep everything from the videos header onward
+        return "\n\n" + media_section[idx:]
+    # No videos section — the entire media_section is images; drop it
+    if "### Visual References" in media_section:
+        return ""
+    return media_section
+
+
+# ============================================================================
 # Tier Race — race models, store in Neo4j, synthesise the richest answer
 # ============================================================================
 
@@ -975,7 +1134,7 @@ async def run_tier_race(
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_MODELS)
 
     # Determine whether to harvest reasoning (thinking tier only)
-    is_thinking_tier = (tier == "thinking")
+    is_thinking_tier = (tier == "full-throttle")
     # Collected reasoning traces keyed by model name
     harvested_thinking: dict[str, str] = {}
     # Background tidbit tasks fired as models complete (full-throttle only)
@@ -1121,9 +1280,9 @@ async def run_tier_race(
 
     # --- Synthesise the richest answer from ALL valid responses ---
     if len(valid) == 1:
-        # Only one valid response — return it directly, no synthesis needed
-        yield _chunk("", reasoning="Single valid response — returning directly.\n")
-        yield _chunk(valid[0]["content"], finish_reason="stop")
+        yield _chunk("", reasoning="Single valid response. Searching for relevant images...\n")
+        enriched = await _enrich_with_images(valid[0]["content"], req_id)
+        yield _chunk(enriched, finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
 
@@ -1146,8 +1305,14 @@ async def run_tier_race(
     )
 
     if synthesised:
-        yield _chunk("", reasoning="Synthesis complete.\n")
-        yield _chunk(synthesised, finish_reason="stop")
+        yield _chunk("", reasoning="Synthesis complete. Searching for relevant images...\n")
+        enriched = await _enrich_with_images(synthesised, req_id)
+        if enriched != synthesised:
+            image_count = enriched.count("![") - synthesised.count("![")
+            yield _chunk("", reasoning=f"Found {image_count} relevant images.\n")
+        else:
+            yield _chunk("", reasoning="No relevant images found.\n")
+        yield _chunk(enriched, finish_reason="stop")
     else:
         # Synthesis failed — return the longest response as a reasonable fallback
         fallback = max(valid, key=lambda r: len(r["content"]))
@@ -1248,7 +1413,7 @@ async def chat_completions(request: Request):
     if not messages:
         return JSONResponse(status_code=400, content={"error": {"message": "messages array is required", "type": "invalid_request"}})
 
-    requested_model = body.get("model", "tier-race-fast")
+    requested_model = body.get("model", "tier-race-quick")
     utility = is_utility_request(messages)
 
     log.info(f"[{req_id}] New request: model={requested_model}, messages={len(messages)}, utility={utility}")
@@ -1299,7 +1464,7 @@ async def chat_completions(request: Request):
         generator = _stream_single_model(actual_model, messages, req_id)
     else:
         # Default to fast race for unknown model IDs
-        generator = run_tier_race("fast", messages, user_query, req_id)
+        generator = run_tier_race("quick", messages, user_query, req_id)
 
     async def tracked_generator():
         try:

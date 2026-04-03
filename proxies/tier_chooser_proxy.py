@@ -58,7 +58,7 @@ MAX_CONCURRENT_MODELS = env_int("TIER_CHOOSER_MAX_CONCURRENT", 10, minimum=1)
 MODEL_TIMEOUT = int(os.getenv("TIER_CHOOSER_MODEL_TIMEOUT", "90"))
 
 # Synthesis configuration
-SYNTHESIS_MODEL = os.getenv("TIER_CHOOSER_SYNTHESIS_MODEL", "google/gemini-3-flash-preview")
+SYNTHESIS_MODEL = os.getenv("TIER_CHOOSER_SYNTHESIS_MODEL", "google/gemini-3.1-pro")
 KNOWLEDGE_NAMESPACE = os.getenv("TIER_CHOOSER_NAMESPACE", "tier-chooser")
 
 IMAGE_ENRICHMENT_ENABLED = os.getenv("TIER_CHOOSER_IMAGE_ENRICHMENT", "true").lower() in ("1", "true", "yes")
@@ -191,16 +191,14 @@ TIER_MODELS = {
         "mistralai/mistral-large-4",
         "z-ai/glm-5",
     ],
-    "full-throttle": [  # Very Thoughtful Model — max intelligence, 10-60s+ compute
-        "anthropic/claude-opus-4.6",           # Anthropic max adaptive thinking
-        "google/gemini-3.1-pro-preview",       # Google long-context & multimodal SOTA
-        "openai/gpt-5.4-high",                # OpenAI x-high thinking
-        "x-ai/grok-4.20",                     # xAI heavy + multi-agent reasoning
-        "deepseek/deepseek-r1",               # DeepSeek dedicated reasoning specialist
-        "moonshotai/kimi-k2.5-thinking",      # Moonshot agentic/thinking swarm
-        "z-ai/glm-5-thinking",                # Zhipu GLM-5 full reasoning
-        "qwen/qwen3.5-max",                   # Alibaba Qwen 3.5 Max/Omni
-        "mistralai/mistral-large-3",           # Mistral Large 3 max-effort
+    "full-throttle": [  # Maximum capability, no compromises
+        "anthropic/claude-opus-4.6",      # Current coding/agentic king
+        "google/gemini-3.1-pro-preview",  # Often #1 or #2 overall
+        "openai/o3",                        # Highest-effort OpenAI reasoning model
+        "x-ai/grok-4.20",                 # Competitive frontier model
+        "deepseek/deepseek-reasoner",      # Top reasoning/value performer
+        "qwen/qwen3-235b-a22b",           # Massive MoE power
+        "z-ai/glm-5",                     # Max-effort GLM variant
     ],
 }
 
@@ -724,8 +722,8 @@ Rules:
 _SYNTHESIS_MEDIA_ADDENDUM = """
 
 You have been given a set of IMAGES and VIDEOS found for the user's query.
-Embed them INLINE at contextually appropriate positions in the answer using
-Markdown and LibreChat Artifacts:
+DISTRIBUTE them throughout the ENTIRE text like a well-illustrated article.
+Place each image/video immediately after the paragraph it illustrates.
 
 - For images: use `![<brief alt text>](<img_src URL>)` placed right after the
   paragraph the image illustrates.  Verify the image title/description actually
@@ -737,9 +735,10 @@ Markdown and LibreChat Artifacts:
   `<iframe width="560" height="315" src="https://www.youtube.com/embed/<video_id>" frameborder="0" allowfullscreen></iframe>`
   `:::`
 - For non-YouTube videos: use `[▶ <title>](<url>)` as a clickable link.
+- Try to place EVERY provided media item somewhere relevant in the text.
 - Aim for at least one image per major section when relevant media is available.
-- Do NOT dump all media at the end; scatter them throughout the text where they
-  add value.  Skip any item whose title/description does not match the content.
+- NEVER cluster all media in one section — spread them evenly throughout.
+- Skip any item whose title/description does not match the content at all.
 - If no media is relevant to a section, omit media from that section entirely."""
 
 
@@ -837,10 +836,14 @@ async def _extract_image_subjects(
         {"role": "system", "content": _IMAGE_SUBJECTS_PROMPT},
         {"role": "user", "content": f"Answer text:\n{synthesised_answer[:6000]}"},
     ]
-    result = await call_model(
+    raw = await call_model(
         SYNTHESIS_MODEL, messages,
-        temperature=0.1, max_tokens=256, req_id=req_id,
+        temperature=0.1, max_tokens=8192, req_id=req_id,
     )
+    # call_model may return "" on failure
+    if not raw:
+        return []
+    result = raw if isinstance(raw, str) else ""
     if not result:
         return []
     try:
@@ -848,11 +851,15 @@ async def _extract_image_subjects(
         if cleaned.startswith("```"):
             cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
             cleaned = re.sub(r'\s*```$', '', cleaned)
+        # Repair truncated JSON arrays (e.g. '["foo", "bar",')
+        if cleaned.startswith("[") and not cleaned.endswith("]"):
+            cleaned = cleaned.rstrip().rstrip(",") + "]"
+            log.info(f"[{req_id}] Repaired truncated JSON array for image subjects")
         subjects = json.loads(cleaned)
         if isinstance(subjects, list):
             return [s for s in subjects if isinstance(s, str)][:5]
     except (json.JSONDecodeError, ValueError):
-        log.warning(f"[{req_id}] Image subject extraction JSON parse error")
+        log.warning(f"[{req_id}] Image subject extraction JSON parse error: {result[:300]}")
     return []
 
 
@@ -960,6 +967,81 @@ def _strip_media_images(media_section: str) -> str:
     if "### Visual References" in media_section:
         return ""
     return media_section
+
+
+def _filter_media_by_relevance(
+    media_items: list[dict],
+    combined_text: str,
+    req_id: str,
+) -> list[dict]:
+    """Filter media items to keep only those relevant to the combined model responses.
+
+    Requires at least 2 significant words (>3 chars) from the media's
+    title+description to appear in the combined text, OR >40% word overlap.
+    """
+    if not media_items:
+        return []
+    lower_text = combined_text.lower()
+    kept: list[dict] = []
+    for item in media_items:
+        title = (item.get("title", "") or "").lower()
+        desc = (item.get("description", "") or "").lower()
+        words = set(w for w in (title + " " + desc).split() if len(w) > 3)
+        if not words:
+            continue
+        matching = sum(1 for w in words if w in lower_text)
+        overlap = matching / len(words) if words else 0
+        if matching >= 2 or overlap > 0.4:
+            kept.append(item)
+    discarded = len(media_items) - len(kept)
+    if discarded:
+        log.info(f"[{req_id}] Discarded {discarded} irrelevant media item(s)")
+    return kept
+
+
+def _media_url(item: dict) -> str:
+    """Extract the primary URL from a media item for dedup / placement checking."""
+    if item.get("type") == "image":
+        return item.get("img_src", item.get("url", ""))
+    # Video — check url, then thumbnail
+    return item.get("url", item.get("thumbnail", ""))
+
+
+def _format_remaining_media(unplaced: list[dict]) -> str:
+    """Format media items that the synthesis model did not place inline.
+
+    Appends them as a nicely formatted section at the end so no relevant
+    media is lost — the user sees everything, with the best items already
+    distributed inline by the synthesis model.
+    """
+    if not unplaced:
+        return ""
+
+    def _esc_url(url: str) -> str:
+        return url.replace('(', '%28').replace(')', '%29')
+
+    def _esc_text(text: str) -> str:
+        return text.replace('[', '\\[').replace(']', '\\]')
+
+    parts: list[str] = ["\n\n---\n\n### Additional Visual References\n"]
+    for item in unplaced:
+        title = _esc_text(item.get("title", "Media"))
+        if item.get("type") == "image":
+            img_url = _esc_url(item.get("img_src", item.get("url", "")))
+            source_url = _esc_url(item.get("url", img_url))
+            parts.append(f"\n[![{title}]({img_url})]({source_url})\n")
+        elif item.get("type") == "video":
+            vid_url = item.get("url", "")
+            vid_id = item.get("video_id", "")
+            thumb = item.get("thumbnail", "")
+            if vid_id and "youtube" in vid_url:
+                thumb_url = thumb or f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg"
+                parts.append(
+                    f"\n[![{title}]({_esc_url(thumb_url)})]({_esc_url(vid_url)})\n"
+                )
+            else:
+                parts.append(f"\n[▶ {title}]({_esc_url(vid_url)})\n")
+    return "\n".join(parts)
 
 
 # ============================================================================
@@ -1098,7 +1180,13 @@ async def run_tier_race(
         yield "data: [DONE]\n\n"
         return
 
-    yield _chunk("", reasoning_content=f"\n{valid_count} model(s) responded. Synthesising best answer...\n")
+    # Filter media for relevance against the combined model responses
+    combined_text = " ".join(r["content"] for r in valid if r.get("content"))
+    if media_items:
+        media_items = _filter_media_by_relevance(media_items, combined_text, req_id)
+
+    synthesis_model_short = SYNTHESIS_MODEL.split("/")[-1]
+    yield _chunk("", reasoning_content=f"\n{valid_count} model(s) responded. Synthesising from {valid_count} responses (via {synthesis_model_short})...\n")
 
     # Synthesise — even with 1 response, run through synthesis so media
     # gets embedded inline (the synthesis model also cleans up formatting)
@@ -1108,6 +1196,15 @@ async def run_tier_race(
     )
 
     if synthesised:
+        # Find unplaced media — URLs the synthesis model didn't embed inline
+        if media_items:
+            unplaced = [m for m in media_items if _media_url(m) not in synthesised]
+            if unplaced:
+                remaining_section = _format_remaining_media(unplaced)
+                synthesised += remaining_section
+                yield _chunk("", reasoning_content=f"  {len(media_items) - len(unplaced)} media item(s) placed inline, {len(unplaced)} in fallback section.\n")
+            else:
+                yield _chunk("", reasoning_content=f"  All {len(media_items)} media item(s) placed inline.\n")
         yield _chunk(synthesised, finish_reason="stop")
     else:
         # Synthesis failed — return the longest response as a reasonable fallback

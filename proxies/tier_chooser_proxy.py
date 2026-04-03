@@ -106,6 +106,20 @@ NATIVE_MODEL_MAP: dict[str, str] = {
     # Mistral — native API uses "-latest" aliases, not versioned suffixes
     "mistral-medium-3.1":  "mistral-medium-latest",
     "mistral-large-2512":  "mistral-large-latest",
+    "mistral-large-3":     "mistral-large-latest",
+    "mistral-large-3-efficient": "mistral-medium-latest",
+    # Moonshot Kimi — native API model IDs
+    "kimi-k2.5-instant":   "kimi-k2.5",
+    "kimi-k2.5-thinking":  "kimi-k2.5",
+    # Zhipu GLM — native API model IDs
+    "glm-5-light":         "glm-5-turbo",
+    # Qwen/DashScope — native API model IDs
+    "qwen3.5-turbo":       "qwen3.5-flash",
+    "qwen3.5-max":         "qwen3-max",
+    # DeepSeek — native API model IDs
+    "deepseek-v3.2-lite":  "deepseek-chat",
+    # Anthropic — native API model IDs
+    "claude-haiku-4.6":    "claude-haiku-4-6-20260301",
 }
 
 
@@ -138,38 +152,43 @@ log.info(
 # ---------------------------------------------------------------------------
 # Two tiers: Fast (speed-optimised) and Thinking (reasoning-optimised)
 # ---------------------------------------------------------------------------
-# Models use ONLY native APIs (no OpenRouter fallback) where the
-# corresponding API key env-var is set.  Models whose providers have no
-# native API key (Phi-5, Llama 4, Command A, Yi-1.5, Hunyuan-Lite) are
-# excluded — they require OpenRouter which the user explicitly declined.
+# Models use ONLY native APIs (no OpenRouter fallback).  Each provider's
+# API key env-var must be set.  Models whose providers have no native API
+# (Meta Llama, inclusionAI Ling, etc.) are excluded — the user requires
+# original-provider routing only.
 
 TIER_MODELS = {
-    "quick": [  # Fastest inference, lowest cost, still usable quality
-        "google/gemini-3-flash",          # Top fast multimodal + reasoning
-        "x-ai/grok-4.1-fast",             # Proven high-throughput & cheap
-        "deepseek/deepseek-v3.2-chat",    # Excellent speed/quality MoE
-        "openai/gpt-5.4-mini",            # Upgraded from gpt-4o (faster + smarter)
-        "mistralai/mistral-medium-4",     # Latest fast Mistral variant
-        "qwen/qwen3-72b-instruct-fast",   # Strong fast Chinese option
+    "quick": [  # Fast Model — strict ≤1.5s, max tok/s, lowest latency
+        "anthropic/claude-haiku-4.6",          # Anthropic fast tier
+        "google/gemini-3.1-flash",             # Google DeepMind Flash
+        "openai/gpt-5.4-mini",                 # OpenAI Nano/mini
+        "x-ai/grok-4.20-non-reasoning",       # xAI Grok 4.20 fast/non-reasoning
+        "mistralai/mistral-large-3-efficient", # Mistral Large 3 efficient (41B active)
+        "deepseek/deepseek-v3.2-lite",         # DeepSeek V3.2 Lite/fast
+        "qwen/qwen3.5-turbo",                  # Alibaba Qwen 3.5 Turbo/Light
+        "z-ai/glm-5-light",                    # Zhipu GLM-5 Light
+        "moonshotai/kimi-k2.5-instant",        # Moonshot Kimi K2.5 Instant
     ],
-    "medium": [  # Best price/performance balance
-        "anthropic/claude-sonnet-4.6",    # Outstanding coding/writing balance
-        "google/gemini-3-pro",            # Broad reasoning + multimodal leader
-        "openai/gpt-5.4",                 # Versatile all-rounder
-        "x-ai/grok-4",                    # Strong real-time/unfiltered edge
-        "deepseek/deepseek-v3.2",         # Insane value MoE
-        "qwen/qwen3.5-72b",               # Upgraded Qwen MoE
-        "mistralai/mistral-large-4",      # Latest Mistral large
-        "z-ai/glm-5",                     # Strong Chinese contender
+    "medium": [  # Best price/performance balance (unchanged)
+        "anthropic/claude-sonnet-4.6",
+        "google/gemini-3-pro",
+        "openai/gpt-5.4",
+        "x-ai/grok-4",
+        "deepseek/deepseek-v3.2",
+        "qwen/qwen3.5-72b",
+        "mistralai/mistral-large-4",
+        "z-ai/glm-5",
     ],
-    "full-throttle": [  # Maximum capability, no compromises
-        "anthropic/claude-opus-4.6",      # Current coding/agentic king
-        "google/gemini-3.1-pro-preview",  # Often #1 or #2 overall
-        "openai/gpt-5.4-high",            # Highest-effort GPT-5 variant
-        "x-ai/grok-4.20",                 # Competitive frontier model
-        "deepseek/deepseek-r1",           # Top reasoning/value performer
-        "qwen/qwen3-235b-a22b",           # Massive MoE power
-        "z-ai/glm-5-thinking",            # Max-effort GLM variant
+    "full-throttle": [  # Very Thoughtful Model — max intelligence, 10-60s+ compute
+        "anthropic/claude-opus-4.6",           # Anthropic max adaptive thinking
+        "google/gemini-3.1-pro-preview",       # Google long-context & multimodal SOTA
+        "openai/gpt-5.4-high",                # OpenAI x-high thinking
+        "x-ai/grok-4.20",                     # xAI heavy + multi-agent reasoning
+        "deepseek/deepseek-r1",               # DeepSeek dedicated reasoning specialist
+        "moonshotai/kimi-k2.5-thinking",      # Moonshot agentic/thinking swarm
+        "z-ai/glm-5-thinking",                # Zhipu GLM-5 full reasoning
+        "qwen/qwen3.5-max",                   # Alibaba Qwen 3.5 Max/Omni
+        "mistralai/mistral-large-3",           # Mistral Large 3 max-effort
     ],
 }
 
@@ -439,6 +458,7 @@ _MAX_COMPLETION_TOKENS_PREFIXES = {"openai"}
 _THINKING_MODELS = {
     "qwen3-235b-a22b", "qwen3-235b-a22b-instruct-2507",
     "qwen3-235b-a22b-thinking-2507",
+    "qwen3.5-max",
 }
 
 # Models that do not support custom temperature (only default=1)
@@ -966,8 +986,12 @@ async def run_tier_race(
         yield "data: [DONE]\n\n"
         return
 
-    # Fire media enrichment concurrently with model race (zero added latency)
-    media_task = asyncio.create_task(enrich_with_media_structured(user_query, req_id))
+    # Fire media enrichment concurrently — but NOT for the quick tier (speed priority)
+    is_quick_tier = (tier == "quick")
+    if not is_quick_tier:
+        media_task = asyncio.create_task(enrich_with_media_structured(user_query, req_id))
+    else:
+        media_task = None
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_MODELS)
 
@@ -1032,7 +1056,8 @@ async def run_tier_race(
         if details:
             msg += "\n\nDetails:\n" + "\n".join(details)
         msg += "\n\nTry rephrasing your question."
-        media_task.cancel()
+        if media_task is not None:
+            media_task.cancel()
         yield _chunk(msg, finish_reason="stop")
         yield "data: [DONE]\n\n"
         return
@@ -1043,14 +1068,23 @@ async def run_tier_race(
     _task.add_done_callback(_background_tasks.discard)
 
     # --- Collect structured media for inline embedding ---
-    try:
-        media_items: list[dict] = await asyncio.wait_for(media_task, timeout=8.0)
-    except Exception:
-        media_items = []
+    media_items: list[dict] = []
+    if media_task is not None:
+        try:
+            media_items = await asyncio.wait_for(media_task, timeout=8.0)
+        except Exception:
+            media_items = []
 
     # --- Synthesise the richest answer from ALL valid responses ---
     valid_count = len(valid)
     yield _chunk("", reasoning_content=f"\n{valid_count} model(s) responded. Synthesising best answer...\n")
+
+    # Quick tier: skip synthesis and media — just return the best single response
+    if is_quick_tier:
+        best = max(valid, key=lambda r: r["score"])
+        yield _chunk(best["content"], finish_reason="stop")
+        yield "data: [DONE]\n\n"
+        return
 
     # Synthesise — even with 1 response, run through synthesis so media
     # gets embedded inline (the synthesis model also cleans up formatting)

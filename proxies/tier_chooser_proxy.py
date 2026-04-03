@@ -147,7 +147,7 @@ TIER_MODELS = {
     "full-throttle": [  # Maximum capability, no compromises
         "anthropic/claude-opus-4.6",      # Current coding/agentic king
         "google/gemini-3.1-pro-preview",  # Often #1 or #2 overall
-        "openai/gpt-5.4-high",            # Highest-effort GPT-5 variant
+        "openai/gpt-5.4-pro",             # Highest-effort GPT-5 variant
         "x-ai/grok-4.20",                 # Competitive frontier model
         "deepseek/deepseek-r1",           # Top reasoning/value performer
         "qwen/qwen3-235b-a22b",           # Massive MoE power

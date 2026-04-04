@@ -1329,14 +1329,17 @@ async def _stream_single_model(
 
     # Pass messages as-is to the model
     collected = []
-    async for content_chunk in stream_model(model, messages, temperature=0.7, max_tokens=4096, req_id=req_id):
-        collected.append(content_chunk)
-        yield make_sse_chunk(
-            content_chunk,
-            request_id=request_id,
-            created=created,
-            model_id=f"tier-{model}",
-        )
+    try:
+        async for content_chunk in stream_model(model, messages, temperature=0.7, max_tokens=4096, req_id=req_id):
+            collected.append(content_chunk)
+            yield make_sse_chunk(
+                content_chunk,
+                request_id=request_id,
+                created=created,
+                model_id=f"tier-{model}",
+            )
+    except Exception as e:
+        log.error(f"[{req_id}] {model} direct-stream error: {e}")
 
     yield make_sse_chunk("", request_id=request_id, created=created, model_id=f"tier-{model}", finish_reason="stop")
     yield "data: [DONE]\n\n"

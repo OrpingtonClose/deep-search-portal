@@ -1,5 +1,5 @@
 # Deep Search Portal - LibreChat Configuration
-# Groups: Simple, Miro, Experimental, Raw—Grok, Raw—OpenAI, Raw—Anthropic, Raw—Google, Raw—DeepSeek, Raw—Other
+# Groups: Simple, Complex, Miro, Experimental, Raw—Grok, Raw—OpenAI, Raw—Anthropic, Raw—Google, Raw—DeepSeek, Raw—Other
 version: 1.3.5
 cache: true
 
@@ -352,11 +352,20 @@ modelSpecs:
         endpoint: "Tier Chooser"
         model: "tier-deepseek/deepseek-r1"
 
+    # ====== COMPLEX ======
+    - name: "tier-smart-combined"
+      label: "Smart Combined"
+      description: "Races 7 top models (Claude Opus, Gemini Pro, o3, Grok 4.20, DeepSeek, Qwen, GLM) in parallel, synthesises the best answer with images and videos."
+      group: "Complex"
+      preset:
+        endpoint: "Tier Chooser"
+        model: "tier-race-full-throttle"
+
     # ====== RAW — Other ======
     - name: "tier-grok-420"
       label: "Grok 4.20 (via Tier Chooser)"
       description: "xAI Grok 4.20 with extended thinking. 2M context. Routed through Tier Chooser."
-      group: "Raw — Other"
+      group: "Simple"
       preset:
         endpoint: "Tier Chooser"
         model: "tier-x-ai/grok-4.20"

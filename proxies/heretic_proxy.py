@@ -21,6 +21,7 @@ Runs as a FastAPI app under uvicorn in a screen session (port 9950).
 
 import json
 import os
+import re
 import time
 import traceback
 import uuid
@@ -552,7 +553,6 @@ async def run_agent_loop(
                 for tag in ("<tool_call>", "</tool_call>"):
                     clean = clean.replace(tag, "")
                 # Remove JSON tool call blocks from visible reasoning
-                import re
                 clean = re.sub(r'\{"name":\s*"[^"]+",\s*"arguments":\s*\{[^}]*\}\}', '', clean)
                 if clean.strip():
                     yield _chunk(reasoning=f"[Turn {turn + 1}] {clean.strip()[:2000]}")

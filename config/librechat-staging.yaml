@@ -344,6 +344,7 @@ endpoints:
       fetch: true
     titleConvo: true
     titleModel: mistral-large-thinking
+    titleMethod: completion
     summarize: false
     maxContextTokens: 1000000
     dropParams:
@@ -361,7 +362,9 @@ endpoints:
       - persistent-miroflow
       fetch: true
     titleConvo: true
-    titleModel: persistent-miroflow
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    titleMethod: completion
     summarize: false
     maxContextTokens: 1000000
     dropParams:
@@ -378,7 +381,9 @@ endpoints:
       - miroflow-sprint
       fetch: true
     titleConvo: true
-    titleModel: miroflow-sprint
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    titleMethod: completion
     summarize: false
     maxContextTokens: 1000000
     dropParams:
@@ -395,7 +400,9 @@ endpoints:
       - miroflow
       fetch: true
     titleConvo: true
-    titleModel: miroflow
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    titleMethod: completion
     summarize: false
     maxContextTokens: 1000000
     dropParams:
@@ -412,7 +419,9 @@ endpoints:
       - swarm-miroflow
       fetch: true
     titleConvo: true
-    titleModel: swarm-miroflow
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    titleMethod: completion
     summarize: false
     maxContextTokens: 1000000
     dropParams:
@@ -490,7 +499,9 @@ endpoints:
       - ultraplinian-research
       fetch: false
     titleConvo: true
-    titleModel: godmode-classic
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    titleMethod: completion
     summarize: false
     forcePrompt: false
     modelDisplayLabel: G0DM0D3

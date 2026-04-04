@@ -7,7 +7,7 @@ The Deep Search Portal runs on **two Vast.ai GPU instances**, both accessible vi
 | Instance | Role | SSH | Description |
 |----------|------|-----|-------------|
 | 33703935 | **Production** | `ssh5.vast.ai:23934` | End-user facing. Curated model groups. |
-| 33706037 | **Staging** | `ssh7.vast.ai:26036` | Testing/dev. Full model list + PROD-prefixed production groups. Accessible via `https://staging.deep-search.uk` (Cloudflare tunnel). |
+| 33706037 | **Staging** | `ssh7.vast.ai:26036` | Testing/dev. Full model list + production groups suffixed with "PROD". Accessible via `https://staging.deep-search.uk` (Cloudflare tunnel). |
 
 > **Note:** Instance IDs, SSH hosts, and ports may change if instances are recreated. Always verify via `vastai show instances` or the Vast.ai API.
 
@@ -19,7 +19,7 @@ The Deep Search Portal runs on **two Vast.ai GPU instances**, both accessible vi
 
 The **production config** contains curated `modelSpecs` with enforced grouping. Users only see models explicitly listed in groups:
 
-- **Simple** — The main user-facing models (e.g. Grok 4.20 Multi-Agent, Heretic Uncensored, Tier Race variants)
+- **Simple** — The main user-facing models (e.g. Grok 4.20 Multi-Agent, Heretic Uncensored, Tier Race Full Throttle)
 - **Miro** — Research models (Miro Deep, Quick, Focused)
 - **Experimental** — Consortium races, Grok races, Miro Swarm, Wiki variants, Mistral Thinking
 - **Raw — Grok/OpenAI/Anthropic/Google/DeepSeek/Other** — Direct access to individual provider models
@@ -27,7 +27,7 @@ The **production config** contains curated `modelSpecs` with enforced grouping. 
 ### Staging (`config/librechat-staging.yaml`)
 
 The **staging config** combines:
-1. All production `modelSpecs` with group names **prefixed with "PROD "** (e.g. "PROD Simple", "PROD Miro") — these appear first
+1. All production `modelSpecs` with group names **suffixed with " PROD"** (e.g. "Simple PROD", "Miro PROD") — these appear first
 2. All backend endpoints with their **full model lists** (e.g. G0DM0D3 with 62 models, Singular endpoint)
 3. `enforce: false` so all models from all endpoints are visible (not just modelSpec entries)
 
@@ -167,7 +167,7 @@ vastai attach ssh-key <instance_id> "$(cat ~/.ssh/id_ed25519.pub)"
 1. Add the proxy code (if new endpoint) under `proxies/`
 2. Add modelSpec entry to `config/librechat.yaml` in the correct group
 3. Add endpoint wiring to `config/librechat.yaml` under `endpoints.custom`
-4. Regenerate staging config: copy all production modelSpecs, prefix groups with "PROD ", merge with staging endpoints
+4. Regenerate staging config: copy all production modelSpecs, suffix groups with " PROD", merge with staging endpoints
 5. Add startup entry to `scripts/startup.sh`
 6. Create PR, wait for CI
 7. Deploy to both instances using the steps above

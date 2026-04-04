@@ -147,12 +147,14 @@ def resolve_provider(model: str) -> tuple[str, str, str]:
     parts = model.split("/", 1)
     if len(parts) == 2:
         prefix, model_name = parts
-        entry = PROVIDER_REGISTRY.get(prefix)
-        if entry:
-            key = os.environ.get(entry["key_env"], "")
-            if key:
-                native_name = NATIVE_MODEL_MAP.get(model_name, model_name)
-                return entry["base_url"], key, native_name
+        # Some models must go through OpenRouter (broken on native API)
+        if model_name not in _OPENROUTER_ONLY_MODELS:
+            entry = PROVIDER_REGISTRY.get(prefix)
+            if entry:
+                key = os.environ.get(entry["key_env"], "")
+                if key:
+                    native_name = NATIVE_MODEL_MAP.get(model_name, model_name)
+                    return entry["base_url"], key, native_name
     # Fallback: OpenRouter with full model ID
     return OPENROUTER_BASE, OPENROUTER_KEY, model
 
@@ -470,13 +472,22 @@ _THINKING_MODELS = {
     "qwen3-235b-a22b", "qwen3-235b-a22b-instruct-2507",
     "qwen3-235b-a22b-thinking-2507",
     "qwen3-max",
-    "qwq-plus",
+    # NOTE: qwq-plus is NOT listed here — it returns empty content in
+    # non-streaming mode on DashScope regardless of enable_thinking.
+    # It is routed through OpenRouter instead (see _OPENROUTER_ONLY_MODELS).
 }
 
 # Models that do not support custom temperature (only default=1)
 _NO_CUSTOM_TEMPERATURE_MODELS = {
     "gpt-5",
     "o3",
+}
+
+# Models that MUST be routed through OpenRouter even if a native API key exists.
+# qwq-plus: DashScope non-streaming returns empty content/reasoning_content
+#           regardless of enable_thinking setting. OpenRouter handles it correctly.
+_OPENROUTER_ONLY_MODELS = {
+    "qwq-plus",
 }
 
 
@@ -578,9 +589,20 @@ async def call_model(
         data = resp.json()
         choices = data.get("choices", [])
         if not choices:
+            log.warning(f"[{req_id}] {provider_label} {model} returned empty choices array")
+            if error_out is not None:
+                error_out.append(f"[EMPTY] {provider_label} returned 200 OK but empty choices array")
             return ""
         msg = choices[0].get("message", {})
-        return _extract_content(msg)
+        text = _extract_content(msg)
+        if not text:
+            finish = choices[0].get("finish_reason", "unknown")
+            usage = data.get("usage", {})
+            tokens = usage.get("completion_tokens", 0)
+            log.warning(f"[{req_id}] {provider_label} {model} returned empty content (finish_reason={finish}, completion_tokens={tokens})")
+            if error_out is not None:
+                error_out.append(f"[EMPTY] {provider_label} returned 200 OK but empty content (finish_reason={finish}, {tokens} tokens used)")
+        return text
 
     except asyncio.TimeoutError:
         log.warning(f"[{req_id}] {provider_label} {model} timed out after {MODEL_TIMEOUT}s")

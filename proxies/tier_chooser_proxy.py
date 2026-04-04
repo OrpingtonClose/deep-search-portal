@@ -971,6 +971,53 @@ def _strip_media_images(media_section: str) -> str:
     return media_section
 
 
+async def _validate_image_urls(
+    media_items: list[dict],
+    req_id: str,
+    timeout: float = 4.0,
+) -> list[dict]:
+    """HTTP HEAD-check each image URL in parallel; discard non-resolving ones.
+
+    Videos are passed through without validation (YouTube thumbnails always
+    resolve).  Images whose ``img_src`` returns a non-200 status or a
+    non-image content-type are dropped.
+    """
+    if not media_items:
+        return []
+
+    client = http_client()
+
+    async def _check(item: dict) -> dict | None:
+        if item.get("type") != "image":
+            return item  # videos pass through
+        img_src = item.get("img_src", "")
+        if not img_src:
+            return None
+        try:
+            resp = await asyncio.wait_for(
+                client.head(img_src, follow_redirects=True),
+                timeout=timeout,
+            )
+            if resp.status_code != 200:
+                log.debug(f"[{req_id}] Image URL HEAD {resp.status_code}: {img_src[:120]}")
+                return None
+            ct = resp.headers.get("content-type", "")
+            if ct and not ct.startswith("image/"):
+                log.debug(f"[{req_id}] Image URL non-image content-type '{ct}': {img_src[:120]}")
+                return None
+            return item
+        except Exception:
+            log.debug(f"[{req_id}] Image URL unreachable: {img_src[:120]}")
+            return None
+
+    checks = await asyncio.gather(*[_check(m) for m in media_items])
+    valid = [m for m in checks if m is not None]
+    dropped = len(media_items) - len(valid)
+    if dropped:
+        log.info(f"[{req_id}] Dropped {dropped} broken/unreachable image URL(s)")
+    return valid
+
+
 def _filter_media_by_relevance(
     media_items: list[dict],
     combined_text: str,
@@ -978,8 +1025,9 @@ def _filter_media_by_relevance(
 ) -> list[dict]:
     """Filter media items to keep only those relevant to the combined model responses.
 
-    Requires at least 2 significant words (>3 chars) from the media's
-    title+description to appear in the combined text, OR >40% word overlap.
+    Keeps items where at least 1 significant word (>3 chars) from the media's
+    title+description appears in the combined text, OR >25% word overlap.
+    Items with no extractable words are kept (benefit of the doubt).
     """
     if not media_items:
         return []
@@ -990,10 +1038,11 @@ def _filter_media_by_relevance(
         desc = (item.get("description", "") or "").lower()
         words = set(w for w in (title + " " + desc).split() if len(w) > 3)
         if not words:
+            kept.append(item)  # no metadata to judge — keep it
             continue
         matching = sum(1 for w in words if w in lower_text)
         overlap = matching / len(words) if words else 0
-        if matching >= 2 or overlap > 0.4:
+        if matching >= 1 or overlap > 0.25:
             kept.append(item)
     discarded = len(media_items) - len(kept)
     if discarded:
@@ -1182,8 +1231,38 @@ async def run_tier_race(
         yield "data: [DONE]\n\n"
         return
 
-    # Filter media for relevance against the combined model responses
     combined_text = " ".join(r["content"] for r in valid if r.get("content"))
+
+    # --- Validate image URLs (drop broken / unreachable) ---
+    if media_items:
+        media_items = await _validate_image_urls(media_items, req_id)
+
+    # --- Extract content-aware image subjects and search for extra images ---
+    try:
+        subjects = await _extract_image_subjects(combined_text, req_id)
+        if subjects:
+            extra_images = await _search_images_for_subjects(subjects, req_id)
+            if extra_images:
+                # Deduplicate against already-collected media by img_src
+                existing_srcs = {m.get("img_src", "") for m in media_items if m.get("type") == "image"}
+                for img in extra_images:
+                    src = img.get("img_src", "")
+                    if src and src not in existing_srcs:
+                        media_items.append({
+                            "type": "image",
+                            "url": img.get("source_url", src),
+                            "title": img.get("title", "Image"),
+                            "description": img.get("subject", ""),
+                            "img_src": src,
+                        })
+                        existing_srcs.add(src)
+                # Validate the newly added images too
+                media_items = await _validate_image_urls(media_items, req_id)
+                log.info(f"[{req_id}] After subject search: {len(media_items)} total media items")
+    except Exception as exc:
+        log.warning(f"[{req_id}] Subject-based image search failed (non-fatal): {exc}")
+
+    # Filter media for relevance against the combined model responses
     if media_items:
         media_items = _filter_media_by_relevance(media_items, combined_text, req_id)
 

@@ -531,8 +531,8 @@ async def run_agent_loop(
                 if content:
                     yield _chunk(content=content)
                 elif reasoning and not content:
-                    # Model put everything in reasoning_content
-                    yield _chunk(content=reasoning)
+                    # Model put everything in reasoning_content — use cleaned version
+                    yield _chunk(content=clean_reasoning)
 
                 yield _chunk(finish_reason="stop")
                 yield "data: [DONE]\n\n"

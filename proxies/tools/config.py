@@ -188,7 +188,7 @@ MODERATION_MODEL = os.getenv("MODERATION_MODEL", SUBAGENT_MODEL)
 # prompt instead of using bind_tools(), then parses <tool_call> from output.
 XML_TOOL_CALLING_MODELS: set[str] = {
     m.strip()
-    for m in os.getenv("XML_TOOL_CALLING_MODELS", "venice-uncensored,hermes-3-llama-3.1-405b,glm-4.7-flash-heretic").split(",")
+    for m in os.getenv("XML_TOOL_CALLING_MODELS", "venice-uncensored,hermes-3-llama-3.1-405b,glm-4.7-flash-heretic,olafangensan-glm-4.7-flash-heretic").split(",")
     if m.strip()
 }
 

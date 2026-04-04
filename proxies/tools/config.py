@@ -230,25 +230,33 @@ def build_xml_tools_system_prompt(tools: list[dict]) -> str:
     )
 
 
+# Standard Hermes-3 format: <tool_call>{"name": "fn", "arguments": {...}}</tool_call>
 _XML_TC_RE = re.compile(
     r"<tool_call>\s*(\{.*?\})\s*</tool_call>",
+    re.DOTALL,
+)
+# GLM Heretic format: <tool_call>function_name{"arg": "val"}</tool_call>
+_XML_TC_ALT_RE = re.compile(
+    r"<tool_call>\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(\{.*?\})\s*</tool_call>",
     re.DOTALL,
 )
 
 
 def parse_xml_tool_calls(content: str) -> list[dict] | None:
-    """Parse Hermes-3 ``<tool_call>`` blocks into OpenAI-format dicts.
+    """Parse ``<tool_call>`` blocks into OpenAI-format dicts.
+
+    Supports two formats:
+      1. Hermes-3 standard: ``<tool_call>{"name": "fn", "arguments": {...}}</tool_call>``
+      2. GLM Heretic style: ``<tool_call>fn_name{"arg": "val"}</tool_call>``
 
     Returns a list of tool-call dicts (same shape as
     ``response.choices[0].message.tool_calls``) or *None* if no valid
     tool calls were found.
     """
-    matches = _XML_TC_RE.findall(content)
-    if not matches:
-        return None
-
     tool_calls: list[dict] = []
-    for raw in matches:
+
+    # Try standard Hermes-3 format first
+    for raw in _XML_TC_RE.findall(content):
         try:
             obj = json.loads(raw)
         except json.JSONDecodeError:
@@ -262,6 +270,26 @@ def parse_xml_tool_calls(content: str) -> list[dict] | None:
             "type": "function",
             "function": {
                 "name": name,
+                "arguments": json.dumps(args) if isinstance(args, dict) else str(args),
+            },
+        })
+
+    if tool_calls:
+        return tool_calls
+
+    # Fallback: GLM Heretic format — <tool_call>function_name{...}</tool_call>
+    for fn_name, raw_args in _XML_TC_ALT_RE.findall(content):
+        try:
+            args = json.loads(raw_args)
+        except json.JSONDecodeError:
+            continue
+        if not fn_name:
+            continue
+        tool_calls.append({
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "function",
+            "function": {
+                "name": fn_name,
                 "arguments": json.dumps(args) if isinstance(args, dict) else str(args),
             },
         })

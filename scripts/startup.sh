@@ -297,10 +297,12 @@ fi
 wait_for_health "http://localhost:9700/health" "xAI Native Proxy" 15
 
 # --- Heretic Proxy (GLM-4.7 Flash Heretic + Firecrawl/Exa/Brave tools) ---
-if ! pgrep -f "heretic_proxy.py" > /dev/null; then
+if [ -z "$VENICE_API_KEY" ]; then
+    echo "WARNING: Skipping Heretic Proxy — VENICE_API_KEY not set"
+elif ! pgrep -f "heretic_proxy.py" > /dev/null; then
     screen -dmS heretic-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && HERETIC_PROXY_PORT=9950 python3 heretic_proxy.py 2>&1 | tee /var/log/heretic_proxy.log"
     echo "Heretic Proxy starting..."
+    wait_for_health "http://localhost:9950/health" "Heretic Proxy" 15
 fi
-wait_for_health "http://localhost:9950/health" "Heretic Proxy" 15
 
 echo "All services started. Portal: ${DOMAIN_CLIENT:-https://deep-search.uk}"

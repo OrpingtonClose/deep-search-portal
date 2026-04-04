@@ -198,7 +198,7 @@ TIER_MODELS = {
         "openai/o3",                        # Highest-effort OpenAI reasoning model
         "x-ai/grok-4.20",                 # Competitive frontier model
         "deepseek/deepseek-reasoner",      # Top reasoning/value performer
-        "qwen/qwen3-235b-a22b",           # Massive MoE power
+        "qwen/qwq-plus",                  # Qwen thinking model (reasoning)
         "z-ai/glm-5",                     # Max-effort GLM variant
     ],
 }
@@ -470,6 +470,7 @@ _THINKING_MODELS = {
     "qwen3-235b-a22b", "qwen3-235b-a22b-instruct-2507",
     "qwen3-235b-a22b-thinking-2507",
     "qwen3-max",
+    "qwq-plus",
 }
 
 # Models that do not support custom temperature (only default=1)

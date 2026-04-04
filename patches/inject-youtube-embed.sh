@@ -1,0 +1,33 @@
+#!/bin/bash
+# Injects the YouTube embed transformer script into LibreChat's index.html.
+# Idempotent — skips if already injected.
+#
+# Usage:  bash patches/inject-youtube-embed.sh /opt/LibreChat
+
+set -euo pipefail
+
+LIBRECHAT_DIR="${1:-/opt/LibreChat}"
+INDEX_HTML="$LIBRECHAT_DIR/client/dist/index.html"
+SCRIPT_SRC="$(dirname "$0")/youtube-embed.js"
+
+if [ ! -f "$INDEX_HTML" ]; then
+  echo "ERROR: $INDEX_HTML not found" >&2
+  exit 1
+fi
+
+if [ ! -f "$SCRIPT_SRC" ]; then
+  echo "ERROR: $SCRIPT_SRC not found" >&2
+  exit 1
+fi
+
+# Check if already injected
+if grep -q 'yt-embed-wrapper' "$INDEX_HTML"; then
+  echo "YouTube embed script already injected — skipping."
+  exit 0
+fi
+
+# Inject before </body>
+SCRIPT_CONTENT=$(cat "$SCRIPT_SRC")
+sed -i "s|</body>|<script>$SCRIPT_CONTENT</script>\n</body>|" "$INDEX_HTML"
+
+echo "YouTube embed script injected into $INDEX_HTML"

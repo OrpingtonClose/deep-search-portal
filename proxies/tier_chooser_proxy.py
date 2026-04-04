@@ -490,8 +490,12 @@ _NO_CUSTOM_TEMPERATURE_MODELS = {
 # Models that MUST use streaming even when call_model() is invoked (non-streaming).
 # qwq-plus: DashScope non-streaming returns empty content/reasoning_content
 #           regardless of enable_thinking setting. Streaming works correctly.
+# glm-5:   Zhipu reasoning model produces extensive reasoning_content before
+#           content. Complex queries take 80-90s+ non-streaming, hitting the
+#           90s timeout. Streaming avoids this since tokens flow progressively.
 _FORCE_STREAM_MODELS = {
     "qwq-plus",
+    "glm-5",
 }
 
 

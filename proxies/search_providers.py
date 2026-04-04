@@ -9,6 +9,8 @@ independent sources directly:
   2. **Brave Search** (via LangChain BraveSearchWrapper) — independent index, needs API key
   3. **Mojeek** (via LangChain MojeekSearchAPIWrapper) — independent crawler, needs API key
   4. **SearXNG** — kept as fallback for categories not covered by direct sources
+  5. **Exa** (via direct HTTP API) — semantic/neural AI search, needs API key
+  6. **Firecrawl** (via direct HTTP API) — deep web scraping with search, needs API key
 
 Each provider returns normalised ``SearchResult`` dicts. The ``multi_search``
 coroutine fans out to all available providers concurrently and deduplicates
@@ -40,6 +42,8 @@ log = logging.getLogger("search_providers")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
 BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY", "")
 MOJEEK_API_KEY = os.getenv("MOJEEK_API_KEY", "")
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")
+EXA_API_KEY = os.getenv("EXA_API_KEY", "")
 
 # Feature flag: set to "0" or "false" to disable SearXNG entirely
 SEARXNG_ENABLED = os.getenv("SEARXNG_ENABLED", "1").lower() not in ("0", "false", "no")
@@ -55,7 +59,7 @@ class SearchResult:
     title: str
     url: str
     snippet: str
-    source: str  # provider name: "duckduckgo", "brave", "mojeek", "searxng"
+    source: str  # provider name: "duckduckgo", "brave", "exa", "firecrawl", "mojeek", "searxng"
     score: float = 0.0  # optional relevance score
     published_date: str = ""  # ISO date if available
     img_src: str = ""         # Direct image URL (for image search results)
@@ -240,6 +244,114 @@ async def _search_mojeek(query: str, max_results: int = 10) -> list[SearchResult
 
 
 # ---------------------------------------------------------------------------
+# Provider: Exa (semantic AI search — direct HTTP)
+# ---------------------------------------------------------------------------
+
+async def _search_exa(query: str, max_results: int = 10) -> list[SearchResult]:
+    """Search via Exa's semantic/neural search API.
+
+    Requires EXA_API_KEY. Exa uses neural embeddings to find conceptually
+    relevant results — excels at research, technical content, and niche topics.
+    """
+    if not EXA_API_KEY:
+        return []
+
+    try:
+        client = http_client()
+        resp = await client.post(
+            "https://api.exa.ai/search",
+            headers={
+                "x-api-key": EXA_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json={
+                "query": query,
+                "numResults": max_results,
+                "type": "auto",
+                "useAutoprompt": True,
+                "text": True,
+            },
+            timeout=20.0,
+        )
+        if resp.status_code != 200:
+            log.warning(f"Exa HTTP {resp.status_code}: {resp.text[:200]}")
+            return []
+
+        data = resp.json()
+        results = []
+        for item in data.get("results", [])[:max_results]:
+            text = item.get("text", "")
+            snippet = text[:500] if text else item.get("highlight", "")[:500]
+            results.append(SearchResult(
+                title=item.get("title", ""),
+                url=item.get("url", ""),
+                snippet=snippet,
+                source="exa",
+                score=item.get("score", 0.0),
+                published_date=item.get("publishedDate", ""),
+            ))
+        return results
+
+    except Exception as e:
+        log.warning(f"Exa search error: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Provider: Firecrawl (deep web scraping with search)
+# ---------------------------------------------------------------------------
+
+async def _search_firecrawl(query: str, max_results: int = 10) -> list[SearchResult]:
+    """Search via Firecrawl's /search endpoint.
+
+    Requires FIRECRAWL_API_KEY. Firecrawl searches the web and returns
+    clean markdown content — handles JS rendering, anti-bot, CAPTCHAs.
+    Unlike basic search, returns actual page content, not just snippets.
+    """
+    if not FIRECRAWL_API_KEY:
+        return []
+
+    try:
+        client = http_client()
+        resp = await client.post(
+            "https://api.firecrawl.dev/v1/search",
+            headers={
+                "Authorization": f"Bearer {FIRECRAWL_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "query": query,
+                "limit": max_results,
+                "scrapeOptions": {"formats": ["markdown"]},
+            },
+            timeout=30.0,
+        )
+        if resp.status_code != 200:
+            log.warning(f"Firecrawl HTTP {resp.status_code}: {resp.text[:200]}")
+            return []
+
+        data = resp.json()
+        results = []
+        for item in data.get("data", [])[:max_results]:
+            metadata = item.get("metadata", {})
+            # Firecrawl returns full markdown — use first 500 chars as snippet
+            markdown = item.get("markdown", "")
+            snippet = markdown[:500] if markdown else metadata.get("description", "")[:500]
+            results.append(SearchResult(
+                title=metadata.get("title", item.get("url", "")),
+                url=item.get("url", ""),
+                snippet=snippet,
+                source="firecrawl",
+                published_date=metadata.get("publishedDate", ""),
+            ))
+        return results
+
+    except Exception as e:
+        log.warning(f"Firecrawl search error: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Provider: SearXNG (direct HTTP, kept as fallback)
 # ---------------------------------------------------------------------------
 
@@ -351,6 +463,8 @@ async def multi_search(
     tasks = [
         _search_duckduckgo(query, max_results),
         _search_brave(query, max_results),
+        _search_exa(query, max_results),
+        _search_firecrawl(query, max_results),
         _search_mojeek(query, max_results),
         _search_searxng(query, categories="general", time_range=time_range, max_results=max_results),
     ]
@@ -420,6 +534,7 @@ async def multi_search_science(
       2. DuckDuckGo with academic site targeting (fallback)
     """
     tasks = [
+        _search_exa(query, max_results),  # Exa excels at research/academic content
         _search_searxng(query, categories="science", max_results=max_results),
     ]
 
@@ -462,6 +577,8 @@ async def multi_search_site(
     tasks = [
         _search_duckduckgo(site_query, max_results),
         _search_brave(site_query, max_results),
+        _search_exa(site_query, max_results),
+        _search_firecrawl(site_query, max_results),
         _search_searxng(site_query, categories="general", max_results=max_results),
     ]
 
@@ -583,6 +700,8 @@ def available_providers() -> dict[str, bool]:
     return {
         "duckduckgo": ddg_available,
         "brave": bool(BRAVE_SEARCH_API_KEY),
+        "exa": bool(EXA_API_KEY),
+        "firecrawl": bool(FIRECRAWL_API_KEY),
         "mojeek": bool(MOJEEK_API_KEY),
         "searxng": SEARXNG_ENABLED,
     }

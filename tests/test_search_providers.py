@@ -1,6 +1,6 @@
 """Tests for the multi-source search providers module.
 
-Covers all provider backends (DuckDuckGo, Brave, Mojeek, SearXNG),
+Covers all provider backends (DuckDuckGo, Brave, Exa, Firecrawl, Mojeek, SearXNG),
 deduplication, category routing, and the backward-compatible search_as_raw API.
 
 All external calls are mocked — no services need to be running.
@@ -298,6 +298,131 @@ class TestMojeekSearch:
 
 
 # ===================================================================
+# Exa Search provider
+# ===================================================================
+
+class TestExaSearch:
+    @pytest.mark.asyncio
+    async def test_no_api_key_returns_empty(self):
+        with patch.object(sp, "EXA_API_KEY", ""):
+            results = await sp._search_exa("test query")
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_successful_search(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "results": [
+                {
+                    "title": "Exa Result",
+                    "url": "https://exa1.com",
+                    "text": "Semantic search result content",
+                    "score": 0.95,
+                    "publishedDate": "2026-03-01",
+                },
+            ]
+        }
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with patch.object(sp, "EXA_API_KEY", "test-key"), \
+             patch("search_providers.http_client", return_value=mock_client):
+            results = await sp._search_exa("test query")
+
+        assert len(results) == 1
+        assert results[0].title == "Exa Result"
+        assert results[0].source == "exa"
+        assert results[0].score == 0.95
+
+    @pytest.mark.asyncio
+    async def test_http_error_returns_empty(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_resp.text = "Unauthorized"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with patch.object(sp, "EXA_API_KEY", "bad-key"), \
+             patch("search_providers.http_client", return_value=mock_client):
+            results = await sp._search_exa("test query")
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_empty(self):
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=RuntimeError("connection failed"))
+
+        with patch.object(sp, "EXA_API_KEY", "test-key"), \
+             patch("search_providers.http_client", return_value=mock_client):
+            results = await sp._search_exa("test query")
+        assert results == []
+
+
+# ===================================================================
+# Firecrawl Search provider
+# ===================================================================
+
+class TestFirecrawlSearch:
+    @pytest.mark.asyncio
+    async def test_no_api_key_returns_empty(self):
+        with patch.object(sp, "FIRECRAWL_API_KEY", ""):
+            results = await sp._search_firecrawl("test query")
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_successful_search(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "data": [
+                {
+                    "url": "https://fc1.com",
+                    "markdown": "# Page Title\n\nFull page content here...",
+                    "metadata": {
+                        "title": "Firecrawl Result",
+                        "description": "A scraped page",
+                    },
+                },
+            ]
+        }
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with patch.object(sp, "FIRECRAWL_API_KEY", "test-key"), \
+             patch("search_providers.http_client", return_value=mock_client):
+            results = await sp._search_firecrawl("test query")
+
+        assert len(results) == 1
+        assert results[0].title == "Firecrawl Result"
+        assert results[0].source == "firecrawl"
+        assert "Full page content" in results[0].snippet
+
+    @pytest.mark.asyncio
+    async def test_http_error_returns_empty(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.text = "Internal Server Error"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with patch.object(sp, "FIRECRAWL_API_KEY", "test-key"), \
+             patch("search_providers.http_client", return_value=mock_client):
+            results = await sp._search_firecrawl("test query")
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_empty(self):
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=RuntimeError("timeout"))
+
+        with patch.object(sp, "FIRECRAWL_API_KEY", "test-key"), \
+             patch("search_providers.http_client", return_value=mock_client):
+            results = await sp._search_firecrawl("test query")
+        assert results == []
+
+
+# ===================================================================
 # SearXNG provider
 # ===================================================================
 
@@ -385,6 +510,8 @@ class TestMultiSearch:
 
         with patch("search_providers._search_duckduckgo", AsyncMock(return_value=ddg_results)), \
              patch("search_providers._search_brave", AsyncMock(return_value=brave_results)), \
+             patch("search_providers._search_exa", AsyncMock(return_value=[])), \
+             patch("search_providers._search_firecrawl", AsyncMock(return_value=[])), \
              patch("search_providers._search_mojeek", AsyncMock(return_value=[])), \
              patch("search_providers._search_searxng", AsyncMock(return_value=searxng_results)):
             results = await sp.multi_search("test query", max_results=10)
@@ -398,6 +525,8 @@ class TestMultiSearch:
     async def test_handles_provider_exceptions(self):
         with patch("search_providers._search_duckduckgo", AsyncMock(side_effect=RuntimeError("fail"))), \
              patch("search_providers._search_brave", AsyncMock(return_value=[])), \
+             patch("search_providers._search_exa", AsyncMock(return_value=[])), \
+             patch("search_providers._search_firecrawl", AsyncMock(return_value=[])), \
              patch("search_providers._search_mojeek", AsyncMock(return_value=[])), \
              patch("search_providers._search_searxng", AsyncMock(return_value=[
                  sp.SearchResult(title="Fallback", url="https://fb.com", snippet="", source="searxng:general"),
@@ -415,6 +544,8 @@ class TestMultiSearch:
         ]
         with patch("search_providers._search_duckduckgo", AsyncMock(return_value=many_results)), \
              patch("search_providers._search_brave", AsyncMock(return_value=[])), \
+             patch("search_providers._search_exa", AsyncMock(return_value=[])), \
+             patch("search_providers._search_firecrawl", AsyncMock(return_value=[])), \
              patch("search_providers._search_mojeek", AsyncMock(return_value=[])), \
              patch("search_providers._search_searxng", AsyncMock(return_value=[])):
             results = await sp.multi_search("test", max_results=5)
@@ -426,6 +557,8 @@ class TestMultiSearch:
         """time_range must propagate to the SearXNG sub-call inside multi_search."""
         with patch("search_providers._search_duckduckgo", AsyncMock(return_value=[])), \
              patch("search_providers._search_brave", AsyncMock(return_value=[])), \
+             patch("search_providers._search_exa", AsyncMock(return_value=[])), \
+             patch("search_providers._search_firecrawl", AsyncMock(return_value=[])), \
              patch("search_providers._search_mojeek", AsyncMock(return_value=[])), \
              patch("search_providers._search_searxng", AsyncMock(return_value=[])) as mock_sx:
             await sp.multi_search("test", time_range="month")
@@ -445,6 +578,8 @@ class TestMultiSearch:
 
         with patch("search_providers._search_duckduckgo", AsyncMock(return_value=[])), \
              patch("search_providers._search_brave", AsyncMock(return_value=[])), \
+             patch("search_providers._search_exa", AsyncMock(return_value=[])), \
+             patch("search_providers._search_firecrawl", AsyncMock(return_value=[])), \
              patch("search_providers._search_mojeek", AsyncMock(return_value=[])), \
              patch("search_providers._search_searxng", AsyncMock(return_value=[])), \
              patch("search_providers._search_duckduckgo_news", mock_ddg_news):
@@ -502,7 +637,8 @@ class TestMultiSearchScience:
             sp.SearchResult(title="Paper 1", url="https://arxiv.org/abs/123", snippet="", source="searxng:science"),
         ]
 
-        with patch("search_providers._search_searxng", AsyncMock(return_value=sci_results)):
+        with patch("search_providers._search_exa", AsyncMock(return_value=[])), \
+             patch("search_providers._search_searxng", AsyncMock(return_value=sci_results)):
             results = await sp.multi_search_science("quantum computing")
 
         assert len(results) == 1
@@ -514,7 +650,8 @@ class TestMultiSearchScience:
             sp.SearchResult(title="Academic DDG", url="https://scholar.google.com/x", snippet="", source="ddg"),
         ]
 
-        with patch("search_providers._search_searxng", AsyncMock(return_value=[])), \
+        with patch("search_providers._search_exa", AsyncMock(return_value=[])), \
+             patch("search_providers._search_searxng", AsyncMock(return_value=[])), \
              patch("search_providers._search_duckduckgo", AsyncMock(return_value=ddg_results)):
             results = await sp.multi_search_science("quantum computing")
 
@@ -537,6 +674,8 @@ class TestMultiSearchSite:
 
         with patch("search_providers._search_duckduckgo", mock_ddg), \
              patch("search_providers._search_brave", AsyncMock(return_value=[])), \
+             patch("search_providers._search_exa", AsyncMock(return_value=[])), \
+             patch("search_providers._search_firecrawl", AsyncMock(return_value=[])), \
              patch("search_providers._search_searxng", AsyncMock(return_value=[])):
             await sp.multi_search_site("test", site="substack.com")
 
@@ -644,6 +783,8 @@ class TestAvailableProviders:
         avail = sp.available_providers()
         assert "duckduckgo" in avail
         assert "brave" in avail
+        assert "exa" in avail
+        assert "firecrawl" in avail
         assert "mojeek" in avail
         assert "searxng" in avail
 
@@ -660,6 +801,22 @@ class TestAvailableProviders:
         with patch.object(sp, "MOJEEK_API_KEY", ""):
             avail = sp.available_providers()
             assert avail["mojeek"] is False
+
+    def test_exa_requires_api_key(self):
+        with patch.object(sp, "EXA_API_KEY", ""):
+            avail = sp.available_providers()
+            assert avail["exa"] is False
+        with patch.object(sp, "EXA_API_KEY", "exa-123"):
+            avail = sp.available_providers()
+            assert avail["exa"] is True
+
+    def test_firecrawl_requires_api_key(self):
+        with patch.object(sp, "FIRECRAWL_API_KEY", ""):
+            avail = sp.available_providers()
+            assert avail["firecrawl"] is False
+        with patch.object(sp, "FIRECRAWL_API_KEY", "fc-123"):
+            avail = sp.available_providers()
+            assert avail["firecrawl"] is True
 
     def test_searxng_can_be_disabled(self):
         with patch.object(sp, "SEARXNG_ENABLED", False):

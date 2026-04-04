@@ -746,7 +746,10 @@ text pleasurably so the reader enjoys scrolling through it.
   sections as a visual break, or alongside a concept it depicts.
 - Spread media evenly throughout; NEVER cluster all media in one section.
 - Skip any item whose title/description does not match the content at all.
-- If no media is relevant to a section, omit media from that section entirely."""
+- If no media is relevant to a section, omit media from that section entirely.
+- IMPORTANT: You MUST place every relevant item inline in the text. There is
+  NO fallback section at the end. Any item you do not embed is lost forever.
+  If an item truly does not fit anywhere, skip it — but try hard to place it."""
 
 
 async def _synthesize_responses(
@@ -1054,49 +1057,6 @@ def _filter_media_by_relevance(
     return kept
 
 
-def _media_url(item: dict) -> str:
-    """Extract the primary URL from a media item for dedup / placement checking."""
-    if item.get("type") == "image":
-        return item.get("img_src", item.get("url", ""))
-    # Video — check url, then thumbnail
-    return item.get("url", item.get("thumbnail", ""))
-
-
-def _format_remaining_media(unplaced: list[dict]) -> str:
-    """Format media items that the synthesis model did not place inline.
-
-    Appends them as a nicely formatted section at the end so no relevant
-    media is lost — the user sees everything, with the best items already
-    distributed inline by the synthesis model.
-    """
-    if not unplaced:
-        return ""
-
-    def _esc_url(url: str) -> str:
-        return url.replace('(', '%28').replace(')', '%29')
-
-    def _esc_text(text: str) -> str:
-        return text.replace('[', '\\[').replace(']', '\\]')
-
-    parts: list[str] = ["\n\n---\n\n### Additional Visual References\n"]
-    for item in unplaced:
-        title = _esc_text(item.get("title", "Media"))
-        if item.get("type") == "image":
-            img_url = _esc_url(item.get("img_src", item.get("url", "")))
-            source_url = _esc_url(item.get("url", img_url))
-            parts.append(f"\n[![{title}]({img_url})]({source_url})\n")
-        elif item.get("type") == "video":
-            vid_url = item.get("url", "")
-            vid_id = item.get("video_id", "")
-            thumb = item.get("thumbnail", "")
-            if vid_id and "youtube" in vid_url:
-                thumb_url = thumb or f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg"
-                parts.append(
-                    f"\n[![{title}]({_esc_url(thumb_url)})]({_esc_url(vid_url)})\n"
-                )
-            else:
-                parts.append(f"\n[▶ {title}]({_esc_url(vid_url)})\n")
-    return "\n".join(parts)
 
 
 # ============================================================================
@@ -1284,15 +1244,8 @@ async def run_tier_race(
     )
 
     if synthesised:
-        # Find unplaced media — URLs the synthesis model didn't embed inline
         if media_items:
-            unplaced = [m for m in media_items if _media_url(m) not in synthesised]
-            if unplaced:
-                remaining_section = _format_remaining_media(unplaced)
-                synthesised += remaining_section
-                yield _chunk("", reasoning_content=f"  {len(media_items) - len(unplaced)} media item(s) placed inline, {len(unplaced)} in fallback section.\n")
-            else:
-                yield _chunk("", reasoning_content=f"  All {len(media_items)} media item(s) placed inline.\n")
+            yield _chunk("", reasoning_content=f"  {len(media_items)} media item(s) provided to synthesis for inline placement.\n")
         yield _chunk(synthesised, finish_reason="stop")
     else:
         # Synthesis failed — return the longest response as a reasonable fallback

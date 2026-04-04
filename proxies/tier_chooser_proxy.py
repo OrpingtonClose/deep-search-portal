@@ -791,23 +791,25 @@ placement: every image or video should feel like it belongs exactly where it is,
 adding information or aesthetic appeal.  There is no fixed number — saturate the
 text pleasurably so the reader enjoys scrolling through it.
 
-- For images: use `![<brief alt text>](<img_src URL>)` placed right after the
-  paragraph the image illustrates.  Verify the image title/description actually
-  matches the surrounding content before including it.
-- For YouTube videos: output a clickable thumbnail followed by an artifact:
-  `[![<title>](<thumbnail URL>)](<video URL>)`
-  then on a new line:
-  `:::artifact{title="<title>" type="text/html" identifier="vid-<N>"}`
-  `<iframe width="560" height="315" src="https://www.youtube.com/embed/<video_id>" frameborder="0" allowfullscreen></iframe>`
-  `:::`
-- For non-YouTube videos: use `[▶ <title>](<url>)` as a clickable link.
+IMAGES — use standard markdown image syntax placed right after the paragraph
+the image illustrates:
+  ![<brief alt text>](<img_src URL>)
+
+VIDEOS — embed each video as a clickable thumbnail link.  This is the ONLY
+format you should use for videos:
+  [![<title>](<thumbnail URL>)](<video URL>)
+If there is no thumbnail URL, use a text link instead:
+  [▶ <title>](<video URL>)
+
+Placement rules:
 - Place media where it adds value — after a paragraph it illustrates, between
   sections as a visual break, or alongside a concept it depicts.
 - Spread media evenly throughout; NEVER cluster all media in one section.
-- Skip any item whose title/description does not match the content at all.
+- Verify the item's title/description actually matches the surrounding content.
 - If no media is relevant to a section, omit media from that section entirely.
-- IMPORTANT: You MUST place every relevant item inline in the text. There is
-  NO fallback section at the end. Any item you do not embed is lost forever.
+- IMPORTANT: You MUST embed both images AND videos inline in the text. There
+  is NO fallback section at the end. Any item you do not embed is lost forever.
+  Videos are just as important as images — do NOT skip videos.
   If an item truly does not fit anywhere, skip it — but try hard to place it."""
 
 

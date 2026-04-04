@@ -26,8 +26,14 @@ if grep -q 'yt-embed-wrapper' "$INDEX_HTML"; then
   exit 0
 fi
 
-# Inject before </body>
-SCRIPT_CONTENT=$(cat "$SCRIPT_SRC")
-sed -i "s|</body>|<script>$SCRIPT_CONTENT</script>\n</body>|" "$INDEX_HTML"
+# Inject before </body> using python to avoid sed escaping issues
+python3 -c "
+import sys
+js = open('$SCRIPT_SRC').read()
+html = open('$INDEX_HTML').read()
+tag = '<script>' + js + '</script>\n</body>'
+html = html.replace('</body>', tag, 1)
+open('$INDEX_HTML', 'w').write(html)
+"
 
 echo "YouTube embed script injected into $INDEX_HTML"

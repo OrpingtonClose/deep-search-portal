@@ -669,7 +669,13 @@ async def list_models():
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": f"Invalid request body: {e}", "type": "invalid_request"}},
+        )
     messages = body.get("messages", [])
     req_id = f"heretic-{uuid.uuid4().hex[:8]}"
     tracker.start(req_id, model=body.get("model", UPSTREAM_MODEL))

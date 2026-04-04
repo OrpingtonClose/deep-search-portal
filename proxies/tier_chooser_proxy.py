@@ -1327,8 +1327,10 @@ async def _rank_videos_by_transcript(
         ranking = json.loads(cleaned)
         if isinstance(ranking, list):
             ranked: list[dict] = []
+            seen_indices: set[int] = set()
             for num in ranking:
-                if isinstance(num, int) and 1 <= num <= len(indexed_videos):
+                if isinstance(num, int) and 1 <= num <= len(indexed_videos) and num not in seen_indices:
+                    seen_indices.add(num)
                     ranked.append(indexed_videos[num - 1])
             if ranked:
                 log.info(f"[{req_id}] Video ranking selected {len(ranked)} of {len(indexed_videos)} candidates")

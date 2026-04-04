@@ -58,7 +58,7 @@ MAX_CONCURRENT_MODELS = env_int("TIER_CHOOSER_MAX_CONCURRENT", 10, minimum=1)
 MODEL_TIMEOUT = int(os.getenv("TIER_CHOOSER_MODEL_TIMEOUT", "90"))
 
 # Synthesis configuration
-SYNTHESIS_MODEL = os.getenv("TIER_CHOOSER_SYNTHESIS_MODEL", "google/gemini-3.1-pro")
+SYNTHESIS_MODEL = os.getenv("TIER_CHOOSER_SYNTHESIS_MODEL", "google/gemini-3.1-flash")
 KNOWLEDGE_NAMESPACE = os.getenv("TIER_CHOOSER_NAMESPACE", "tier-chooser")
 
 IMAGE_ENRICHMENT_ENABLED = os.getenv("TIER_CHOOSER_IMAGE_ENRICHMENT", "true").lower() in ("1", "true", "yes")
@@ -724,8 +724,13 @@ Rules:
 _SYNTHESIS_MEDIA_ADDENDUM = """
 
 You have been given a set of IMAGES and VIDEOS found for the user's query.
-DISTRIBUTE them throughout the ENTIRE text like a well-illustrated article.
-Place each image/video immediately after the paragraph it illustrates.
+Your goal is to produce a beautifully illustrated article where media is woven
+naturally into the text — like a high-quality magazine or encyclopedia entry.
+
+Use as many or as few media items as the content calls for.  Let the text guide
+placement: every image or video should feel like it belongs exactly where it is,
+adding information or aesthetic appeal.  There is no fixed number — saturate the
+text pleasurably so the reader enjoys scrolling through it.
 
 - For images: use `![<brief alt text>](<img_src URL>)` placed right after the
   paragraph the image illustrates.  Verify the image title/description actually
@@ -737,9 +742,9 @@ Place each image/video immediately after the paragraph it illustrates.
   `<iframe width="560" height="315" src="https://www.youtube.com/embed/<video_id>" frameborder="0" allowfullscreen></iframe>`
   `:::`
 - For non-YouTube videos: use `[▶ <title>](<url>)` as a clickable link.
-- Try to place EVERY provided media item somewhere relevant in the text.
-- Aim for at least one image per major section when relevant media is available.
-- NEVER cluster all media in one section — spread them evenly throughout.
+- Place media where it adds value — after a paragraph it illustrates, between
+  sections as a visual break, or alongside a concept it depicts.
+- Spread media evenly throughout; NEVER cluster all media in one section.
 - Skip any item whose title/description does not match the content at all.
 - If no media is relevant to a section, omit media from that section entirely."""
 

@@ -1225,6 +1225,26 @@ async def run_tier_race(
         log.info(f"[{req_id}] [{completed}/{len(models)}] {short_model}: {status}")
         yield _chunk("", reasoning_content=f"  [{completed}/{len(models)}] {short_model}: {status}\n")
 
+    # --- Emit individual model responses into the thought box for user inspection ---
+    yield _chunk("", reasoning_content="\n\u2500\u2500\u2500 INDIVIDUAL MODEL RESPONSES \u2500\u2500\u2500\n")
+    for r in sorted(results, key=lambda x: x.get("score", -9999), reverse=True):
+        short = r["model"].split("/")[-1]
+        if r.get("is_empty"):
+            err = r.get("error", "unknown error")
+            yield _chunk("", reasoning_content=f"\n\u25bc {short} [FAILED: {err}]\n")
+        elif r.get("is_refusal"):
+            yield _chunk("", reasoning_content=f"\n\u25bc {short} [REFUSED]\n")
+        else:
+            score = r.get("score", 0)
+            hedges = r.get("hedge_count", 0)
+            content_preview = r["content"]
+            yield _chunk("", reasoning_content=(
+                f"\n\u25bc {short} (score: {score}, hedges: {hedges}, "
+                f"{len(content_preview)} chars)\n"
+                f"{content_preview}\n"
+            ))
+    yield _chunk("", reasoning_content="\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
+
     valid = [r for r in results if not r["is_refusal"] and not r.get("is_empty") and r["content"]]
     if not valid:
         empty_count = sum(1 for r in results if r.get("is_empty"))

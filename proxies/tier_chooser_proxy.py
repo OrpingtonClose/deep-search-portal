@@ -118,6 +118,7 @@ NATIVE_MODEL_MAP: dict[str, str] = {
     # Google Gemini — API uses "-preview" suffixes
     "gemini-3.1-flash":    "gemini-3-flash-preview",
     "gemini-3-pro":        "gemini-3-pro-preview",
+    "gemini-3.1-pro":      "gemini-3.1-pro-preview",
     # OpenAI — high-effort variant is called "pro"
     "gpt-5.4-high":        "gpt-5.4-pro",
     # Qwen/DashScope — native API model IDs

@@ -16,6 +16,8 @@ import html as html_mod
 import json
 import os
 import re
+import shutil
+import tempfile
 import time
 import uuid
 from typing import AsyncGenerator, Optional
@@ -780,53 +782,44 @@ Rules:
 - Prioritize depth, specificity, and completeness over brevity
 - If one model provides a unique insight or example that others missed, ALWAYS include it"""
 
-_SYNTHESIS_MEDIA_ADDENDUM = """
+# ---------------------------------------------------------------------------
+# Stage 3 prompt — media injection agent
+# ---------------------------------------------------------------------------
+_MEDIA_INJECT_PROMPT = """You are a media editor.  You receive a finished article (markdown) and a
+catalog of available images and videos.  Your ONLY job is to insert media
+items into the article at the most contextually appropriate positions so
+the result reads like a beautifully illustrated magazine or encyclopedia
+entry.
 
-You have been given a set of IMAGES and VIDEOS found for the user's query.
-Your goal is to produce a beautifully illustrated article where media is woven
-naturally into the text — like a high-quality magazine or encyclopedia entry.
-
-Use as many or as few media items as the content calls for.  Let the text guide
-placement: every image or video should feel like it belongs exactly where it is,
-adding information or aesthetic appeal.  There is no fixed number — saturate the
-text pleasurably so the reader enjoys scrolling through it.
-
-IMAGES — use standard markdown image syntax placed right after the paragraph
-the image illustrates:
-  ![<brief alt text>](<img_src URL>)
-
-VIDEOS — embed each video as a clickable thumbnail link.  This is the ONLY
-format you should use for videos:
-  [![<title>](<thumbnail URL>)](<video URL>)
-If there is no thumbnail URL, use a text link instead:
-  [▶ <title>](<video URL>)
-
-Placement rules:
-- Place media where it adds value — after a paragraph it illustrates, between
-  sections as a visual break, or alongside a concept it depicts.
-- Spread media evenly throughout; NEVER cluster all media in one section.
-- Verify the item's title/description actually matches the surrounding content.
-- If no media is relevant to a section, omit media from that section entirely.
-- IMPORTANT: You MUST embed both images AND videos inline in the text. There
-  is NO fallback section at the end. Any item you do not embed is lost forever.
-  Videos are just as important as images — do NOT skip videos.
-  If an item truly does not fit anywhere, skip it — but try hard to place it."""
+Rules:
+1. Return the COMPLETE article text — every original word must remain.
+   Do NOT rewrite, summarise, shorten, or rephrase any part of the text.
+2. Insert media BETWEEN existing paragraphs or after section headings —
+   never inside a sentence.
+3. For images use:  ![<brief alt text>](<img_src URL>)
+4. For videos with a thumbnail use:  [![<title>](<thumbnail URL>)](<video URL>)
+5. For videos without a thumbnail use:  [▶ <title>](<video URL>)
+6. Spread media evenly throughout the article; never cluster them.
+7. Only insert an item when its title/description clearly matches the
+   surrounding content.
+8. You MUST use both images AND videos.  Videos are just as important as
+   images — do NOT skip them.
+9. If an item truly does not fit anywhere, skip it — but try hard.
+10. Do NOT add any commentary, explanation, or meta-text of your own.
+    Output ONLY the article with media inserted."""
 
 
 async def _synthesize_responses(
     user_query: str,
     valid_results: list[dict],
     req_id: str,
-    media: Optional[list[dict]] = None,
 ) -> str:
-    """Merge all valid model responses into a single comprehensive answer.
+    """Stage 2 — Merge all valid model responses into a single comprehensive answer.
 
     Uses the SYNTHESIS_MODEL (default: Gemini Flash for speed and large
     context window) to combine the best information from every response.
-
-    When *media* is provided (list of image/video dicts from
-    enrich_with_media_structured), the synthesis model is instructed to
-    embed them inline at contextually appropriate positions.
+    This stage focuses ONLY on text quality — media is injected separately
+    in Stage 3 by ``_inject_media_into_text``.
 
     Returns the synthesised text, or empty string on failure.
     """
@@ -839,43 +832,14 @@ async def _synthesize_responses(
         )
     responses_text = "\n".join(response_parts)
 
-    # Build the user content
     user_content = (
         f"User question: {user_query}\n\n"
         f"Model responses:\n{responses_text}\n\n"
+        "Produce the most comprehensive, information-rich answer possible."
     )
 
-    system_prompt = _SYNTHESIS_PROMPT
-
-    # Append media for inline placement
-    if media:
-        system_prompt += _SYNTHESIS_MEDIA_ADDENDUM
-        media_lines = []
-        for idx, item in enumerate(media, 1):
-            if item["type"] == "image":
-                media_lines.append(
-                    f"  IMAGE #{idx}: title={item['title']!r}, "
-                    f"description={item.get('description', '')!r}, "
-                    f"img_src={item['img_src']!r}"
-                )
-            elif item["type"] == "video":
-                vid_id = item.get("video_id", "")
-                thumb = item.get("thumbnail", "")
-                media_lines.append(
-                    f"  VIDEO #{idx}: title={item['title']!r}, "
-                    f"description={item.get('description', '')!r}, "
-                    f"url={item['url']!r}, video_id={vid_id!r}, "
-                    f"thumbnail={thumb!r}"
-                )
-        user_content += (
-            "Available media (embed inline where contextually relevant):\n"
-            + "\n".join(media_lines) + "\n\n"
-        )
-
-    user_content += "Produce the most comprehensive, information-rich answer possible."
-
     messages = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": _SYNTHESIS_PROMPT},
         {"role": "user", "content": user_content},
     ]
 
@@ -883,6 +847,59 @@ async def _synthesize_responses(
         SYNTHESIS_MODEL, messages,
         temperature=0.3, max_tokens=8192, req_id=req_id,
     )
+
+
+async def _inject_media_into_text(
+    synthesised_text: str,
+    media: list[dict],
+    req_id: str,
+) -> str:
+    """Stage 3 — Inject images and videos into the synthesised article.
+
+    A separate LLM call (using the same fast SYNTHESIS_MODEL) that receives
+    the finished article and a media catalog, then returns the article with
+    media items woven in at contextually appropriate positions.
+
+    The synthesis model never sees media — this keeps Stage 2 focused on
+    text quality while Stage 3 is specialised for media placement.
+    """
+    media_lines = []
+    for idx, item in enumerate(media, 1):
+        if item["type"] == "image":
+            media_lines.append(
+                f"  IMAGE #{idx}: title={item['title']!r}, "
+                f"description={item.get('description', '')!r}, "
+                f"img_src={item['img_src']!r}"
+            )
+        elif item["type"] == "video":
+            vid_id = item.get("video_id", "")
+            thumb = item.get("thumbnail", "")
+            media_lines.append(
+                f"  VIDEO #{idx}: title={item['title']!r}, "
+                f"description={item.get('description', '')!r}, "
+                f"url={item['url']!r}, video_id={vid_id!r}, "
+                f"thumbnail={thumb!r}"
+            )
+
+    user_content = (
+        "ARTICLE:\n"
+        + synthesised_text
+        + "\n\nAVAILABLE MEDIA:\n"
+        + "\n".join(media_lines)
+        + "\n\nInsert the media items into the article. Output the full article with media embedded."
+    )
+
+    messages = [
+        {"role": "system", "content": _MEDIA_INJECT_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+    result = await call_model(
+        SYNTHESIS_MODEL, messages,
+        temperature=0.2, max_tokens=8192, req_id=req_id,
+    )
+    # If the media injection fails, return the original text unmodified
+    return result if result else synthesised_text
 
 
 # ============================================================================
@@ -1258,60 +1275,103 @@ async def run_tier_race(
 
     combined_text = " ".join(r["content"] for r in valid if r.get("content"))
 
-    # --- Validate image URLs (drop broken / unreachable) ---
-    if media_items:
-        media_items = await _validate_image_urls(media_items, req_id)
+    # ====================================================================
+    # 3-STAGE PIPELINE
+    # Stage 1: Collect — dump API results + media to ephemeral temp dir
+    # Stage 2: Synthesise — pure text, no media
+    # Stage 3: Inject — LLM media agent weaves images/videos into the text
+    # ====================================================================
 
-    # --- Extract content-aware image subjects and search for extra images ---
+    work_dir = tempfile.mkdtemp(prefix=f"tier-{req_id}-")
     try:
-        subjects = await _extract_image_subjects(combined_text, req_id)
-        if subjects:
-            extra_images = await _search_images_for_subjects(subjects, req_id)
-            if extra_images:
-                # Deduplicate against already-collected media by img_src
-                existing_srcs = {m.get("img_src", "") for m in media_items if m.get("type") == "image"}
-                pre_merge_count = len(media_items)
-                for img in extra_images:
-                    src = img.get("img_src", "")
-                    if src and src not in existing_srcs:
-                        media_items.append({
-                            "type": "image",
-                            "url": img.get("source_url", src),
-                            "title": img.get("title", "Image"),
-                            "description": img.get("subject", ""),
-                            "img_src": src,
-                        })
-                        existing_srcs.add(src)
-                # Validate only the newly added images
-                new_items = media_items[pre_merge_count:]
-                validated_new = await _validate_image_urls(new_items, req_id)
-                media_items = media_items[:pre_merge_count] + validated_new
-                log.info(f"[{req_id}] After subject search: {len(media_items)} total media items")
-    except Exception as exc:
-        log.warning(f"[{req_id}] Subject-based image search failed (non-fatal): {exc}")
-
-    # Filter media for relevance against the combined model responses
-    if media_items:
-        media_items = _filter_media_by_relevance(media_items, combined_text, req_id)
-
-    synthesis_model_short = SYNTHESIS_MODEL.split("/")[-1]
-    yield _chunk("", reasoning_content=f"\n{valid_count} model(s) responded. Synthesising from {valid_count} responses (via {synthesis_model_short})...\n")
-
-    # Synthesise — even with 1 response, run through synthesis so media
-    # gets embedded inline (the synthesis model also cleans up formatting)
-    synthesised = await _synthesize_responses(
-        user_query, valid, req_id,
-        media=media_items if media_items else None,
-    )
-
-    if synthesised:
+        # --- Stage 1: Dump to disk ---
+        for idx, r in enumerate(valid):
+            fpath = os.path.join(work_dir, f"response_{idx}_{r['model'].replace('/', '_')}.txt")
+            with open(fpath, "w") as f:
+                f.write(r["content"])
         if media_items:
-            yield _chunk("", reasoning_content=f"  {len(media_items)} media item(s) provided to synthesis for inline placement.\n")
-        yield _chunk(synthesised, finish_reason="stop")
-    else:
-        # Synthesis failed — return the longest response as a reasonable fallback
-        fallback = max(valid, key=lambda r: len(r["content"]))
-        yield _chunk(fallback["content"], finish_reason="stop")
+            with open(os.path.join(work_dir, "media_catalog.json"), "w") as f:
+                json.dump(media_items, f, indent=2)
+        log.info(f"[{req_id}] Stage 1 complete: {len(valid)} responses + {len(media_items)} media items dumped to {work_dir}")
+
+        # --- Validate image URLs (drop broken / unreachable) ---
+        if media_items:
+            media_items = await _validate_image_urls(media_items, req_id)
+
+        # --- Extract content-aware image subjects and search for extra images ---
+        try:
+            subjects = await _extract_image_subjects(combined_text, req_id)
+            if subjects:
+                extra_images = await _search_images_for_subjects(subjects, req_id)
+                if extra_images:
+                    existing_srcs = {m.get("img_src", "") for m in media_items if m.get("type") == "image"}
+                    pre_merge_count = len(media_items)
+                    for img in extra_images:
+                        src = img.get("img_src", "")
+                        if src and src not in existing_srcs:
+                            media_items.append({
+                                "type": "image",
+                                "url": img.get("source_url", src),
+                                "title": img.get("title", "Image"),
+                                "description": img.get("subject", ""),
+                                "img_src": src,
+                            })
+                            existing_srcs.add(src)
+                    new_items = media_items[pre_merge_count:]
+                    validated_new = await _validate_image_urls(new_items, req_id)
+                    media_items = media_items[:pre_merge_count] + validated_new
+                    log.info(f"[{req_id}] After subject search: {len(media_items)} total media items")
+        except Exception as exc:
+            log.warning(f"[{req_id}] Subject-based image search failed (non-fatal): {exc}")
+
+        # Filter media for relevance against the combined model responses
+        if media_items:
+            media_items = _filter_media_by_relevance(media_items, combined_text, req_id)
+
+        # --- Stage 2: Synthesise (pure text, no media) ---
+        synthesis_model_short = SYNTHESIS_MODEL.split("/")[-1]
+        yield _chunk("", reasoning_content=f"\n{valid_count} model(s) responded. Synthesising via {synthesis_model_short}...\n")
+
+        synthesised = await _synthesize_responses(user_query, valid, req_id)
+
+        if not synthesised:
+            fallback = max(valid, key=lambda r: len(r["content"]))
+            yield _chunk(fallback["content"], finish_reason="stop")
+            yield "data: [DONE]\n\n"
+            return
+
+        log.info(f"[{req_id}] Stage 2 complete: synthesis produced {len(synthesised)} chars")
+
+        # Save synthesis to disk
+        with open(os.path.join(work_dir, "synthesis.md"), "w") as f:
+            f.write(synthesised)
+
+        # --- Stage 3: Inject media into the synthesised text ---
+        if media_items:
+            img_count = sum(1 for m in media_items if m["type"] == "image")
+            vid_count = sum(1 for m in media_items if m["type"] == "video")
+            yield _chunk("", reasoning_content=f"  Injecting {img_count} image(s) + {vid_count} video(s) into article...\n")
+
+            final_text = await _inject_media_into_text(synthesised, media_items, req_id)
+
+            log.info(f"[{req_id}] Stage 3 complete: final article {len(final_text)} chars")
+
+            # Save final output to disk
+            with open(os.path.join(work_dir, "final_output.md"), "w") as f:
+                f.write(final_text)
+
+            yield _chunk(final_text, finish_reason="stop")
+        else:
+            yield _chunk(synthesised, finish_reason="stop")
+
+    finally:
+        # Cleanup ephemeral work dir
+        try:
+            shutil.rmtree(work_dir)
+            log.info(f"[{req_id}] Cleaned up work dir {work_dir}")
+        except Exception as exc:
+            log.warning(f"[{req_id}] Failed to clean up {work_dir}: {exc}")
+
     yield "data: [DONE]\n\n"
 
 

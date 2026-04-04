@@ -1272,9 +1272,9 @@ async def _rank_videos_by_transcript(
     async def fetch_one(item: dict) -> tuple[dict, str]:
         vid = media_extract_yt_id(item.get("url", ""))
         if not vid:
-            return item, item.get("content", "") or ""
+            return item, item.get("description", "") or ""
         transcript = await fetch_transcript_for_video(vid, max_chars=2000)
-        return item, transcript or item.get("content", "") or ""
+        return item, transcript or item.get("description", "") or ""
 
     pairs = await asyncio.gather(*[fetch_one(v) for v in candidate_videos])
 
@@ -1291,7 +1291,7 @@ async def _rank_videos_by_transcript(
         # Store the enriched transcript back on the item for Stage 3
         enriched = dict(item)
         if transcript:
-            enriched["content"] = transcript[:500]  # keep a useful chunk for media injection
+            enriched["description"] = transcript[:500]  # keep a useful chunk for media injection
         indexed_videos.append(enriched)
 
     if not video_descriptions:
@@ -1329,9 +1329,10 @@ async def _rank_videos_by_transcript(
             ranked: list[dict] = []
             seen_indices: set[int] = set()
             for num in ranking:
-                if isinstance(num, int) and 1 <= num <= len(indexed_videos) and num not in seen_indices:
-                    seen_indices.add(num)
-                    ranked.append(indexed_videos[num - 1])
+                idx = int(num) if isinstance(num, (int, float)) else -1
+                if 1 <= idx <= len(indexed_videos) and idx not in seen_indices:
+                    seen_indices.add(idx)
+                    ranked.append(indexed_videos[idx - 1])
             if ranked:
                 log.info(f"[{req_id}] Video ranking selected {len(ranked)} of {len(indexed_videos)} candidates")
                 return ranked[:max_videos]

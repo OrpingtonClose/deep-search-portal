@@ -88,7 +88,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng; do
+    for session in xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng mcp-exa mcp-firecrawl litellm cftunnel searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -223,6 +223,18 @@ if [ "${SEARCH_BACKEND:-legacy}" = "mcp" ]; then
         echo "MCP SearXNG server starting on port 9814..."
     fi
     sleep 2
+
+    # --- Exa MCP Server ---
+    if ! pgrep -f "mcp_servers/exa/server.py" > /dev/null; then
+        screen -dmS mcp-exa bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal && python3 -m mcp_servers.exa.server 2>&1 | tee /var/log/mcp_exa.log"
+        echo "Exa MCP Server starting..."
+    fi
+
+    # --- Firecrawl MCP Server ---
+    if ! pgrep -f "mcp_servers/firecrawl/server.py" > /dev/null; then
+        screen -dmS mcp-firecrawl bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal && python3 -m mcp_servers.firecrawl.server 2>&1 | tee /var/log/mcp_firecrawl.log"
+        echo "Firecrawl MCP Server starting..."
+    fi
 
     # Start Search Dispatcher (LangGraph router)
     if ! pgrep -f "search_dispatcher" > /dev/null; then

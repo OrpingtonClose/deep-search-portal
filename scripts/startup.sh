@@ -88,7 +88,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng mcp-exa mcp-firecrawl litellm cftunnel searxng; do
+    for session in heretic-proxy mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -295,5 +295,14 @@ if ! pgrep -f "xai_native_proxy.py" > /dev/null; then
     echo "xAI Native Proxy starting..."
 fi
 wait_for_health "http://localhost:9700/health" "xAI Native Proxy" 15
+
+# --- Heretic Proxy (GLM-4.7 Flash Heretic + Firecrawl/Exa/Brave tools) ---
+if [ -z "$VENICE_API_KEY" ]; then
+    echo "WARNING: Skipping Heretic Proxy — VENICE_API_KEY not set"
+elif ! pgrep -f "heretic_proxy.py" > /dev/null; then
+    screen -dmS heretic-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && HERETIC_PROXY_PORT=9950 python3 heretic_proxy.py 2>&1 | tee /var/log/heretic_proxy.log"
+    echo "Heretic Proxy starting..."
+    wait_for_health "http://localhost:9950/health" "Heretic Proxy" 15
+fi
 
 echo "All services started. Portal: ${DOMAIN_CLIENT:-https://deep-search.uk}"

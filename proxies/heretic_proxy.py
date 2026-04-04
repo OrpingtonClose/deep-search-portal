@@ -682,7 +682,7 @@ async def chat_completions(request: Request):
     # Utility requests (title/tag gen) — pass through directly
     if is_utility_request(messages):
         log.info(f"[{req_id}] Utility request — passthrough")
-        if not body.get("stream", True):
+        if not body.get("stream", False):
             result = await utility_passthrough_json(
                 body,
                 req_id=req_id,

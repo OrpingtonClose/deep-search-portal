@@ -1031,7 +1031,7 @@ def _filter_media_by_relevance(
     """Filter media items to keep only those relevant to the combined model responses.
 
     Keeps items where at least 1 significant word (>3 chars) from the media's
-    title+description appears in the combined text, OR >25% word overlap.
+    title+description appears in the combined text.
     Items with no extractable words are kept (benefit of the doubt).
     """
     if not media_items:
@@ -1046,8 +1046,7 @@ def _filter_media_by_relevance(
             kept.append(item)  # no metadata to judge — keep it
             continue
         matching = sum(1 for w in words if w in lower_text)
-        overlap = matching / len(words) if words else 0
-        if matching >= 1 or overlap > 0.25:
+        if matching >= 1:
             kept.append(item)
     discarded = len(media_items) - len(kept)
     if discarded:
@@ -1250,6 +1249,7 @@ async def run_tier_race(
             if extra_images:
                 # Deduplicate against already-collected media by img_src
                 existing_srcs = {m.get("img_src", "") for m in media_items if m.get("type") == "image"}
+                pre_merge_count = len(media_items)
                 for img in extra_images:
                     src = img.get("img_src", "")
                     if src and src not in existing_srcs:
@@ -1261,8 +1261,10 @@ async def run_tier_race(
                             "img_src": src,
                         })
                         existing_srcs.add(src)
-                # Validate the newly added images too
-                media_items = await _validate_image_urls(media_items, req_id)
+                # Validate only the newly added images
+                new_items = media_items[pre_merge_count:]
+                validated_new = await _validate_image_urls(new_items, req_id)
+                media_items = media_items[:pre_merge_count] + validated_new
                 log.info(f"[{req_id}] After subject search: {len(media_items)} total media items")
     except Exception as exc:
         log.warning(f"[{req_id}] Subject-based image search failed (non-fatal): {exc}")

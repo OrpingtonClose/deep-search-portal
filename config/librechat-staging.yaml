@@ -1,0 +1,658 @@
+# Deep Search Portal - LibreChat Staging Configuration
+# This config combines:
+#   1. Production modelSpecs (prefixed with "PROD") as the first groups
+#   2. All backend endpoints — staging endpoints have full model lists (e.g. G0DM0D3 with 59 models)
+#      plus production-only endpoints (xAI Native, Tier Chooser, Wiki, Heretic)
+#
+# Production instance: 33703935 (ssh5.vast.ai) — uses config/librechat-production.yaml
+# Staging instance: 33706037 (ssh7.vast.ai) — uses this config
+version: 1.3.5
+cache: true
+modelSpecs:
+  enforce: false
+  prioritize: true
+  list:
+  - name: prod-xai-grok-420-multiagent
+    label: Grok 4.20 Multi-Agent
+    description: xAI most powerful model. Coordinates parallel reasoning with built-in
+      web and X/Twitter search. 2M token context.
+    group: PROD Simple
+    default: true
+    preset:
+      endpoint: xAI Native
+      model: xai-grok-4.20-multi-agent-0309
+  - name: prod-heretic-uncensored
+    label: Heretic Uncensored
+    description: GLM-4.7 Flash Heretic — zero-censorship model with Firecrawl scraping,
+      Exa semantic search, and Brave web search. Fast, powerful, completely unfiltered.
+    group: PROD Simple
+    preset:
+      endpoint: Heretic
+      model: glm-4.7-flash-heretic
+  - name: prod-ultraplinian-fast
+    label: Consortium Fast
+    description: Races the fastest models from multiple providers. Quick results,
+      unfiltered.
+    group: PROD Experimental
+    preset:
+      endpoint: G0DM0D3
+      model: ultraplinian-fast
+  - name: prod-godmode-classic
+    label: Consortium Regular
+    description: Races 5 top models (Claude, Grok, Gemini, GPT-4, Hermes 405B). Balanced
+      speed and quality.
+    group: PROD Experimental
+    preset:
+      endpoint: G0DM0D3
+      model: godmode-classic
+  - name: prod-ultraplinian-power
+    label: Consortium Powerful
+    description: Races the top 30 most capable models. Slower but strongest possible
+      answer.
+    group: PROD Experimental
+    preset:
+      endpoint: G0DM0D3
+      model: ultraplinian-power
+  - name: prod-ultraplinian-smart
+    label: Consortium Smart
+    description: Races the 20 smartest models. Favours intelligence over speed.
+    group: PROD Experimental
+    preset:
+      endpoint: G0DM0D3
+      model: ultraplinian-smart
+  - name: prod-ultraplinian-standard
+    label: Consortium Standard
+    description: Races a balanced set of 15 models. Good default uncensored option.
+    group: PROD Experimental
+    preset:
+      endpoint: G0DM0D3
+      model: ultraplinian-standard
+  - name: prod-ultraplinian-ultra
+    label: Consortium Ultra
+    description: Races all 55 available models simultaneously. Very slow but maximally
+      thorough.
+    group: PROD Experimental
+    preset:
+      endpoint: G0DM0D3
+      model: ultraplinian-ultra
+  - name: prod-ultraplinian-research
+    label: Consortium Researcher
+    description: Queries many uncensored models in parallel and merges their research
+      outputs.
+    group: PROD Experimental
+    preset:
+      endpoint: G0DM0D3
+      model: ultraplinian-research
+  - name: prod-xai-race-fast
+    label: Grok Race (Fast)
+    description: Races 3 fastest Grok models - Grok 3 Fast, Grok 4.1 Fast, Grok Code.
+    group: PROD Experimental
+    preset:
+      endpoint: xAI Native
+      model: xai-race-fast
+  - name: prod-xai-race-smart
+    label: Grok Race (Smart)
+    description: Races 3 smartest Grok reasoning models - Grok 3, Grok 4.1, Grok 4.20.
+    group: PROD Experimental
+    preset:
+      endpoint: xAI Native
+      model: xai-race-smart
+  - name: prod-xai-race-all
+    label: Grok Race (All)
+    description: Races ALL 8 Grok text models at once and returns the highest-scoring
+      response.
+    group: PROD Experimental
+    preset:
+      endpoint: xAI Native
+      model: xai-race-all
+  - name: prod-tier-race-quick
+    label: Tier Race (Quick)
+    description: Races 9 fast models (Haiku, Flash, GPT-mini, Grok, Mistral, DeepSeek,
+      Qwen, GLM, Kimi). No images/video. Cheapest tier.
+    group: PROD Simple
+    preset:
+      endpoint: Tier Chooser
+      model: tier-race-quick
+  - name: prod-tier-race-medium
+    label: Tier Race (Medium)
+    description: Races 8 balanced models including Claude Sonnet 4.6, Gemini 3 Pro,
+      GPT-5.4, Grok 4.
+    group: PROD Simple
+    preset:
+      endpoint: Tier Chooser
+      model: tier-race-medium
+  - name: prod-tier-race-full-throttle
+    label: Tier Race (Full Throttle)
+    description: Races 9 flagship models (Opus, Gemini Pro, GPT-5.4 High, Grok 4.20,
+      DeepSeek R1, Kimi, GLM, Qwen Max, Mistral). Maximum intelligence.
+    group: PROD Simple
+    preset:
+      endpoint: Tier Chooser
+      model: tier-race-full-throttle
+  - name: prod-deep-researcher
+    label: Miro Deep
+    description: Full research engine. Builds a knowledge net from web, forums, archives,
+      academic databases, dark web. 10-30 min.
+    group: PROD Miro
+    preset:
+      endpoint: Persistent MiroFlow
+      model: persistent-miroflow
+  - name: prod-quick-researcher
+    label: Miro Quick
+    description: Same engine capped at 2 rounds. Useful results in 2-5 minutes.
+    group: PROD Miro
+    preset:
+      endpoint: MiroFlow Sprint
+      model: miroflow-sprint
+  - name: prod-single-agent-research
+    label: Miro Focused
+    description: Single-agent research following one line of inquiry for up to 15
+      steps.
+    group: PROD Miro
+    preset:
+      endpoint: Deep Research
+      model: miroflow
+  - name: prod-swarm-ingest
+    label: Miro Swarm
+    description: Upload large documents and a swarm of agents digests them through
+      collaborative discussion.
+    group: PROD Experimental
+    preset:
+      endpoint: Swarm Deep Search
+      model: swarm-miroflow
+  - name: prod-thinking-chat
+    label: Mistral Thinking
+    description: Mistral Large with visible reasoning. Good for step-by-step explanations.
+    group: PROD Experimental
+    preset:
+      endpoint: Mistral Thinking
+      model: mistral-large-thinking
+  - name: prod-deep-researcher-wiki
+    label: Miro Deep + Wiki
+    description: Same as Miro Deep but also builds a live knowledge encyclopedia as
+      research progresses.
+    group: PROD Experimental
+    preset:
+      endpoint: Persistent MiroFlow Wiki
+      model: persistent-miroflow-wiki
+  - name: prod-quick-researcher-wiki
+    label: Miro Quick + Wiki
+    description: Same as Miro Quick but also builds a live knowledge encyclopedia.
+    group: PROD Experimental
+    preset:
+      endpoint: MiroFlow Sprint Wiki
+      model: miroflow-sprint-wiki
+  - name: prod-xai-grok-420-reasoning
+    label: Grok 4.20 Reasoning
+    description: Extended thinking with 2M context and native web + X/Twitter search.
+    group: PROD Raw — Grok
+    preset:
+      endpoint: xAI Native
+      model: xai-grok-4.20-0309-reasoning
+  - name: prod-xai-grok-420-nonreasoning
+    label: Grok 4.20 Direct
+    description: Same architecture without thinking. Faster for straightforward questions.
+    group: PROD Raw — Grok
+    preset:
+      endpoint: xAI Native
+      model: xai-grok-4.20-0309-non-reasoning
+  - name: prod-xai-grok-41-fast-reasoning
+    label: Grok 4.1 Fast (Thinking)
+    description: Fast reasoning at 1/10th the cost of Grok 4.20.
+    group: PROD Raw — Grok
+    preset:
+      endpoint: xAI Native
+      model: xai-grok-4-1-fast-reasoning
+  - name: prod-xai-grok-41-fast-nonreasoning
+    label: Grok 4.1 Fast (Direct)
+    description: Fastest Grok 4 variant. No reasoning overhead, 2M context.
+    group: PROD Raw — Grok
+    preset:
+      endpoint: xAI Native
+      model: xai-grok-4-1-fast-non-reasoning
+  - name: prod-xai-grok-4-reasoning
+    label: Grok 4 (Thinking)
+    description: Grok 4 with extended reasoning. Step-by-step problem solving.
+    group: PROD Raw — Grok
+    preset:
+      endpoint: xAI Native
+      model: xai-grok-4-fast-reasoning
+  - name: prod-xai-grok-4-nonreasoning
+    label: Grok 4 (Direct)
+    description: Grok 4 without reasoning. Fast and capable, 2M context.
+    group: PROD Raw — Grok
+    preset:
+      endpoint: xAI Native
+      model: xai-grok-4-fast-non-reasoning
+  - name: prod-xai-grok-4-0709
+    label: Grok 4 (July 2025)
+    description: Original Grok 4 release. Strong at math, coding, and analytical tasks.
+    group: PROD Raw — Grok
+    preset:
+      endpoint: xAI Native
+      model: xai-grok-4-0709
+  - name: prod-xai-grok-3
+    label: Grok 3
+    description: Full Grok 3. Excellent tool calling, 131K context.
+    group: PROD Raw — Grok
+    preset:
+      endpoint: xAI Native
+      model: xai-grok-3
+  - name: prod-xai-grok-3-fast
+    label: Grok 3 Fast
+    description: Fast, cheap, proven uncensored. The engine behind Miro research subagents.
+    group: PROD Raw — Grok
+    preset:
+      endpoint: xAI Native
+      model: xai-grok-3-fast
+  - name: prod-xai-grok-3-mini
+    label: Grok 3 Mini
+    description: Compact reasoning model with adjustable thinking depth.
+    group: PROD Raw — Grok
+    preset:
+      endpoint: xAI Native
+      model: xai-grok-3-mini
+  - name: prod-xai-grok-code
+    label: Grok Code
+    description: Purpose-built for code generation, debugging, and software engineering.
+    group: PROD Raw — Grok
+    preset:
+      endpoint: xAI Native
+      model: xai-grok-code-fast-1
+  - name: prod-xai-imagine
+    label: Grok Imagine
+    description: AI image generation from text prompts. $0.02 per image.
+    group: PROD Raw — Grok
+    preset:
+      endpoint: xAI Native
+      model: xai-grok-imagine-image
+  - name: prod-xai-imagine-pro
+    label: Grok Imagine Pro
+    description: Premium image generation with higher quality. $0.07 per image.
+    group: PROD Raw — Grok
+    preset:
+      endpoint: xAI Native
+      model: xai-grok-imagine-image-pro
+  - name: prod-tier-gpt54
+    label: GPT-5.4
+    description: OpenAI GPT-5.4 Chat. Strong all-rounder. Direct to OpenAI API via
+      Tier Chooser.
+    group: PROD Raw — OpenAI
+    preset:
+      endpoint: Tier Chooser
+      model: tier-openai/gpt-5.4
+  - name: prod-tier-gpt5
+    label: GPT-5
+    description: OpenAI GPT-5. Flagship model, highest capability ceiling.
+    group: PROD Raw — OpenAI
+    preset:
+      endpoint: Tier Chooser
+      model: tier-openai/gpt-5
+  - name: prod-tier-claude-sonnet
+    label: Claude Sonnet 4.6
+    description: Anthropic Claude Sonnet 4.6. Frequently the practical winner in blind
+      tests.
+    group: PROD Raw — Anthropic
+    preset:
+      endpoint: Tier Chooser
+      model: tier-anthropic/claude-sonnet-4.6
+  - name: prod-tier-claude-opus
+    label: Claude Opus 4.6
+    description: Anthropic Claude Opus 4.6. Reasoning king with max-effort thinking.
+    group: PROD Raw — Anthropic
+    preset:
+      endpoint: Tier Chooser
+      model: tier-anthropic/claude-opus-4.6
+  - name: prod-tier-gemini-flash
+    label: Gemini 2.5 Flash
+    description: Google Gemini 2.5 Flash. Ultra-fast, 1M context, multimodal.
+    group: PROD Raw — Google
+    preset:
+      endpoint: Tier Chooser
+      model: tier-google/gemini-2.5-flash
+  - name: prod-tier-deepseek-chat
+    label: DeepSeek Chat
+    description: DeepSeek V3. Cheapest strong model available.
+    group: PROD Raw — DeepSeek
+    preset:
+      endpoint: Tier Chooser
+      model: tier-deepseek/deepseek-chat
+  - name: prod-tier-deepseek-r1
+    label: DeepSeek R1
+    description: DeepSeek Reasoner (R1). Math and coding standout with chain-of-thought
+      reasoning.
+    group: PROD Raw — DeepSeek
+    preset:
+      endpoint: Tier Chooser
+      model: tier-deepseek/deepseek-r1
+  - name: prod-tier-grok-420
+    label: Grok 4.20 (via Tier Chooser)
+    description: xAI Grok 4.20 with extended thinking. 2M context. Routed through
+      Tier Chooser.
+    group: PROD Raw — Other
+    preset:
+      endpoint: Tier Chooser
+      model: tier-x-ai/grok-4.20
+endpoints:
+  custom:
+  - name: Mistral Thinking
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:9100/v1
+    models:
+      default:
+      - mistral-large-thinking
+      fetch: true
+    titleConvo: true
+    titleModel: mistral-large-thinking
+    summarize: false
+    maxContextTokens: 1000000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+    modelDisplayLabel: Mistral Thinking
+    iconURL: https://mistral.ai/favicon.ico
+  - name: Persistent MiroFlow
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:9300/v1
+    models:
+      default:
+      - persistent-miroflow
+      fetch: true
+    titleConvo: true
+    titleModel: persistent-miroflow
+    summarize: false
+    maxContextTokens: 1000000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+    modelDisplayLabel: Persistent MiroFlow
+  - name: MiroFlow Sprint
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:9400/v1
+    models:
+      default:
+      - miroflow-sprint
+      fetch: true
+    titleConvo: true
+    titleModel: miroflow-sprint
+    summarize: false
+    maxContextTokens: 1000000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+    modelDisplayLabel: MiroFlow Sprint
+  - name: Deep Research
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:9200/v1
+    models:
+      default:
+      - miroflow
+      fetch: true
+    titleConvo: true
+    titleModel: miroflow
+    summarize: false
+    maxContextTokens: 1000000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+    modelDisplayLabel: Deep Research
+  - name: Swarm Deep Search
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:9500/v1
+    models:
+      default:
+      - swarm-miroflow
+      fetch: true
+    titleConvo: true
+    titleModel: swarm-miroflow
+    summarize: false
+    maxContextTokens: 1000000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+    modelDisplayLabel: Swarm Deep Search
+  - name: G0DM0D3
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:9600/v1
+    models:
+      default:
+      - godmode-classic
+      - ultraplinian-fast
+      - ultraplinian-standard
+      - ultraplinian-smart
+      - ultraplinian-power
+      - ultraplinian-ultra
+      - g0dm0d3-google/gemini-2.5-flash
+      - g0dm0d3-deepseek/deepseek-chat
+      - g0dm0d3-perplexity/sonar
+      - g0dm0d3-meta-llama/llama-3.1-8b-instruct
+      - g0dm0d3-moonshotai/kimi-k2.5
+      - g0dm0d3-x-ai/grok-code-fast-1
+      - g0dm0d3-xiaomi/mimo-v2-flash
+      - g0dm0d3-openai/gpt-oss-20b
+      - g0dm0d3-stepfun/step-3.5-flash
+      - g0dm0d3-nvidia/nemotron-3-nano-30b-a3b
+      - g0dm0d3-anthropic/claude-3.5-sonnet
+      - g0dm0d3-meta-llama/llama-4-scout
+      - g0dm0d3-deepseek/deepseek-v3.2
+      - g0dm0d3-nousresearch/hermes-3-llama-3.1-70b
+      - g0dm0d3-openai/gpt-4o
+      - g0dm0d3-google/gemini-2.5-pro
+      - g0dm0d3-anthropic/claude-sonnet-4
+      - g0dm0d3-anthropic/claude-sonnet-4.6
+      - g0dm0d3-mistralai/mixtral-8x22b-instruct
+      - g0dm0d3-meta-llama/llama-3.3-70b-instruct
+      - g0dm0d3-qwen/qwen-2.5-72b-instruct
+      - g0dm0d3-nousresearch/hermes-4-70b
+      - g0dm0d3-z-ai/glm-5-turbo
+      - g0dm0d3-mistralai/mistral-medium-3.1
+      - g0dm0d3-google/gemma-3-27b-it
+      - g0dm0d3-openai/gpt-5
+      - g0dm0d3-openai/gpt-5.4-chat
+      - g0dm0d3-qwen/qwen3.5-plus-02-15
+      - g0dm0d3-z-ai/glm-5
+      - g0dm0d3-openai/gpt-5.2
+      - g0dm0d3-google/gemini-3-pro-preview
+      - g0dm0d3-google/gemini-3.1-pro-preview
+      - g0dm0d3-anthropic/claude-opus-4.6
+      - g0dm0d3-openai/gpt-oss-120b
+      - g0dm0d3-deepseek/deepseek-r1
+      - g0dm0d3-nvidia/nemotron-3-super-120b-a12b
+      - g0dm0d3-meta-llama/llama-3.1-405b-instruct
+      - g0dm0d3-nousresearch/hermes-4-405b
+      - g0dm0d3-nousresearch/hermes-3-llama-3.1-405b
+      - g0dm0d3-x-ai/grok-4
+      - g0dm0d3-z-ai/glm-4.7
+      - g0dm0d3-meta-llama/llama-4-maverick
+      - g0dm0d3-qwen/qwen3-235b-a22b
+      - g0dm0d3-qwen/qwen3-coder
+      - g0dm0d3-minimax/minimax-m2.5
+      - g0dm0d3-xiaomi/mimo-v2-pro
+      - g0dm0d3-mistralai/mistral-large-2512
+      - g0dm0d3-google/gemini-3-flash-preview
+      - g0dm0d3-moonshotai/kimi-k2
+      - g0dm0d3-x-ai/grok-4-fast
+      - g0dm0d3-x-ai/grok-4.1-fast
+      - g0dm0d3-anthropic/claude-opus-4
+      - g0dm0d3-qwen/qwen-2.5-coder-32b-instruct
+      - g0dm0d3-qwen/qwq-32b
+      - g0dm0d3-mistralai/codestral-2508
+      - ultraplinian-research
+      fetch: false
+    titleConvo: true
+    titleModel: godmode-classic
+    summarize: false
+    forcePrompt: false
+    modelDisplayLabel: G0DM0D3
+    maxContextTokens: 1000000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+  - name: Singular
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:9600/v1
+    models:
+      default:
+      - g0dm0d3-x-ai/grok-4.20-0309-reasoning
+      fetch: false
+    titleConvo: true
+    titleModel: g0dm0d3-x-ai/grok-4.20-0309-reasoning
+    summarize: false
+    forcePrompt: false
+    modelDisplayLabel: Singular
+    maxContextTokens: 2000000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+  - name: Persistent MiroFlow Wiki
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:9800/v1
+    models:
+      default:
+      - persistent-miroflow-wiki
+      fetch: true
+    titleConvo: true
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    titleMethod: completion
+    summarize: false
+    artifacts: true
+    maxContextTokens: 1000000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+  - name: MiroFlow Sprint Wiki
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:9850/v1
+    models:
+      default:
+      - miroflow-sprint-wiki
+      fetch: true
+    titleConvo: true
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    titleMethod: completion
+    summarize: false
+    artifacts: true
+    maxContextTokens: 1000000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+  - name: xAI Native
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:9700/v1
+    models:
+      default:
+      - xai-grok-4.20-0309-reasoning
+      - xai-grok-4.20-0309-non-reasoning
+      - xai-grok-4.20-multi-agent-0309
+      - xai-grok-4-1-fast-reasoning
+      - xai-grok-4-1-fast-non-reasoning
+      - xai-grok-4-fast-reasoning
+      - xai-grok-4-fast-non-reasoning
+      - xai-grok-4-0709
+      - xai-grok-3
+      - xai-grok-3-fast
+      - xai-grok-3-mini
+      - xai-grok-code-fast-1
+      - xai-grok-imagine-image
+      - xai-grok-imagine-image-pro
+      - xai-race-fast
+      - xai-race-smart
+      - xai-race-all
+      fetch: false
+    titleConvo: true
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    titleMethod: completion
+    summarize: false
+    forcePrompt: false
+    maxContextTokens: 2000000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+  - name: Tier Chooser
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:9900/v1
+    models:
+      default:
+      - tier-race-quick
+      - tier-race-medium
+      - tier-race-full-throttle
+      - tier-anthropic/claude-haiku-4.6
+      - tier-anthropic/claude-sonnet-4.6
+      - tier-anthropic/claude-opus-4.6
+      - tier-google/gemini-3.1-flash
+      - tier-google/gemini-3-pro
+      - tier-google/gemini-3.1-pro-preview
+      - tier-openai/gpt-5.4-mini
+      - tier-openai/gpt-5.4
+      - tier-openai/gpt-5.4-high
+      - tier-x-ai/grok-4.20-non-reasoning
+      - tier-x-ai/grok-4
+      - tier-x-ai/grok-4.20
+      - tier-deepseek/deepseek-v3.2-lite
+      - tier-deepseek/deepseek-v3.2
+      - tier-deepseek/deepseek-r1
+      - tier-mistralai/mistral-large-3-efficient
+      - tier-mistralai/mistral-large-4
+      - tier-mistralai/mistral-large-3
+      - tier-qwen/qwen3.5-turbo
+      - tier-qwen/qwen3.5-72b
+      - tier-qwen/qwen3.5-max
+      - tier-z-ai/glm-5-light
+      - tier-z-ai/glm-5
+      - tier-z-ai/glm-5-thinking
+      - tier-moonshotai/kimi-k2.5-instant
+      - tier-moonshotai/kimi-k2.5-thinking
+      fetch: true
+    titleConvo: true
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    titleMethod: completion
+    summarize: false
+    forcePrompt: false
+    maxContextTokens: 2000000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+  - name: Heretic
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:9950/v1
+    models:
+      default:
+      - glm-4.7-flash-heretic
+      fetch: true
+    titleConvo: true
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    titleMethod: completion
+    summarize: false
+    maxContextTokens: 128000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty

@@ -105,22 +105,6 @@ modelSpecs:
         endpoint: "xAI Native"
         model: "xai-race-all"
 
-    - name: "tier-race-quick"
-      label: "Tier Race (Quick)"
-      description: "Races 9 fast models (Haiku, Flash, GPT-mini, Grok, Mistral, DeepSeek, Qwen, GLM, Kimi). No images/video. Cheapest tier."
-      group: "Experimental"
-      preset:
-        endpoint: "Tier Chooser"
-        model: "tier-race-quick"
-
-    - name: "tier-race-medium"
-      label: "Tier Race (Medium)"
-      description: "Races 8 balanced models including Claude Sonnet 4.6, Gemini 3 Pro, GPT-5.4, Grok 4."
-      group: "Experimental"
-      preset:
-        endpoint: "Tier Chooser"
-        model: "tier-race-medium"
-
     - name: "tier-race-full-throttle"
       label: "Tier Race (Full Throttle)"
       description: "Races 9 flagship models (Opus, Gemini Pro, GPT-5.4 High, Grok 4.20, DeepSeek R1, Kimi, GLM, Qwen Max, Mistral). Maximum intelligence."

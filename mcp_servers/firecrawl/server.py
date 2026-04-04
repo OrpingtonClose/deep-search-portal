@@ -79,4 +79,4 @@ async def firecrawl_crawl(url: str, limit: int = 5) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="sse", port=int(os.getenv("MCP_FIRECRAWL_PORT", "9842")))
+    mcp.run(transport="sse", port=int(os.getenv("MCP_FIRECRAWL_PORT", "9815")))

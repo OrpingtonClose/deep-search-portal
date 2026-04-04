@@ -17,6 +17,14 @@ modelSpecs:
         endpoint: "xAI Native"
         model: "xai-grok-4.20-multi-agent-0309"
 
+    - name: "heretic-uncensored"
+      label: "Heretic Uncensored"
+      description: "GLM-4.7 Flash Heretic — zero-censorship model with Firecrawl scraping, Exa semantic search, and Brave web search. Fast, powerful, completely unfiltered."
+      group: "Simple"
+      preset:
+        endpoint: "Heretic"
+        model: "glm-4.7-flash-heretic"
+
     - name: "ultraplinian-fast"
       label: "Consortium Fast"
       description: "Races the fastest models from multiple providers. Quick results, unfiltered."
@@ -594,6 +602,25 @@ endpoints:
       summarize: false
       forcePrompt: false
       maxContextTokens: 2000000
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+
+    - name: "Heretic"
+      apiKey: "not-needed"
+      baseURL: "http://host.docker.internal:9950/v1"
+      models:
+        default:
+          - "glm-4.7-flash-heretic"
+        fetch: true
+      titleConvo: true
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
+      summarize: false
+      maxContextTokens: 128000
       dropParams:
         - "stop"
         - "user"

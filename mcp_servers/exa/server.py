@@ -21,4 +21,4 @@ async def exa_search(query: str, max_results: int = 10) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="sse", port=int(os.getenv("MCP_EXA_PORT", "9841")))
+    mcp.run(transport="sse", port=int(os.getenv("MCP_EXA_PORT", "9814")))

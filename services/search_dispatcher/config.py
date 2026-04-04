@@ -36,6 +36,8 @@ MCP_SERVER_PORTS: dict[str, int] = {
     "whois_rdap": int(os.getenv("MCP_WHOIS_RDAP_PORT", "9838")),
     "bright_data": int(os.getenv("MCP_BRIGHT_DATA_PORT", "9839")),
     "apify": int(os.getenv("MCP_APIFY_PORT", "9840")),
+    "exa": int(os.getenv("MCP_EXA_PORT", "9841")),
+    "firecrawl": int(os.getenv("MCP_FIRECRAWL_PORT", "9842")),
 }
 
 # Dispatcher settings

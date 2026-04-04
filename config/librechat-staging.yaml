@@ -1,6 +1,6 @@
 # Deep Search Portal - LibreChat Staging Configuration
 # This config combines:
-#   1. Production modelSpecs (suffixed with "PROD" in group names) as the first groups
+#   1. Production modelSpecs — the "Simple PROD" group marks the curated production models
 #   2. All backend endpoints — staging endpoints have full model lists
 #      plus production-only endpoints (xAI Native, Tier Chooser, Wiki, Heretic)
 #
@@ -33,7 +33,7 @@ modelSpecs:
     label: Consortium Fast
     description: Races the fastest models from multiple providers. Quick results,
       unfiltered.
-    group: Experimental PROD
+    group: Experimental
     preset:
       endpoint: G0DM0D3
       model: ultraplinian-fast
@@ -41,7 +41,7 @@ modelSpecs:
     label: Consortium Regular
     description: Races 5 top models (Claude, Grok, Gemini, GPT-4, Hermes 405B). Balanced
       speed and quality.
-    group: Experimental PROD
+    group: Experimental
     preset:
       endpoint: G0DM0D3
       model: godmode-classic
@@ -49,21 +49,21 @@ modelSpecs:
     label: Consortium Powerful
     description: Races the top 30 most capable models. Slower but strongest possible
       answer.
-    group: Experimental PROD
+    group: Experimental
     preset:
       endpoint: G0DM0D3
       model: ultraplinian-power
   - name: prod-ultraplinian-smart
     label: Consortium Smart
     description: Races the 20 smartest models. Favours intelligence over speed.
-    group: Experimental PROD
+    group: Experimental
     preset:
       endpoint: G0DM0D3
       model: ultraplinian-smart
   - name: prod-ultraplinian-standard
     label: Consortium Standard
     description: Races a balanced set of 15 models. Good default uncensored option.
-    group: Experimental PROD
+    group: Experimental
     preset:
       endpoint: G0DM0D3
       model: ultraplinian-standard
@@ -71,7 +71,7 @@ modelSpecs:
     label: Consortium Ultra
     description: Races all 55 available models simultaneously. Very slow but maximally
       thorough.
-    group: Experimental PROD
+    group: Experimental
     preset:
       endpoint: G0DM0D3
       model: ultraplinian-ultra
@@ -79,21 +79,21 @@ modelSpecs:
     label: Consortium Researcher
     description: Queries many uncensored models in parallel and merges their research
       outputs.
-    group: Experimental PROD
+    group: Experimental
     preset:
       endpoint: G0DM0D3
       model: ultraplinian-research
   - name: prod-xai-race-fast
     label: Grok Race (Fast)
     description: Races 3 fastest Grok models - Grok 3 Fast, Grok 4.1 Fast, Grok Code.
-    group: Experimental PROD
+    group: Experimental
     preset:
       endpoint: xAI Native
       model: xai-race-fast
   - name: prod-xai-race-smart
     label: Grok Race (Smart)
     description: Races 3 smartest Grok reasoning models - Grok 3, Grok 4.1, Grok 4.20.
-    group: Experimental PROD
+    group: Experimental
     preset:
       endpoint: xAI Native
       model: xai-race-smart
@@ -101,7 +101,7 @@ modelSpecs:
     label: Grok Race (All)
     description: Races ALL 8 Grok text models at once and returns the highest-scoring
       response.
-    group: Experimental PROD
+    group: Experimental
     preset:
       endpoint: xAI Native
       model: xai-race-all
@@ -117,14 +117,14 @@ modelSpecs:
     label: Miro Deep
     description: Full research engine. Builds a knowledge net from web, forums, archives,
       academic databases, dark web. 10-30 min.
-    group: Miro PROD
+    group: Miro
     preset:
       endpoint: Persistent MiroFlow
       model: persistent-miroflow
   - name: prod-quick-researcher
     label: Miro Quick
     description: Same engine capped at 2 rounds. Useful results in 2-5 minutes.
-    group: Miro PROD
+    group: Miro
     preset:
       endpoint: MiroFlow Sprint
       model: miroflow-sprint
@@ -132,7 +132,7 @@ modelSpecs:
     label: Miro Focused
     description: Single-agent research following one line of inquiry for up to 15
       steps.
-    group: Miro PROD
+    group: Miro
     preset:
       endpoint: Deep Research
       model: miroflow
@@ -140,14 +140,14 @@ modelSpecs:
     label: Miro Swarm
     description: Upload large documents and a swarm of agents digests them through
       collaborative discussion.
-    group: Experimental PROD
+    group: Experimental
     preset:
       endpoint: Swarm Deep Search
       model: swarm-miroflow
   - name: prod-thinking-chat
     label: Mistral Thinking
     description: Mistral Large with visible reasoning. Good for step-by-step explanations.
-    group: Experimental PROD
+    group: Experimental
     preset:
       endpoint: Mistral Thinking
       model: mistral-large-thinking
@@ -155,105 +155,105 @@ modelSpecs:
     label: Miro Deep + Wiki
     description: Same as Miro Deep but also builds a live knowledge encyclopedia as
       research progresses.
-    group: Experimental PROD
+    group: Experimental
     preset:
       endpoint: Persistent MiroFlow Wiki
       model: persistent-miroflow-wiki
   - name: prod-quick-researcher-wiki
     label: Miro Quick + Wiki
     description: Same as Miro Quick but also builds a live knowledge encyclopedia.
-    group: Experimental PROD
+    group: Experimental
     preset:
       endpoint: MiroFlow Sprint Wiki
       model: miroflow-sprint-wiki
   - name: prod-xai-grok-420-reasoning
     label: Grok 4.20 Reasoning
     description: Extended thinking with 2M context and native web + X/Twitter search.
-    group: Raw — Grok PROD
+    group: Raw — Grok
     preset:
       endpoint: xAI Native
       model: xai-grok-4.20-0309-reasoning
   - name: prod-xai-grok-420-nonreasoning
     label: Grok 4.20 Direct
     description: Same architecture without thinking. Faster for straightforward questions.
-    group: Raw — Grok PROD
+    group: Raw — Grok
     preset:
       endpoint: xAI Native
       model: xai-grok-4.20-0309-non-reasoning
   - name: prod-xai-grok-41-fast-reasoning
     label: Grok 4.1 Fast (Thinking)
     description: Fast reasoning at 1/10th the cost of Grok 4.20.
-    group: Raw — Grok PROD
+    group: Raw — Grok
     preset:
       endpoint: xAI Native
       model: xai-grok-4-1-fast-reasoning
   - name: prod-xai-grok-41-fast-nonreasoning
     label: Grok 4.1 Fast (Direct)
     description: Fastest Grok 4 variant. No reasoning overhead, 2M context.
-    group: Raw — Grok PROD
+    group: Raw — Grok
     preset:
       endpoint: xAI Native
       model: xai-grok-4-1-fast-non-reasoning
   - name: prod-xai-grok-4-reasoning
     label: Grok 4 (Thinking)
     description: Grok 4 with extended reasoning. Step-by-step problem solving.
-    group: Raw — Grok PROD
+    group: Raw — Grok
     preset:
       endpoint: xAI Native
       model: xai-grok-4-fast-reasoning
   - name: prod-xai-grok-4-nonreasoning
     label: Grok 4 (Direct)
     description: Grok 4 without reasoning. Fast and capable, 2M context.
-    group: Raw — Grok PROD
+    group: Raw — Grok
     preset:
       endpoint: xAI Native
       model: xai-grok-4-fast-non-reasoning
   - name: prod-xai-grok-4-0709
     label: Grok 4 (July 2025)
     description: Original Grok 4 release. Strong at math, coding, and analytical tasks.
-    group: Raw — Grok PROD
+    group: Raw — Grok
     preset:
       endpoint: xAI Native
       model: xai-grok-4-0709
   - name: prod-xai-grok-3
     label: Grok 3
     description: Full Grok 3. Excellent tool calling, 131K context.
-    group: Raw — Grok PROD
+    group: Raw — Grok
     preset:
       endpoint: xAI Native
       model: xai-grok-3
   - name: prod-xai-grok-3-fast
     label: Grok 3 Fast
     description: Fast, cheap, proven uncensored. The engine behind Miro research subagents.
-    group: Raw — Grok PROD
+    group: Raw — Grok
     preset:
       endpoint: xAI Native
       model: xai-grok-3-fast
   - name: prod-xai-grok-3-mini
     label: Grok 3 Mini
     description: Compact reasoning model with adjustable thinking depth.
-    group: Raw — Grok PROD
+    group: Raw — Grok
     preset:
       endpoint: xAI Native
       model: xai-grok-3-mini
   - name: prod-xai-grok-code
     label: Grok Code
     description: Purpose-built for code generation, debugging, and software engineering.
-    group: Raw — Grok PROD
+    group: Raw — Grok
     preset:
       endpoint: xAI Native
       model: xai-grok-code-fast-1
   - name: prod-xai-imagine
     label: Grok Imagine
     description: AI image generation from text prompts. $0.02 per image.
-    group: Raw — Grok PROD
+    group: Raw — Grok
     preset:
       endpoint: xAI Native
       model: xai-grok-imagine-image
   - name: prod-xai-imagine-pro
     label: Grok Imagine Pro
     description: Premium image generation with higher quality. $0.07 per image.
-    group: Raw — Grok PROD
+    group: Raw — Grok
     preset:
       endpoint: xAI Native
       model: xai-grok-imagine-image-pro
@@ -261,14 +261,14 @@ modelSpecs:
     label: GPT-5.4
     description: OpenAI GPT-5.4 Chat. Strong all-rounder. Direct to OpenAI API via
       Tier Chooser.
-    group: Raw — OpenAI PROD
+    group: Raw — OpenAI
     preset:
       endpoint: Tier Chooser
       model: tier-openai/gpt-5.4
   - name: prod-tier-gpt5
     label: GPT-5
     description: OpenAI GPT-5. Flagship model, highest capability ceiling.
-    group: Raw — OpenAI PROD
+    group: Raw — OpenAI
     preset:
       endpoint: Tier Chooser
       model: tier-openai/gpt-5
@@ -276,28 +276,28 @@ modelSpecs:
     label: Claude Sonnet 4.6
     description: Anthropic Claude Sonnet 4.6. Frequently the practical winner in blind
       tests.
-    group: Raw — Anthropic PROD
+    group: Raw — Anthropic
     preset:
       endpoint: Tier Chooser
       model: tier-anthropic/claude-sonnet-4.6
   - name: prod-tier-claude-opus
     label: Claude Opus 4.6
     description: Anthropic Claude Opus 4.6. Reasoning king with max-effort thinking.
-    group: Raw — Anthropic PROD
+    group: Raw — Anthropic
     preset:
       endpoint: Tier Chooser
       model: tier-anthropic/claude-opus-4.6
   - name: prod-tier-gemini-flash
     label: Gemini 2.5 Flash
     description: Google Gemini 2.5 Flash. Ultra-fast, 1M context, multimodal.
-    group: Raw — Google PROD
+    group: Raw — Google
     preset:
       endpoint: Tier Chooser
       model: tier-google/gemini-2.5-flash
   - name: prod-tier-deepseek-chat
     label: DeepSeek Chat
     description: DeepSeek V3. Cheapest strong model available.
-    group: Raw — DeepSeek PROD
+    group: Raw — DeepSeek
     preset:
       endpoint: Tier Chooser
       model: tier-deepseek/deepseek-chat
@@ -305,7 +305,7 @@ modelSpecs:
     label: DeepSeek R1
     description: DeepSeek Reasoner (R1). Math and coding standout with chain-of-thought
       reasoning.
-    group: Raw — DeepSeek PROD
+    group: Raw — DeepSeek
     preset:
       endpoint: Tier Chooser
       model: tier-deepseek/deepseek-r1
@@ -313,7 +313,7 @@ modelSpecs:
     label: Grok 4.20 (via Tier Chooser)
     description: xAI Grok 4.20 with extended thinking. 2M context. Routed through
       Tier Chooser.
-    group: Raw — Other PROD
+    group: Raw — Other
     preset:
       endpoint: Tier Chooser
       model: tier-x-ai/grok-4.20

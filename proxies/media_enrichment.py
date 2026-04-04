@@ -331,7 +331,7 @@ async def _transcriptapi_search(query: str, max_results: int) -> list[dict]:
 async def _fetch_transcript_snippet(
     client, headers: dict, video_id: str, max_chars: int = 300
 ) -> str:
-    """Fetch transcript for a video and return a short spoken-content snippet."""
+    """Fetch transcript for a video and return a spoken-content snippet."""
     try:
         resp = await client.get(
             f"{TRANSCRIPTAPI_BASE}/youtube/transcript",
@@ -363,6 +363,33 @@ async def _fetch_transcript_snippet(
         return " | ".join(snippets)
     except Exception:
         return ""
+
+
+async def fetch_transcript_for_video(
+    video_id: str, max_chars: int = 2000
+) -> str:
+    """Public helper — fetch a transcript snippet for a given YouTube video ID.
+
+    Returns up to *max_chars* of timestamped transcript text, or empty string
+    on failure.  Used by the video-ranking pipeline in ``tier_chooser_proxy``
+    to score videos by their spoken content.
+    """
+    if not TRANSCRIPTAPI_ENABLED:
+        return ""
+    client = http_client()
+    headers = {"Authorization": f"Bearer {TRANSCRIPTAPI_KEY}"}
+    return await _fetch_transcript_snippet(client, headers, video_id, max_chars)
+
+
+async def search_youtube_videos(
+    query: str, max_results: int = 6
+) -> list[dict]:
+    """Public helper — search YouTube via TranscriptAPI and return normalised results.
+
+    Each result dict has keys: url, title, content (transcript snippet), _source.
+    Used by the subject-based video search in ``tier_chooser_proxy``.
+    """
+    return await _transcriptapi_search(query, max_results)
 
 
 def _fmt_ts(seconds) -> str:

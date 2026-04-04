@@ -40,7 +40,14 @@ from shared import (
 )
 import knowledge_client
 from search_providers import _search_searxng
-from media_enrichment import enrich_with_media, enrich_with_media_structured
+from media_enrichment import (
+    enrich_with_media,
+    enrich_with_media_structured,
+    fetch_transcript_for_video,
+    search_youtube_videos,
+    _extract_youtube_id as media_extract_yt_id,
+    MEDIA_ENRICHMENT_MAX_VIDEOS,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1140,6 +1147,200 @@ def _filter_media_by_relevance(
 
 
 
+# ============================================================================
+# Video Quality — content-aware search + transcript-based ranking
+# ============================================================================
+
+_VIDEO_SUBJECTS_PROMPT = """You are a video editor. Given a finished article, identify 3-5 specific topics, \
+concepts, or demonstrations mentioned in the article that would benefit from an \
+accompanying YouTube video (tutorials, explainers, demonstrations, lectures, etc.).
+
+For each, output a short YouTube search query (3-8 words) that would find a \
+highly relevant, informative video whose spoken content directly addresses that \
+part of the article.
+
+Rules:
+- Pick topics where a video would genuinely ADD information (demonstrations, \
+  step-by-step guides, expert explanations, visual processes)
+- Make queries specific enough to find niche, on-topic videos — not generic \
+  "best of" compilations
+- Output ONLY a JSON array of strings, e.g. ["query1", "query2", "query3"]
+- No explanation, no markdown fences, just the JSON array"""
+
+
+async def _extract_video_subjects(
+    synthesised_text: str,
+    req_id: str,
+) -> list[str]:
+    """Use the synthesis model to identify topics in the article that deserve videos."""
+    messages = [
+        {"role": "system", "content": _VIDEO_SUBJECTS_PROMPT},
+        {"role": "user", "content": f"Article:\n{synthesised_text[:6000]}"},
+    ]
+    raw = await call_model(
+        SYNTHESIS_MODEL, messages,
+        temperature=0.1, max_tokens=8192, req_id=req_id,
+    )
+    if not raw:
+        return []
+    result = raw if isinstance(raw, str) else ""
+    if not result:
+        return []
+    try:
+        cleaned = result.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+            cleaned = re.sub(r'\s*```$', '', cleaned)
+        if cleaned.startswith("[") and not cleaned.endswith("]"):
+            cleaned = cleaned.rstrip().rstrip(",") + "]"
+            log.info(f"[{req_id}] Repaired truncated JSON array for video subjects")
+        subjects = json.loads(cleaned)
+        if isinstance(subjects, list):
+            return [s for s in subjects if isinstance(s, str)][:5]
+    except (json.JSONDecodeError, ValueError):
+        log.warning(f"[{req_id}] Video subject extraction JSON parse error: {result[:300]}")
+    return []
+
+
+async def _search_videos_for_subjects(
+    subjects: list[str],
+    req_id: str,
+) -> list[dict]:
+    """Search YouTube for each video subject via TranscriptAPI.
+
+    Returns a flat list of normalised video dicts (url, title, content, _source).
+    """
+    async def search_one(subject: str) -> list[dict]:
+        try:
+            results = await search_youtube_videos(subject, max_results=3)
+            for r in results:
+                r["_subject"] = subject
+            return results
+        except Exception as e:
+            log.warning(f"[{req_id}] Video search for '{subject}' failed: {e}")
+            return []
+
+    tasks = [asyncio.create_task(search_one(s)) for s in subjects]
+    all_results = await asyncio.gather(*tasks)
+    # Flatten and deduplicate by video ID
+    seen_ids: set[str] = set()
+    merged: list[dict] = []
+    for results in all_results:
+        for r in results:
+            vid = media_extract_yt_id(r.get("url", ""))
+            key = vid or r.get("url", "")
+            if key and key not in seen_ids:
+                seen_ids.add(key)
+                merged.append(r)
+    return merged
+
+
+_VIDEO_RANK_PROMPT = """You are a video relevance judge.  You receive an article and a list of \
+candidate YouTube videos with their transcript excerpts.
+
+Your job: rank the videos by how well their spoken content complements the \
+article.  A perfect video directly explains, demonstrates, or deepens a topic \
+covered in the article.  A poor video is only tangentially related or covers \
+a different subject entirely.
+
+Output a JSON array of video numbers (1-based) in order from MOST relevant to \
+LEAST relevant. Only include videos that are genuinely relevant — omit poor matches.
+
+Example output: [3, 1, 5]
+
+Rules:
+- Judge by TRANSCRIPT CONTENT, not just title
+- A video whose transcript closely mirrors a section of the article is ideal
+- Omit videos that are off-topic, clickbait, or only loosely related
+- Output ONLY the JSON array, no explanation"""
+
+
+async def _rank_videos_by_transcript(
+    synthesised_text: str,
+    candidate_videos: list[dict],
+    req_id: str,
+    max_videos: int = 6,
+) -> list[dict]:
+    """Fetch transcripts for candidate videos and use LLM to rank by relevance.
+
+    Returns the top *max_videos* videos, reordered by relevance to the article.
+    """
+    if not candidate_videos:
+        return []
+
+    # Fetch transcripts in parallel for all candidates
+    async def fetch_one(item: dict) -> tuple[dict, str]:
+        vid = media_extract_yt_id(item.get("url", ""))
+        if not vid:
+            return item, item.get("description", "") or ""
+        transcript = await fetch_transcript_for_video(vid, max_chars=2000)
+        return item, transcript or item.get("description", "") or ""
+
+    pairs = await asyncio.gather(*[fetch_one(v) for v in candidate_videos])
+
+    # Build the candidate list for the LLM
+    video_descriptions: list[str] = []
+    indexed_videos: list[dict] = []
+    for idx, (item, transcript) in enumerate(pairs, 1):
+        title = item.get("title", "Unknown")
+        # Use transcript if available, fall back to existing content/description
+        content_preview = transcript[:1500] if transcript else "(no transcript available)"
+        video_descriptions.append(
+            f"VIDEO #{idx}: \"{title}\"\n  Transcript: {content_preview}"
+        )
+        # Store the enriched transcript back on the item for Stage 3
+        enriched = dict(item)
+        if transcript:
+            enriched["description"] = transcript[:500]  # keep a useful chunk for media injection
+        indexed_videos.append(enriched)
+
+    if not video_descriptions:
+        return candidate_videos[:max_videos]
+
+    user_content = (
+        f"ARTICLE (first 4000 chars):\n{synthesised_text[:4000]}\n\n"
+        f"CANDIDATE VIDEOS:\n" + "\n\n".join(video_descriptions) +
+        "\n\nRank the videos by relevance. Output the JSON array of video numbers."
+    )
+
+    messages = [
+        {"role": "system", "content": _VIDEO_RANK_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+    raw = await call_model(
+        SYNTHESIS_MODEL, messages,
+        temperature=0.1, max_tokens=8192, req_id=req_id,
+    )
+
+    if not raw:
+        log.warning(f"[{req_id}] Video ranking LLM returned empty — using original order")
+        return candidate_videos[:max_videos]
+
+    try:
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+            cleaned = re.sub(r'\s*```$', '', cleaned)
+        if cleaned.startswith("[") and not cleaned.endswith("]"):
+            cleaned = cleaned.rstrip().rstrip(",") + "]"
+        ranking = json.loads(cleaned)
+        if isinstance(ranking, list):
+            ranked: list[dict] = []
+            seen_indices: set[int] = set()
+            for num in ranking:
+                idx = int(num) if isinstance(num, (int, float)) else -1
+                if 1 <= idx <= len(indexed_videos) and idx not in seen_indices:
+                    seen_indices.add(idx)
+                    ranked.append(indexed_videos[idx - 1])
+            if ranked:
+                log.info(f"[{req_id}] Video ranking selected {len(ranked)} of {len(indexed_videos)} candidates")
+                return ranked[:max_videos]
+    except (json.JSONDecodeError, ValueError):
+        log.warning(f"[{req_id}] Video ranking JSON parse error: {raw[:300]}")
+
+    return candidate_videos[:max_videos]
+
 
 # ============================================================================
 # Tier Race — race models, store in Neo4j, synthesise the richest answer
@@ -1349,6 +1550,55 @@ async def run_tier_race(
         # Save synthesis to disk
         with open(os.path.join(work_dir, "synthesis.md"), "w") as f:
             f.write(synthesised)
+
+        # --- Phase 2: Content-aware video search + transcript ranking ---
+        if not is_quick_tier:
+            try:
+                yield _chunk("", reasoning_content="  Selecting best-matching videos...\n")
+                video_subjects = await _extract_video_subjects(synthesised, req_id)
+                if video_subjects:
+                    log.info(f"[{req_id}] Video subjects extracted: {video_subjects}")
+                    # Search YouTube for each subject
+                    subject_videos = await _search_videos_for_subjects(video_subjects, req_id)
+                    log.info(f"[{req_id}] Subject search found {len(subject_videos)} candidate videos")
+
+                    # Merge with Phase 1 videos (existing media_items)
+                    existing_video_ids = set()
+                    for m in media_items:
+                        if m.get("type") == "video":
+                            vid = media_extract_yt_id(m.get("url", ""))
+                            if vid:
+                                existing_video_ids.add(vid)
+
+                    # Add new subject-found videos to candidates
+                    all_candidate_videos = [m for m in media_items if m.get("type") == "video"]
+                    for sv in subject_videos:
+                        vid = media_extract_yt_id(sv.get("url", ""))
+                        if vid and vid not in existing_video_ids:
+                            existing_video_ids.add(vid)
+                            all_candidate_videos.append({
+                                "type": "video",
+                                "url": sv["url"],
+                                "title": sv.get("title", "Video"),
+                                "description": sv.get("content", ""),
+                                "video_id": vid,
+                                "thumbnail": f"https://img.youtube.com/vi/{vid}/mqdefault.jpg",
+                            })
+
+                    # Rank ALL candidate videos by transcript relevance
+                    if all_candidate_videos:
+                        ranked_videos = await _rank_videos_by_transcript(
+                            synthesised, all_candidate_videos, req_id,
+                            max_videos=MEDIA_ENRICHMENT_MAX_VIDEOS,
+                        )
+                        # Replace video items in media_items with ranked selection
+                        non_video_items = [m for m in media_items if m.get("type") != "video"]
+                        media_items = non_video_items + ranked_videos
+                        log.info(f"[{req_id}] After video ranking: {len(ranked_videos)} videos selected")
+                else:
+                    log.info(f"[{req_id}] No video subjects extracted — keeping original videos")
+            except Exception as exc:
+                log.warning(f"[{req_id}] Video quality pipeline failed (non-fatal): {exc}")
 
         # --- Stage 3: Inject media into the synthesised text ---
         if media_items:

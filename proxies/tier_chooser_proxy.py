@@ -63,6 +63,12 @@ KNOWLEDGE_NAMESPACE = os.getenv("TIER_CHOOSER_NAMESPACE", "tier-chooser")
 
 IMAGE_ENRICHMENT_ENABLED = os.getenv("TIER_CHOOSER_IMAGE_ENRICHMENT", "true").lower() in ("1", "true", "yes")
 
+# Deployment environment: "production" or "staging" (default).
+# Controls which models appear in the /v1/models dropdown.
+#   production: only Grok 4.20 (default) + Smart Combined (full-throttle race)
+#   staging:    all tiers and individual models
+DEPLOYMENT_ENV = os.getenv("DEPLOYMENT_ENV", "staging").lower()
+
 # ---------------------------------------------------------------------------
 # Provider Registry — route models to their native APIs
 # ---------------------------------------------------------------------------
@@ -158,7 +164,7 @@ def resolve_provider(model: str) -> tuple[str, str, str]:
 
 
 log.info(
-    f"Config: openrouter={OPENROUTER_BASE}, port={LISTEN_PORT}, "
+    f"Config: env={DEPLOYMENT_ENV}, openrouter={OPENROUTER_BASE}, port={LISTEN_PORT}, "
     f"max_concurrent={MAX_CONCURRENT_MODELS}, timeout={MODEL_TIMEOUT}s"
 )
 
@@ -1329,27 +1335,57 @@ async def _stream_single_model(
 # /v1/models endpoint
 # ============================================================================
 
+# ---------------------------------------------------------------------------
+# Production model list — available on BOTH production and staging
+# ---------------------------------------------------------------------------
+_PRODUCTION_MODELS = [
+    {
+        "id": "tier-x-ai/grok-4.20",
+        "object": "model",
+        "created": 1700000000,
+        "owned_by": "tier-chooser",
+        "name": "Grok 4.20",
+    },
+    {
+        "id": "tier-race-full-throttle",
+        "object": "model",
+        "created": 1700000000,
+        "owned_by": "tier-chooser",
+        "name": "Smart Combined",
+    },
+]
+
+
 def build_model_list() -> list[dict]:
-    models = []
-    # Race modes
-    for tier_name in TIER_MODELS:
-        models.append({
-            "id": f"tier-race-{tier_name}",
-            "object": "model",
-            "created": 1700000000,
-            "owned_by": "tier-chooser",
-            "name": f"Tier Race: {tier_name.replace('-', ' ').title()}",
-        })
-    # Individual models within each tier
-    for tier_name, tier_models in TIER_MODELS.items():
-        for m in tier_models:
+    # Production models are always included (both prod + staging)
+    models = list(_PRODUCTION_MODELS)
+
+    if DEPLOYMENT_ENV != "production":
+        # Staging-only: add all tier races and individual models
+        for tier_name in TIER_MODELS:
+            # Skip full-throttle race — already in production models as "Smart Combined"
+            if tier_name == "full-throttle":
+                continue
             models.append({
-                "id": f"tier-{m}",
+                "id": f"tier-race-{tier_name}",
                 "object": "model",
                 "created": 1700000000,
                 "owned_by": "tier-chooser",
-                "name": f"[{tier_name.replace('-', ' ').title()}] {m}",
+                "name": f"Tier Race: {tier_name.replace('-', ' ').title()}",
             })
+        # Individual models within each tier
+        for tier_name, tier_models in TIER_MODELS.items():
+            for m in tier_models:
+                # Skip grok-4.20 individual — already in production models
+                if m == "x-ai/grok-4.20":
+                    continue
+                models.append({
+                    "id": f"tier-{m}",
+                    "object": "model",
+                    "created": 1700000000,
+                    "owned_by": "tier-chooser",
+                    "name": f"[{tier_name.replace('-', ' ').title()}] {m}",
+                })
     return models
 
 
@@ -1365,7 +1401,7 @@ register_standard_routes(
     service_name="tier-chooser",
     log_dir=LOG_DIR,
     tracker=tracker,
-    health_extras={"port": LISTEN_PORT, "tiers": list(TIER_MODELS.keys())},
+    health_extras={"port": LISTEN_PORT, "env": DEPLOYMENT_ENV, "tiers": list(TIER_MODELS.keys())},
 )
 register_ingest_routes(app, INGEST_DB, log)
 

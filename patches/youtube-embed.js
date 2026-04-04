@@ -66,6 +66,10 @@
 
   function scanNode(root) {
     if (!root || !root.querySelectorAll) return;
+    // Check if root itself is a matching anchor
+    if (root.matches && root.matches('a[href*="youtube.com"], a[href*="youtu.be"]')) {
+      transformLink(root);
+    }
     var anchors = root.querySelectorAll('a[href*="youtube.com"], a[href*="youtu.be"]');
     for (var i = 0; i < anchors.length; i++) {
       transformLink(anchors[i]);

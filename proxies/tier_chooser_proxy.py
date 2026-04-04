@@ -475,6 +475,7 @@ _THINKING_MODELS = {
 # Models that do not support custom temperature (only default=1)
 _NO_CUSTOM_TEMPERATURE_MODELS = {
     "gpt-5",
+    "o3",
 }
 
 

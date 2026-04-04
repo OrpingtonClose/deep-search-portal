@@ -9,6 +9,13 @@
  * img.youtube.com (the thumbnail pattern the tier-chooser emits).
  *
  * Uses MutationObserver to catch dynamically rendered content (SSE streaming).
+ *
+ * Mobile fixes:
+ *  - Escapes <p> parents before inserting (block-in-inline is invalid HTML
+ *    and mobile browsers handle it inconsistently — some collapse the embed).
+ *  - Adds playsinline for iOS Safari inline playback.
+ *  - Uses width:100% explicitly so percentage padding resolves correctly on
+ *    narrow viewports.
  */
 (function () {
   'use strict';
@@ -24,14 +31,15 @@
     var wrapper = document.createElement('div');
     wrapper.className = 'yt-embed-wrapper';
     wrapper.style.cssText =
-      'position:relative;padding-bottom:56.25%;height:0;overflow:hidden;' +
+      'position:relative;width:100%;padding-bottom:56.25%;height:0;overflow:hidden;' +
       'max-width:100%;margin:1em 0;border-radius:8px;';
 
     var iframe = document.createElement('iframe');
-    iframe.src = 'https://www.youtube.com/embed/' + videoId + '?rel=0';
+    iframe.src = 'https://www.youtube.com/embed/' + videoId + '?rel=0&playsinline=1';
     iframe.title = title || 'YouTube video';
     iframe.setAttribute('frameborder', '0');
     iframe.setAttribute('allowfullscreen', '');
+    iframe.setAttribute('playsinline', '');
     iframe.setAttribute(
       'allow',
       'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture'
@@ -41,6 +49,27 @@
 
     wrapper.appendChild(iframe);
     return wrapper;
+  }
+
+  /**
+   * Find a suitable insertion point for the block-level embed wrapper.
+   * If the anchor lives inside a <p> (react-markdown wraps images in <p>),
+   * we insert the embed after that <p> instead of replacing the anchor
+   * in-place — a <div> inside a <p> is invalid HTML and mobile browsers
+   * may collapse it.  Returns {parent, ref} where the embed should be
+   * inserted via parent.insertBefore(embed, ref).
+   */
+  function findInsertionPoint(anchor) {
+    var node = anchor;
+    while (node.parentNode && node.parentNode !== document.body) {
+      if (node.parentNode.tagName === 'P') {
+        // Insert embed after the <p> that contains the anchor
+        return { parent: node.parentNode.parentNode, ref: node.parentNode.nextSibling };
+      }
+      node = node.parentNode;
+    }
+    // No <p> ancestor — safe to replace in-place
+    return null;
   }
 
   function transformLink(anchor) {
@@ -61,7 +90,14 @@
     var title = img.getAttribute('alt') || anchor.textContent || '';
     var embed = createEmbed(videoId, title);
 
-    anchor.parentNode.replaceChild(embed, anchor);
+    var insertion = findInsertionPoint(anchor);
+    if (insertion) {
+      // Remove the anchor from its <p> and insert embed after the <p>
+      anchor.parentNode.removeChild(anchor);
+      insertion.parent.insertBefore(embed, insertion.ref);
+    } else {
+      anchor.parentNode.replaceChild(embed, anchor);
+    }
   }
 
   function scanNode(root) {

@@ -58,7 +58,7 @@ MAX_CONCURRENT_MODELS = env_int("TIER_CHOOSER_MAX_CONCURRENT", 10, minimum=1)
 MODEL_TIMEOUT = int(os.getenv("TIER_CHOOSER_MODEL_TIMEOUT", "90"))
 
 # Synthesis configuration
-SYNTHESIS_MODEL = os.getenv("TIER_CHOOSER_SYNTHESIS_MODEL", "google/gemini-3.1-pro")
+SYNTHESIS_MODEL = os.getenv("TIER_CHOOSER_SYNTHESIS_MODEL", "google/gemini-3.1-flash")
 KNOWLEDGE_NAMESPACE = os.getenv("TIER_CHOOSER_NAMESPACE", "tier-chooser")
 
 IMAGE_ENRICHMENT_ENABLED = os.getenv("TIER_CHOOSER_IMAGE_ENRICHMENT", "true").lower() in ("1", "true", "yes")
@@ -198,7 +198,7 @@ TIER_MODELS = {
         "openai/o3",                        # Highest-effort OpenAI reasoning model
         "x-ai/grok-4.20",                 # Competitive frontier model
         "deepseek/deepseek-reasoner",      # Top reasoning/value performer
-        "qwen/qwen3-235b-a22b",           # Massive MoE power
+        "qwen/qwq-plus",                  # Qwen thinking model (reasoning)
         "z-ai/glm-5",                     # Max-effort GLM variant
     ],
 }
@@ -470,11 +470,13 @@ _THINKING_MODELS = {
     "qwen3-235b-a22b", "qwen3-235b-a22b-instruct-2507",
     "qwen3-235b-a22b-thinking-2507",
     "qwen3-max",
+    "qwq-plus",
 }
 
 # Models that do not support custom temperature (only default=1)
 _NO_CUSTOM_TEMPERATURE_MODELS = {
     "gpt-5",
+    "o3",
 }
 
 
@@ -723,8 +725,13 @@ Rules:
 _SYNTHESIS_MEDIA_ADDENDUM = """
 
 You have been given a set of IMAGES and VIDEOS found for the user's query.
-DISTRIBUTE them throughout the ENTIRE text like a well-illustrated article.
-Place each image/video immediately after the paragraph it illustrates.
+Your goal is to produce a beautifully illustrated article where media is woven
+naturally into the text — like a high-quality magazine or encyclopedia entry.
+
+Use as many or as few media items as the content calls for.  Let the text guide
+placement: every image or video should feel like it belongs exactly where it is,
+adding information or aesthetic appeal.  There is no fixed number — saturate the
+text pleasurably so the reader enjoys scrolling through it.
 
 - For images: use `![<brief alt text>](<img_src URL>)` placed right after the
   paragraph the image illustrates.  Verify the image title/description actually
@@ -736,11 +743,14 @@ Place each image/video immediately after the paragraph it illustrates.
   `<iframe width="560" height="315" src="https://www.youtube.com/embed/<video_id>" frameborder="0" allowfullscreen></iframe>`
   `:::`
 - For non-YouTube videos: use `[▶ <title>](<url>)` as a clickable link.
-- Try to place EVERY provided media item somewhere relevant in the text.
-- Aim for at least one image per major section when relevant media is available.
-- NEVER cluster all media in one section — spread them evenly throughout.
+- Place media where it adds value — after a paragraph it illustrates, between
+  sections as a visual break, or alongside a concept it depicts.
+- Spread media evenly throughout; NEVER cluster all media in one section.
 - Skip any item whose title/description does not match the content at all.
-- If no media is relevant to a section, omit media from that section entirely."""
+- If no media is relevant to a section, omit media from that section entirely.
+- IMPORTANT: You MUST place every relevant item inline in the text. There is
+  NO fallback section at the end. Any item you do not embed is lost forever.
+  If an item truly does not fit anywhere, skip it — but try hard to place it."""
 
 
 async def _synthesize_responses(
@@ -970,6 +980,53 @@ def _strip_media_images(media_section: str) -> str:
     return media_section
 
 
+async def _validate_image_urls(
+    media_items: list[dict],
+    req_id: str,
+    timeout: float = 4.0,
+) -> list[dict]:
+    """HTTP HEAD-check each image URL in parallel; discard non-resolving ones.
+
+    Videos are passed through without validation (YouTube thumbnails always
+    resolve).  Images whose ``img_src`` returns a non-200 status or a
+    non-image content-type are dropped.
+    """
+    if not media_items:
+        return []
+
+    client = http_client()
+
+    async def _check(item: dict) -> dict | None:
+        if item.get("type") != "image":
+            return item  # videos pass through
+        img_src = item.get("img_src", "")
+        if not img_src:
+            return None
+        try:
+            resp = await asyncio.wait_for(
+                client.head(img_src, follow_redirects=True),
+                timeout=timeout,
+            )
+            if resp.status_code != 200:
+                log.debug(f"[{req_id}] Image URL HEAD {resp.status_code}: {img_src[:120]}")
+                return None
+            ct = resp.headers.get("content-type", "")
+            if ct and not ct.startswith("image/"):
+                log.debug(f"[{req_id}] Image URL non-image content-type '{ct}': {img_src[:120]}")
+                return None
+            return item
+        except Exception:
+            log.debug(f"[{req_id}] Image URL unreachable: {img_src[:120]}")
+            return None
+
+    checks = await asyncio.gather(*[_check(m) for m in media_items])
+    valid = [m for m in checks if m is not None]
+    dropped = len(media_items) - len(valid)
+    if dropped:
+        log.info(f"[{req_id}] Dropped {dropped} broken/unreachable image URL(s)")
+    return valid
+
+
 def _filter_media_by_relevance(
     media_items: list[dict],
     combined_text: str,
@@ -977,8 +1034,9 @@ def _filter_media_by_relevance(
 ) -> list[dict]:
     """Filter media items to keep only those relevant to the combined model responses.
 
-    Requires at least 2 significant words (>3 chars) from the media's
-    title+description to appear in the combined text, OR >40% word overlap.
+    Keeps items where at least 1 significant word (>3 chars) from the media's
+    title+description appears in the combined text.
+    Items with no extractable words are kept (benefit of the doubt).
     """
     if not media_items:
         return []
@@ -989,10 +1047,10 @@ def _filter_media_by_relevance(
         desc = (item.get("description", "") or "").lower()
         words = set(w for w in (title + " " + desc).split() if len(w) > 3)
         if not words:
+            kept.append(item)  # no metadata to judge — keep it
             continue
         matching = sum(1 for w in words if w in lower_text)
-        overlap = matching / len(words) if words else 0
-        if matching >= 2 or overlap > 0.4:
+        if matching >= 1:
             kept.append(item)
     discarded = len(media_items) - len(kept)
     if discarded:
@@ -1000,49 +1058,6 @@ def _filter_media_by_relevance(
     return kept
 
 
-def _media_url(item: dict) -> str:
-    """Extract the primary URL from a media item for dedup / placement checking."""
-    if item.get("type") == "image":
-        return item.get("img_src", item.get("url", ""))
-    # Video — check url, then thumbnail
-    return item.get("url", item.get("thumbnail", ""))
-
-
-def _format_remaining_media(unplaced: list[dict]) -> str:
-    """Format media items that the synthesis model did not place inline.
-
-    Appends them as a nicely formatted section at the end so no relevant
-    media is lost — the user sees everything, with the best items already
-    distributed inline by the synthesis model.
-    """
-    if not unplaced:
-        return ""
-
-    def _esc_url(url: str) -> str:
-        return url.replace('(', '%28').replace(')', '%29')
-
-    def _esc_text(text: str) -> str:
-        return text.replace('[', '\\[').replace(']', '\\]')
-
-    parts: list[str] = ["\n\n---\n\n### Additional Visual References\n"]
-    for item in unplaced:
-        title = _esc_text(item.get("title", "Media"))
-        if item.get("type") == "image":
-            img_url = _esc_url(item.get("img_src", item.get("url", "")))
-            source_url = _esc_url(item.get("url", img_url))
-            parts.append(f"\n[![{title}]({img_url})]({source_url})\n")
-        elif item.get("type") == "video":
-            vid_url = item.get("url", "")
-            vid_id = item.get("video_id", "")
-            thumb = item.get("thumbnail", "")
-            if vid_id and "youtube" in vid_url:
-                thumb_url = thumb or f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg"
-                parts.append(
-                    f"\n[![{title}]({_esc_url(thumb_url)})]({_esc_url(vid_url)})\n"
-                )
-            else:
-                parts.append(f"\n[▶ {title}]({_esc_url(vid_url)})\n")
-    return "\n".join(parts)
 
 
 # ============================================================================
@@ -1181,8 +1196,41 @@ async def run_tier_race(
         yield "data: [DONE]\n\n"
         return
 
-    # Filter media for relevance against the combined model responses
     combined_text = " ".join(r["content"] for r in valid if r.get("content"))
+
+    # --- Validate image URLs (drop broken / unreachable) ---
+    if media_items:
+        media_items = await _validate_image_urls(media_items, req_id)
+
+    # --- Extract content-aware image subjects and search for extra images ---
+    try:
+        subjects = await _extract_image_subjects(combined_text, req_id)
+        if subjects:
+            extra_images = await _search_images_for_subjects(subjects, req_id)
+            if extra_images:
+                # Deduplicate against already-collected media by img_src
+                existing_srcs = {m.get("img_src", "") for m in media_items if m.get("type") == "image"}
+                pre_merge_count = len(media_items)
+                for img in extra_images:
+                    src = img.get("img_src", "")
+                    if src and src not in existing_srcs:
+                        media_items.append({
+                            "type": "image",
+                            "url": img.get("source_url", src),
+                            "title": img.get("title", "Image"),
+                            "description": img.get("subject", ""),
+                            "img_src": src,
+                        })
+                        existing_srcs.add(src)
+                # Validate only the newly added images
+                new_items = media_items[pre_merge_count:]
+                validated_new = await _validate_image_urls(new_items, req_id)
+                media_items = media_items[:pre_merge_count] + validated_new
+                log.info(f"[{req_id}] After subject search: {len(media_items)} total media items")
+    except Exception as exc:
+        log.warning(f"[{req_id}] Subject-based image search failed (non-fatal): {exc}")
+
+    # Filter media for relevance against the combined model responses
     if media_items:
         media_items = _filter_media_by_relevance(media_items, combined_text, req_id)
 
@@ -1197,15 +1245,8 @@ async def run_tier_race(
     )
 
     if synthesised:
-        # Find unplaced media — URLs the synthesis model didn't embed inline
         if media_items:
-            unplaced = [m for m in media_items if _media_url(m) not in synthesised]
-            if unplaced:
-                remaining_section = _format_remaining_media(unplaced)
-                synthesised += remaining_section
-                yield _chunk("", reasoning_content=f"  {len(media_items) - len(unplaced)} media item(s) placed inline, {len(unplaced)} in fallback section.\n")
-            else:
-                yield _chunk("", reasoning_content=f"  All {len(media_items)} media item(s) placed inline.\n")
+            yield _chunk("", reasoning_content=f"  {len(media_items)} media item(s) provided to synthesis for inline placement.\n")
         yield _chunk(synthesised, finish_reason="stop")
     else:
         # Synthesis failed — return the longest response as a reasonable fallback

@@ -560,6 +560,7 @@ async def call_model(
             async for chunk in stream_model(
                 model, messages,
                 temperature=temperature, max_tokens=max_tokens, req_id=req_id,
+                content_only=True,
             ):
                 chunks.append(chunk)
         except Exception as e:
@@ -648,8 +649,14 @@ async def stream_model(
     temperature: float = 0.7,
     max_tokens: int = 4096,
     req_id: str = "",
+    content_only: bool = False,
 ) -> AsyncGenerator[str, None]:
-    """Stream a single model's response via its native API (or OpenRouter fallback)."""
+    """Stream a single model's response via its native API (or OpenRouter fallback).
+
+    When *content_only* is True, only ``delta["content"]`` tokens are yielded
+    and ``reasoning_content`` (thinking-chain) tokens are silently skipped.
+    Use this when the collected text will be scored or fed to synthesis.
+    """
     base_url, api_key, native_model = resolve_provider(model)
     is_openrouter = (base_url == OPENROUTER_BASE)
     provider_prefix = "" if is_openrouter else (model.split("/", 1)[0] if "/" in model else "")
@@ -691,14 +698,18 @@ async def stream_model(
                 try:
                     chunk = json.loads(payload)
                     delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    # Yield content; fall back to reasoning_content for reasoning models
-                    content = delta.get("content", "") or delta.get("reasoning_content", "")
-                    if content:
-                        yield content
+                    # Yield content; optionally fall back to reasoning_content
+                    if content_only:
+                        text_chunk = delta.get("content", "")
+                    else:
+                        text_chunk = delta.get("content", "") or delta.get("reasoning_content", "")
+                    if text_chunk:
+                        yield text_chunk
                 except json.JSONDecodeError:
                     pass
     except Exception as e:
         log.error(f"[{req_id}] {provider_label} stream {model} exception: {e}")
+        raise
 
 
 # ============================================================================

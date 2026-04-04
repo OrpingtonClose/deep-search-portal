@@ -108,7 +108,7 @@ modelSpecs:
     - name: "tier-race-quick"
       label: "Tier Race (Quick)"
       description: "Races 9 fast models (Haiku, Flash, GPT-mini, Grok, Mistral, DeepSeek, Qwen, GLM, Kimi). No images/video. Cheapest tier."
-      group: "Simple"
+      group: "Experimental"
       preset:
         endpoint: "Tier Chooser"
         model: "tier-race-quick"
@@ -116,7 +116,7 @@ modelSpecs:
     - name: "tier-race-medium"
       label: "Tier Race (Medium)"
       description: "Races 8 balanced models including Claude Sonnet 4.6, Gemini 3 Pro, GPT-5.4, Grok 4."
-      group: "Simple"
+      group: "Experimental"
       preset:
         endpoint: "Tier Chooser"
         model: "tier-race-medium"

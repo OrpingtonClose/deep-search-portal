@@ -327,17 +327,21 @@ class SlackAlertHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            message = self.format(record)
-            if not _is_model_error(message):
+            # Use the raw message (without logger name / timestamp) for pattern
+            # matching so that logger names like "search_providers" or
+            # "xai-native-proxy" don't cause false positives.
+            raw_message = record.getMessage()
+            if not _is_model_error(raw_message):
                 return
 
+            formatted = self.format(record)
             entry: _PendingError = {
                 "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "proxy": record.name,
-                "model": _extract_model_name(message),
-                "category": _classify_error(message),
-                "message": message,
-                "req_id": _extract_req_id(message),
+                "model": _extract_model_name(raw_message),
+                "category": _classify_error(raw_message),
+                "message": formatted,
+                "req_id": _extract_req_id(formatted),
                 "level": record.levelname,
             }
             _buffer.add(entry)

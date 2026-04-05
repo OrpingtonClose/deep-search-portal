@@ -24,8 +24,6 @@ summarising all errors in that window.  A per-model cooldown
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import os
 import re
@@ -85,12 +83,23 @@ def _is_model_error(message: str) -> bool:
     return False
 
 
+# Known LLM provider prefixes used in model IDs (e.g. "openai/gpt-4o").
+_KNOWN_PROVIDERS = {
+    "openai", "anthropic", "google", "x-ai", "deepseek", "mistralai",
+    "perplexity", "qwen", "moonshotai", "cohere", "minimax", "groq",
+    "stepfun", "z-ai", "nvidia", "meta-llama", "nousresearch", "xiaomi",
+}
+
+
 def _extract_model_name(message: str) -> str:
     """Try to extract a model identifier from a log message."""
-    # Pattern: provider/model-name (e.g. "openai/gpt-4o", "x-ai/grok-4.20")
-    m = re.search(r"[\w-]+/[\w.-]+", message)
-    if m:
-        return m.group(0)
+    # Pattern: provider/model-name — only match known LLM provider prefixes
+    # to avoid false positives on URL path segments like "openrouter.ai/api".
+    for m in re.finditer(r"([\w-]+/[\w.-]+)", message):
+        candidate = m.group(1)
+        prefix = candidate.split("/", 1)[0]
+        if prefix.lower() in _KNOWN_PROVIDERS:
+            return candidate
     # Pattern: "xAI model-name" or "OpenRouter model-name"
     m = re.search(r"(?:xAI|OpenRouter|Venice|upstream)\s+([\w.-]+)", message)
     if m:
@@ -112,9 +121,20 @@ def _extract_status_code(message: str) -> Optional[int]:
     return None
 
 
+_REQ_ID_RE = re.compile(
+    r"\[(?!WARNING|ERROR|INFO|DEBUG|CRITICAL\])"  # skip log-level brackets
+    r"([^\]]+)\]"
+)
+
+
 def _extract_req_id(message: str) -> str:
-    """Extract the request ID (e.g. [tier-abc12345]) from a log message."""
-    m = re.search(r"\[([^\]]+)\]", message)
+    """Extract the request ID (e.g. [tier-abc12345]) from a log message.
+
+    The formatted log line looks like:
+      ``2025-01-01 00:00:00 [WARNING] tier-chooser: [tier-abc12345] ...``
+    This skips the ``[WARNING]`` bracket and grabs the actual request ID.
+    """
+    m = _REQ_ID_RE.search(message)
     return m.group(1) if m else ""
 
 
@@ -150,11 +170,15 @@ class _ErrorBuffer:
     """Thread-safe buffer that collects errors and flushes them as a single
     Slack message after the batch window elapses."""
 
+    # Evict stale cooldown entries after this many seconds (default 1 hour).
+    _COOLDOWN_EVICT_INTERVAL: float = 3600.0
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._pending: list[_PendingError] = []
         self._model_last_alert: dict[str, float] = {}  # model -> timestamp
         self._timer: Optional[threading.Timer] = None
+        self._last_eviction: float = time.time()
 
     def add(self, entry: _PendingError) -> None:
         model = entry.get("model", "unknown")
@@ -162,6 +186,14 @@ class _ErrorBuffer:
 
         # Per-model cooldown check
         with self._lock:
+            # Periodically evict stale cooldown entries to prevent unbounded growth
+            if now - self._last_eviction > self._COOLDOWN_EVICT_INTERVAL:
+                cutoff = now - MODEL_COOLDOWN
+                self._model_last_alert = {
+                    k: v for k, v in self._model_last_alert.items() if v > cutoff
+                }
+                self._last_eviction = now
+
             last = self._model_last_alert.get(model, 0.0)
             if now - last < MODEL_COOLDOWN:
                 return  # suppress duplicate

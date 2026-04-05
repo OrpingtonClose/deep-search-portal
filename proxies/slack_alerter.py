@@ -109,13 +109,13 @@ def _extract_model_name(message: str) -> str:
 
 def _extract_status_code(message: str) -> Optional[int]:
     """Try to extract an HTTP status code from a log message."""
-    m = re.search(r"returned (\d{3})", message)
+    m = re.search(r"returned (\d{3})", message, re.I)
     if m:
         return int(m.group(1))
-    m = re.search(r"error (\d{3})", message)
+    m = re.search(r"error (\d{3})", message, re.I)
     if m:
         return int(m.group(1))
-    m = re.search(r"HTTP (\d{3})", message)
+    m = re.search(r"HTTP (\d{3})", message, re.I)
     if m:
         return int(m.group(1))
     return None

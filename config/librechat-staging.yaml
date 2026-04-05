@@ -1,11 +1,11 @@
 # Deep Search Portal - LibreChat Staging Configuration
 # This config combines:
-#   1. Production modelSpecs — the "Simple PROD" group marks the curated production models
-#   2. All backend endpoints — staging endpoints have full model lists
-#      plus production-only endpoints (xAI Native, Tier Chooser, Wiki, Heretic)
+#   1. All modelSpecs — "Simple PROD" marks the 3 curated production models.
+#      All other groups (Miro, Experimental, Raw-*) keep their normal names.
+#   2. All backend endpoints with full model lists
 #
-# Production instance: 33703935 (ssh5.vast.ai) — uses config/librechat.yaml
-# Staging instance: 33706037 (ssh7.vast.ai) — uses this config
+# Production instance: 33703935 (ssh5.vast.ai) — uses config/librechat.yaml (3 models only)
+# Staging instance: 33706037 (ssh7.vast.ai) — uses this config (all models)
 version: 1.3.5
 cache: true
 modelSpecs:

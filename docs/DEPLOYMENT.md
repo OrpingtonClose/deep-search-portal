@@ -6,7 +6,7 @@ The Deep Search Portal runs on **two Vast.ai GPU instances**, both accessible vi
 
 | Instance | Role | SSH | Description |
 |----------|------|-----|-------------|
-| 33703935 | **Production** | `ssh5.vast.ai:23934` | End-user facing. Curated model groups. |
+| 33703935 | **Production** | `ssh5.vast.ai:23934` | End-user facing. **3 models only** (Simple group). |
 | 33706037 | **Staging** | `ssh7.vast.ai:26036` | Testing/dev. Full model list + "Simple PROD" group marking the curated production models. Accessible via `https://staging.deep-search.uk` (Cloudflare tunnel). |
 
 > **Note:** Instance IDs, SSH hosts, and ports may change if instances are recreated. Always verify via `vastai show instances` or the Vast.ai API.
@@ -17,21 +17,22 @@ The Deep Search Portal runs on **two Vast.ai GPU instances**, both accessible vi
 
 ### Production (`config/librechat.yaml`)
 
-The **production config** contains curated `modelSpecs` with enforced grouping. Users only see models explicitly listed in groups:
+The **production config** contains only the **Simple** group with exactly **3 models**:
 
-- **Simple** — The main user-facing models (e.g. Grok 4.20 Multi-Agent, Heretic Uncensored, Tier Race Full Throttle)
-- **Miro** — Research models (Miro Deep, Quick, Focused)
-- **Experimental** — Consortium races, Grok races, Miro Swarm, Wiki variants, Mistral Thinking
-- **Raw — Grok/OpenAI/Anthropic/Google/DeepSeek/Other** — Direct access to individual provider models
+1. **Grok 4.20 Multi-Agent** — xAI flagship, parallel reasoning, web search
+2. **Heretic Uncensored** — GLM-4.7 Flash with Firecrawl/Exa/Brave tools
+3. **Tier Race (Full Throttle)** — Races 9 flagship models
+
+All other models (Miro, Experimental, Raw-*) exist **only in staging**. `enforce: true` ensures users see nothing beyond these 3.
 
 ### Staging (`config/librechat-staging.yaml`)
 
 The **staging config** combines:
-1. All production `modelSpecs` — only the **Simple** group is renamed to **"Simple PROD"** to mark it as the curated production group. All other groups (Miro, Experimental, Raw-*) keep their normal names
+1. All modelSpecs (41 total) — the **Simple** group is renamed to **"Simple PROD"** to mark the 3 production models. All other groups (Miro, Experimental, Raw-*) keep their normal names
 2. All backend endpoints with their **full model lists** (e.g. G0DM0D3 with 62 models, Singular endpoint)
 3. `enforce: false` so all models from all endpoints are visible (not just modelSpec entries)
 
-This lets testers see both the curated production view (via PROD groups) and the full raw model list.
+This lets testers see the curated production view ("Simple PROD") alongside all other models.
 
 ---
 
@@ -165,9 +166,9 @@ vastai attach ssh-key <instance_id> "$(cat ~/.ssh/id_ed25519.pub)"
 ## Adding a New Model to Production
 
 1. Add the proxy code (if new endpoint) under `proxies/`
-2. Add modelSpec entry to `config/librechat.yaml` in the correct group
+2. Add modelSpec entry to `config/librechat.yaml` in the Simple group (production only has Simple)
 3. Add endpoint wiring to `config/librechat.yaml` under `endpoints.custom`
-4. Regenerate staging config: copy all production modelSpecs, rename Simple to "Simple PROD", merge with staging endpoints
+4. Regenerate staging config: add the new model to the staging spec list, ensure Simple models get "Simple PROD" group
 5. Add startup entry to `scripts/startup.sh`
 6. Create PR, wait for CI
 7. Deploy to both instances using the steps above

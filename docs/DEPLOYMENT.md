@@ -6,8 +6,8 @@ The Deep Search Portal runs on **two Vast.ai GPU instances**, both accessible vi
 
 | Instance | Role | SSH | Description |
 |----------|------|-----|-------------|
-| 33703935 | **Production** | `ssh5.vast.ai:23934` | End-user facing. **3 models only** (Simple group). |
-| 33706037 | **Staging** | `ssh7.vast.ai:26036` | Testing/dev. Full model list + "Simple PROD" group marking the curated production models. Accessible via `https://staging.deep-search.uk` (Cloudflare tunnel). |
+| 33706037 | **Production** | `ssh7.vast.ai:26036` | End-user facing. **3 models only** (Simple group). |
+| 33703935 | **Staging** | `ssh5.vast.ai:23934` | Testing/dev. Full model list + "Simple PROD" group marking the curated production models. Accessible via `https://staging.deep-search.uk` (Cloudflare tunnel). |
 
 > **Note:** Instance IDs, SSH hosts, and ports may change if instances are recreated. Always verify via `vastai show instances` or the Vast.ai API.
 

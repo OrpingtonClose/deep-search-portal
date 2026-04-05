@@ -236,8 +236,9 @@ _XML_TC_RE = re.compile(
     re.DOTALL,
 )
 # GLM Heretic format: <tool_call>function_name{"arg": "val"}</tool_call>
+# The closing </tool_call> is optional — the model sometimes omits it.
 _XML_TC_ALT_RE = re.compile(
-    r"<tool_call>\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(\{.*?\})\s*</tool_call>",
+    r"<tool_call>\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(\{.*?\})\s*(?:</tool_call>)?",
     re.DOTALL,
 )
 

@@ -359,6 +359,18 @@ def setup_logging(service_name: str, log_dir: str) -> logging.Logger:
         fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
         root.addHandler(fh)
 
+        # Slack alerter — sends model errors to Slack when SLACK_WEBHOOK_URL is set.
+        try:
+            from slack_alerter import get_handler as _get_slack_handler
+            slack_handler = _get_slack_handler()
+            if slack_handler is not None:
+                root.addHandler(slack_handler)
+                logging.getLogger("slack_alerter").info(
+                    "Slack model-error alerting enabled"
+                )
+        except Exception:
+            pass  # Slack alerting is optional — never block startup
+
     return logging.getLogger(service_name)
 
 

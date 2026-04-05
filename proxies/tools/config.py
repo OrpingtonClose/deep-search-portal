@@ -237,10 +237,44 @@ _XML_TC_RE = re.compile(
 )
 # GLM Heretic format: <tool_call>function_name{"arg": "val"}</tool_call>
 # The closing </tool_call> is optional — the model sometimes omits it.
-_XML_TC_ALT_RE = re.compile(
-    r"<tool_call>\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(\{.*?\})\s*(?:</tool_call>)?",
-    re.DOTALL,
+# We use a regex to capture the function name, then a brace-counting
+# parser to extract the full JSON body (handles nested/escaped braces).
+_XML_TC_ALT_PREFIX_RE = re.compile(
+    r"<tool_call>\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(?=\{)",
 )
+
+
+def _extract_braced_json(text: str, start: int) -> str | None:
+    """Extract a balanced JSON object from *text* starting at *start*.
+
+    Uses brace counting that respects JSON string literals (including
+    escaped quotes) so that curly braces inside string values don't
+    break extraction.
+    """
+    if start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    in_string = False
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            if ch == "\\":
+                i += 2  # skip escaped character
+                continue
+            if ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+        i += 1
+    return None
 
 
 def parse_xml_tool_calls(content: str) -> list[dict] | None:
@@ -279,7 +313,12 @@ def parse_xml_tool_calls(content: str) -> list[dict] | None:
         return tool_calls
 
     # Fallback: GLM Heretic format — <tool_call>function_name{...}</tool_call>
-    for fn_name, raw_args in _XML_TC_ALT_RE.findall(content):
+    for m in _XML_TC_ALT_PREFIX_RE.finditer(content):
+        fn_name = m.group(1)
+        json_start = m.end()  # position of the opening '{'
+        raw_args = _extract_braced_json(content, json_start)
+        if raw_args is None:
+            continue
         try:
             args = json.loads(raw_args)
         except json.JSONDecodeError:

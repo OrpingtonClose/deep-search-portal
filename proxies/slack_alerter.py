@@ -237,7 +237,7 @@ def _format_slack_blocks(errors: list[_PendingError]) -> dict:
         {"type": "header", "text": {"type": "plain_text", "text": f"{count} Model Error{'s' if count != 1 else ''}", "emoji": True}},
     ]
 
-    for err in errors[:20]:  # cap at 20 to stay within Slack limits
+    for err in errors[:16]:  # cap at 16 → 1 header + 16×3 = 49 blocks (Slack max: 50)
         ts = err.get("timestamp", "")
         proxy = err.get("proxy", "unknown")
         model = err.get("model", "unknown")
@@ -273,10 +273,10 @@ def _format_slack_blocks(errors: list[_PendingError]) -> dict:
 
         blocks.append({"type": "divider"})
 
-    if count > 20:
+    if count > 16:
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"_… and {count - 20} more errors (truncated)_"},
+            "text": {"type": "mrkdwn", "text": f"_… and {count - 16} more errors (truncated)_"},
         })
 
     return {

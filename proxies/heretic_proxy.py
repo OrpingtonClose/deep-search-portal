@@ -27,6 +27,8 @@ import traceback
 import uuid
 from typing import AsyncGenerator, Optional
 
+import httpx
+
 from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
@@ -409,38 +411,59 @@ async def execute_tool(name: str, arguments: dict) -> str:
 async def _collect_full_response(
     upstream_body: dict,
     req_id: str,
+    _max_retries: int = 2,
 ) -> tuple[str, str]:
     """Call Venice and collect the full response (non-streaming).
 
     Returns (content, reasoning_content) — GLM Heretic may put its output
-    in either or both fields.
+    in either or both fields.  Retries once on read timeouts since Venice
+    can be slow for complex multi-turn reasoning queries.
     """
+    import asyncio as _asyncio
+
     client = http_client()
-    resp = await client.post(
-        f"{UPSTREAM_BASE}/chat/completions",
-        json={**upstream_body, "stream": False},
-        headers={
-            "Authorization": f"Bearer {UPSTREAM_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://deep-search.uk",
-            "X-Title": "Deep Search Heretic Proxy",
-        },
-        timeout=120.0,
-    )
-    if resp.status_code != 200:
-        error_text = resp.text[:500]
-        log.error(f"[{req_id}] Venice error {resp.status_code}: {error_text}")
-        raise RuntimeError(f"Venice HTTP {resp.status_code}: {error_text}")
+    last_exc: Exception | None = None
+    for attempt in range(1, _max_retries + 1):
+        try:
+            resp = await client.post(
+                f"{UPSTREAM_BASE}/chat/completions",
+                json={**upstream_body, "stream": False},
+                headers={
+                    "Authorization": f"Bearer {UPSTREAM_KEY}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://deep-search.uk",
+                    "X-Title": "Deep Search Heretic Proxy",
+                },
+                timeout=300.0,
+            )
+            if resp.status_code != 200:
+                error_text = resp.text[:500]
+                log.error(f"[{req_id}] Venice error {resp.status_code}: {error_text}")
+                raise RuntimeError(f"Venice HTTP {resp.status_code}: {error_text}")
 
-    data = resp.json()
-    choices = data.get("choices", [])
-    if not choices:
-        raise RuntimeError("Venice returned no choices")
+            data = resp.json()
+            choices = data.get("choices", [])
+            if not choices:
+                raise RuntimeError("Venice returned no choices")
 
-    message = choices[0].get("message", {})
-    content = message.get("content", "") or ""
-    reasoning = message.get("reasoning_content", "") or ""
-    return content, reasoning
+            message = choices[0].get("message", {})
+            content = message.get("content", "") or ""
+            reasoning = message.get("reasoning_content", "") or ""
+            return content, reasoning
+
+        except httpx.ReadTimeout as exc:
+            last_exc = exc
+            if attempt < _max_retries:
+                wait = 2 ** attempt
+                log.warning(
+                    f"[{req_id}] Venice read timeout on attempt {attempt}, "
+                    f"retrying in {wait}s ..."
+                )
+                await _asyncio.sleep(wait)
+            else:
+                log.error(f"[{req_id}] Venice read timeout after {_max_retries} attempts")
+
+    raise last_exc  # type: ignore[misc]
 
 
 async def run_agent_loop(

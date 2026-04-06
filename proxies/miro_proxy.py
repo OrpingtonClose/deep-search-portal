@@ -696,13 +696,19 @@ async def run_agent_loop(
     trace_events: list[dict] = []  # Execution trace for client-side capture
 
     def _trace_chunk(data: dict) -> str:
-        """Emit a hidden trace marker as a fenced code block.
+        """Emit a trace marker as an SSE comment.
 
-        The injected miro-trace.js hides these via CSS and captures the JSON
-        data into sessionStorage / localStorage for the trace and knowledge
-        viewer pages.
+        SSE comments (lines starting with ':') are valid SSE but ignored by
+        EventSource parsers.  The injected miro-trace.js monkey-patches fetch()
+        to intercept these comments before LibreChat's SSE reader sees them,
+        extracts the JSON payload, and stores it in sessionStorage / localStorage
+        for the trace and knowledge viewer pages.
+
+        Using SSE comments instead of fenced code blocks avoids interfering with
+        LibreChat's message content accumulation (which was causing empty
+        messages in MongoDB).
         """
-        return _chunk(content=f"\n\n```miro-trace\n{json.dumps(data)}\n```\n\n")
+        return f": miro-trace {json.dumps(data)}\n\n"
 
     try:
         for turn in range(MAX_AGENT_TURNS):

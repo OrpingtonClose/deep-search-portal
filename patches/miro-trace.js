@@ -3,26 +3,16 @@
  *
  * Injected into LibreChat's index.html alongside the YouTube embed script.
  *
- * 1. Hides `miro-trace` fenced code blocks via CSS (never visible to the user).
- * 2. Uses MutationObserver to capture JSON trace data from those code blocks.
- * 3. Stores trace data in sessionStorage (per-conversation) and knowledge
+ * 1. Monkey-patches fetch() to intercept SSE comments containing trace data
+ *    (": miro-trace {json}") from the Miro proxy's SSE stream.
+ * 2. Stores trace data in sessionStorage (per-conversation) and knowledge
  *    corpus in localStorage (persistent across sessions).
- * 4. Overrides the Bookmark icon  → opens /trace.html in a new window.
- * 5. Overrides the Plus-Circle icon → opens /knowledge.html in a new window.
- * 6. Broadcasts updates via BroadcastChannel so the viewer pages update live.
+ * 3. Overrides the Bookmark icon  → opens /trace.html in a new window.
+ * 4. Overrides the Plus-Circle icon → opens /knowledge.html in a new window.
+ * 5. Broadcasts updates via BroadcastChannel so the viewer pages update live.
  */
 (function () {
   'use strict';
-
-  // ── CSS: hide miro-trace code blocks before they ever paint ──────────
-  var style = document.createElement('style');
-  style.textContent = [
-    'pre:has(> code.language-miro-trace) { display:none !important; height:0 !important; overflow:hidden !important; }',
-    'code.language-miro-trace { display:none !important; }',
-    // Fallback for browsers without :has()
-    '.miro-trace-hidden { display:none !important; height:0 !important; overflow:hidden !important; }',
-  ].join('\n');
-  document.head.appendChild(style);
 
   // ── BroadcastChannel for live updates to viewer pages ────────────────
   var traceChannel = null;
@@ -132,52 +122,106 @@
     }
   }
 
-  // ── MutationObserver: capture miro-trace code blocks ─────────────────
-  function scanForTraceBlocks(root) {
-    if (!root || !root.querySelectorAll) return;
+  // ── Monkey-patch fetch() to intercept SSE trace comments ─────────────
+  //
+  // The Miro proxy emits trace data as SSE comments:
+  //   : miro-trace {"type":"turn","turn":1,...}
+  //
+  // We intercept the Response body stream, strip out the trace comments,
+  // process the JSON payloads, and forward the remaining (clean) SSE data
+  // to LibreChat's reader so message accumulation works normally.
 
-    var codeBlocks = root.querySelectorAll('code.language-miro-trace');
-    for (var i = 0; i < codeBlocks.length; i++) {
-      var code = codeBlocks[i];
-      if (code.dataset.miroProcessed) continue;
-      code.dataset.miroProcessed = '1';
+  var TRACE_PREFIX = ': miro-trace ';
+  var _origFetch = window.fetch;
 
-      try {
-        var jsonText = code.textContent.trim();
-        var data = JSON.parse(jsonText);
-        processTraceData(data);
-      } catch (_e) {
-        // Malformed JSON — skip
+  window.fetch = function () {
+    var fetchArgs = Array.prototype.slice.call(arguments);
+    return _origFetch.apply(this, fetchArgs).then(function (response) {
+      // Only intercept SSE streams to the chat endpoint
+      var url = typeof fetchArgs[0] === 'string'
+        ? fetchArgs[0]
+        : (fetchArgs[0] && fetchArgs[0].url ? fetchArgs[0].url : '');
+      var ct = '';
+      try { ct = response.headers.get('content-type') || ''; } catch (_e) { /* ignore */ }
+
+      if (!url.includes('/chat/') || !ct.includes('text/event-stream')) {
+        return response;
       }
 
-      // Hide the parent <pre> (fallback for browsers without :has())
-      var pre = code.closest('pre');
-      if (pre) {
-        pre.classList.add('miro-trace-hidden');
-      }
-    }
-  }
+      var body = response.body;
+      if (!body) return response;
 
-  // Initial scan
-  scanForTraceBlocks(document.body);
+      var reader = body.getReader();
+      var decoder = new TextDecoder();
+      var partialLine = '';
 
-  // Watch for dynamically added content (SSE streaming)
-  var traceObserver = new MutationObserver(function (mutations) {
-    for (var i = 0; i < mutations.length; i++) {
-      var added = mutations[i].addedNodes;
-      for (var j = 0; j < added.length; j++) {
-        if (added[j].nodeType === 1) {
-          scanForTraceBlocks(added[j]);
+      var newStream = new ReadableStream({
+        start: function (controller) {
+          function pump() {
+            reader.read().then(function (result) {
+              if (result.done) {
+                // Flush any remaining partial data
+                if (partialLine.length > 0) {
+                  controller.enqueue(new TextEncoder().encode(partialLine));
+                }
+                controller.close();
+                return;
+              }
+
+              var text = decoder.decode(result.value, { stream: true });
+              // Prepend any leftover from previous chunk
+              text = partialLine + text;
+              partialLine = '';
+
+              // Split into lines, keeping the delimiters
+              var lines = text.split('\n');
+
+              // The last element may be an incomplete line
+              partialLine = lines.pop() || '';
+
+              var cleanChunks = [];
+              for (var i = 0; i < lines.length; i++) {
+                var line = lines[i];
+                if (line.indexOf(TRACE_PREFIX) === 0) {
+                  // This is a trace comment — extract JSON and process it
+                  var jsonStr = line.substring(TRACE_PREFIX.length).trim();
+                  try {
+                    var data = JSON.parse(jsonStr);
+                    processTraceData(data);
+                  } catch (_e) {
+                    // Malformed JSON — skip
+                  }
+                  // Don't forward this line to LibreChat
+                } else {
+                  // Normal SSE line — forward it
+                  cleanChunks.push(line + '\n');
+                }
+              }
+
+              if (cleanChunks.length > 0) {
+                controller.enqueue(new TextEncoder().encode(cleanChunks.join('')));
+              }
+
+              pump();
+            }).catch(function (err) {
+              controller.error(err);
+            });
+          }
+          pump();
+        },
+        cancel: function () {
+          reader.cancel();
         }
-      }
-      // Also check if the mutation target itself has trace blocks
-      if (mutations[i].target && mutations[i].target.nodeType === 1) {
-        scanForTraceBlocks(mutations[i].target);
-      }
-    }
-  });
+      });
 
-  traceObserver.observe(document.body, { childList: true, subtree: true });
+      // Create a new Response with the filtered stream
+      return new Response(newStream, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    });
+  };
 
   // ── Override header icon click handlers ───────────────────────────────
   //

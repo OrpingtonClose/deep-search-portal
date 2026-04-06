@@ -499,6 +499,7 @@ async def _collect_full_response(
     upstream_body: dict,
     req_id: str,
     _max_retries: int = 2,
+    _max_wall_seconds: float = 180.0,
 ) -> tuple[str, str]:
     """Call Venice via **streaming** and collect the full response.
 
@@ -508,15 +509,20 @@ async def _collect_full_response(
     This avoids the 300 s read-timeout that occurs with non-streaming
     requests on large contexts (system prompt + tool results).
 
+    A total wall-clock timeout (``_max_wall_seconds``, default 180 s) caps
+    the entire streaming collection.  Venice sometimes streams reasoning
+    tokens very slowly for complex queries, causing unbounded waits; this
+    ensures we always return or retry within a reasonable time.
+
     Returns (content, reasoning_content).  Retries on read timeouts.
     """
     client = http_client()
     last_exc: Exception | None = None
     for attempt in range(1, _max_retries + 1):
         try:
-            # Use a generous per-chunk read timeout (120 s between chunks)
-            # but connect quickly.
+            # Per-chunk read timeout (120 s between chunks) + fast connect.
             timeout = httpx.Timeout(120.0, connect=30.0)
+            wall_start = time.monotonic()
             async with client.stream(
                 "POST",
                 f"{UPSTREAM_BASE}/chat/completions",
@@ -537,7 +543,16 @@ async def _collect_full_response(
                 # Collect streamed SSE chunks into content + reasoning
                 content_parts: list[str] = []
                 reasoning_parts: list[str] = []
+                wall_exceeded = False
                 async for line in resp.aiter_lines():
+                    # Enforce total wall-clock timeout
+                    if time.monotonic() - wall_start > _max_wall_seconds:
+                        log.warning(
+                            f"[{req_id}] Venice stream exceeded {_max_wall_seconds}s "
+                            f"wall time (attempt {attempt}), breaking"
+                        )
+                        wall_exceeded = True
+                        break
                     line = line.strip()
                     if not line or not line.startswith("data: "):
                         continue
@@ -559,6 +574,19 @@ async def _collect_full_response(
 
             content = "".join(content_parts)
             reasoning = "".join(reasoning_parts)
+
+            # If wall time was exceeded but we got some content, use it
+            if wall_exceeded and not content:
+                raise httpx.ReadTimeout(
+                    f"Venice stream wall-time exceeded ({_max_wall_seconds}s) "
+                    f"with no content (reasoning: {len(reasoning)} chars)"
+                )
+            if wall_exceeded:
+                log.info(
+                    f"[{req_id}] Using partial Venice response "
+                    f"({len(content)} content chars, {len(reasoning)} reasoning chars)"
+                )
+
             return content, reasoning
 
         except (httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:

@@ -147,17 +147,23 @@
 
   // ── Poll the trace REST endpoint while streaming ──────────────────────
   //
-  // We detect active streaming by watching for the stop button (which
-  // LibreChat shows during generation).  While streaming, we poll
-  // /miro-trace/latest every 2 seconds.  When streaming ends, we do
-  // one final poll to capture the summary.
+  // Dual-trigger approach for robustness:
+  //   1. Fetch interception: wraps window.fetch to detect chat stream
+  //      requests — starts polling when a chat request is made, stops
+  //      when the response body is fully consumed.
+  //   2. Stop button fallback: periodically checks for the stop button
+  //      in the DOM as a backup detection mechanism.
+
+  // Save original fetch BEFORE wrapping — pollTrace uses this to avoid
+  // triggering the chat-detection wrapper recursively.
+  var _origFetch = window.fetch;
 
   var _pollTimer = null;
   var _lastSeenRequestId = null;
   var _isPolling = false;
 
   function pollTrace() {
-    fetch('/miro-trace/latest', { credentials: 'same-origin' })
+    _origFetch('/miro-trace/latest', { credentials: 'same-origin' })
       .then(function (resp) { return resp.json(); })
       .then(function (data) {
         if (data && data.request_id) {
@@ -173,6 +179,7 @@
   function startPolling() {
     if (_isPolling) return;
     _isPolling = true;
+    console.log('[miro-trace] Polling started');
     pollTrace(); // immediate first poll
     _pollTimer = setInterval(pollTrace, 2000);
   }
@@ -184,14 +191,112 @@
       clearInterval(_pollTimer);
       _pollTimer = null;
     }
-    // Final poll to capture summary
+    console.log('[miro-trace] Polling stopped — final polls scheduled');
+    // Final polls to capture summary (the proxy writes summary after
+    // finishing all turns and closing the SSE stream)
     setTimeout(pollTrace, 500);
+    setTimeout(pollTrace, 3000);
   }
 
-  // Watch for the stop button to detect streaming state
+  // ── Trigger 1: Intercept fetch() to detect chat stream requests ──────
+  //
+  // When LibreChat submits a message, it calls fetch() with a URL like
+  // /api/agents/chat or /api/chat.  We wrap window.fetch to detect this,
+  // start polling, and monitor the response to detect when streaming ends.
+  //
+  // IMPORTANT: We do NOT modify the request or response — we only observe.
+
+  window.fetch = function () {
+    var url = arguments[0];
+    var urlStr = typeof url === 'string' ? url : (url && url.url ? url.url : '');
+
+    if (urlStr.indexOf('/api/agents/chat') !== -1 ||
+        urlStr.indexOf('/api/chat') !== -1) {
+      console.log('[miro-trace] Chat request detected:', urlStr);
+      startPolling();
+
+      // Monitor the response to detect when streaming ends
+      return _origFetch.apply(this, arguments).then(function (response) {
+        if (response.body && typeof response.body.getReader === 'function') {
+          // Tee the stream: one leg for LibreChat, one for monitoring
+          var tee = response.body.tee();
+          var monitoredResponse = new Response(tee[0], {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+          });
+          // Drain the monitor leg to detect stream end
+          var reader = tee[1].getReader();
+          (function pump() {
+            reader.read().then(function (result) {
+              if (result.done) {
+                console.log('[miro-trace] Chat stream ended');
+                stopPolling();
+                return;
+              }
+              pump();
+            }).catch(function () {
+              stopPolling();
+            });
+          })();
+          return monitoredResponse;
+        }
+        // Non-streaming response
+        setTimeout(stopPolling, 5000);
+        return response;
+      }).catch(function (err) {
+        stopPolling();
+        throw err;
+      });
+    }
+
+    return _origFetch.apply(this, arguments);
+  };
+
+  // ── Trigger 1b: Intercept XHR to detect chat stream requests ─────────
+  //
+  // LibreChat uses sse.js (mpetazzoni/sse.js), which is an EventSource
+  // polyfill built on XMLHttpRequest.  It uses XHR POST (not fetch) to
+  // connect to the SSE stream.  We wrap XHR.open() to detect these
+  // requests and start polling.
+
+  var _origXhrOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function () {
+    var url = arguments[1] || '';
+    if (typeof url === 'string' &&
+        (url.indexOf('/api/agents/chat') !== -1 || url.indexOf('/api/chat') !== -1)) {
+      console.log('[miro-trace] XHR chat request detected:', url);
+      startPolling();
+      // Monitor the XHR to detect when the stream ends
+      var xhr = this;
+      var _origOnReadyStateChange = null;
+      Object.defineProperty(this, 'onreadystatechange', {
+        get: function () { return _origOnReadyStateChange; },
+        set: function (fn) {
+          _origOnReadyStateChange = function () {
+            if (xhr.readyState === 4) {
+              console.log('[miro-trace] XHR stream ended (readyState=4)');
+              stopPolling();
+            }
+            if (fn) fn.apply(this, arguments);
+          };
+        },
+        configurable: true,
+      });
+      // Also listen for loadend as a backup
+      this.addEventListener('loadend', function () {
+        console.log('[miro-trace] XHR loadend');
+        stopPolling();
+      });
+    }
+    return _origXhrOpen.apply(this, arguments);
+  };
+
+  // ── Trigger 2: Stop button fallback ──────────────────────────────────
   function checkStreamingState() {
-    // LibreChat shows a stop button during generation
-    var stopBtn = document.querySelector('[data-testid="stop-button"]');
+    var stopBtn = document.querySelector('[data-testid="stop-button"]') ||
+                  document.querySelector('button[aria-label="Stop"]') ||
+                  document.querySelector('button[aria-label="stop generating"]');
     if (stopBtn) {
       startPolling();
     } else if (_isPolling) {
@@ -199,7 +304,6 @@
     }
   }
 
-  // Check streaming state periodically
   setInterval(checkStreamingState, 1000);
 
   // ── Override header icon click handlers ───────────────────────────────
@@ -248,5 +352,7 @@
 
   updateTooltips();
   setInterval(updateTooltips, 2000);
+
+  console.log('[miro-trace] Script loaded successfully');
 
 })();

@@ -198,94 +198,35 @@
     setTimeout(pollTrace, 3000);
   }
 
-  // ── Trigger 1: Intercept fetch() to detect chat stream requests ──────
+  // ── Helper: check if a URL is the actual chat SSE stream ─────────────
   //
-  // When LibreChat submits a message, it calls fetch() with a URL like
-  // /api/agents/chat or /api/chat.  We wrap window.fetch to detect this,
-  // start polling, and monitor the response to detect when streaming ends.
+  // LibreChat makes many XHR/fetch requests to /api/agents/chat/*:
+  //   /api/agents/chat/active    — status check (GET)
+  //   /api/agents/chat/status/*  — status check (GET)
+  //   /api/agents/chat/stream/*  — the actual SSE stream (POST via sse.js)
   //
-  // IMPORTANT: We do NOT modify the request or response — we only observe.
+  // We ONLY want to trigger polling on the actual SSE stream endpoint.
 
-  window.fetch = function () {
-    var url = arguments[0];
-    var urlStr = typeof url === 'string' ? url : (url && url.url ? url.url : '');
+  function isChatStreamUrl(url) {
+    return typeof url === 'string' && url.indexOf('/api/agents/chat/stream') !== -1;
+  }
 
-    if (urlStr.indexOf('/api/agents/chat') !== -1 ||
-        urlStr.indexOf('/api/chat') !== -1) {
-      console.log('[miro-trace] Chat request detected:', urlStr);
-      startPolling();
-
-      // Monitor the response to detect when streaming ends
-      return _origFetch.apply(this, arguments).then(function (response) {
-        if (response.body && typeof response.body.getReader === 'function') {
-          // Tee the stream: one leg for LibreChat, one for monitoring
-          var tee = response.body.tee();
-          var monitoredResponse = new Response(tee[0], {
-            status: response.status,
-            statusText: response.statusText,
-            headers: response.headers,
-          });
-          // Drain the monitor leg to detect stream end
-          var reader = tee[1].getReader();
-          (function pump() {
-            reader.read().then(function (result) {
-              if (result.done) {
-                console.log('[miro-trace] Chat stream ended');
-                stopPolling();
-                return;
-              }
-              pump();
-            }).catch(function () {
-              stopPolling();
-            });
-          })();
-          return monitoredResponse;
-        }
-        // Non-streaming response
-        setTimeout(stopPolling, 5000);
-        return response;
-      }).catch(function (err) {
-        stopPolling();
-        throw err;
-      });
-    }
-
-    return _origFetch.apply(this, arguments);
-  };
-
-  // ── Trigger 1b: Intercept XHR to detect chat stream requests ─────────
+  // ── Trigger 1: Intercept XHR.open() to detect SSE stream ─────────────
   //
-  // LibreChat uses sse.js (mpetazzoni/sse.js), which is an EventSource
-  // polyfill built on XMLHttpRequest.  It uses XHR POST (not fetch) to
-  // connect to the SSE stream.  We wrap XHR.open() to detect these
-  // requests and start polling.
+  // LibreChat uses sse.js (mpetazzoni/sse.js), an EventSource polyfill
+  // built on XMLHttpRequest.  It uses XHR (not fetch) to connect to the
+  // SSE stream via POST.  We wrap XHR.open() to detect this and start
+  // polling.  We also listen for loadend to detect stream end.
 
   var _origXhrOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function () {
     var url = arguments[1] || '';
-    if (typeof url === 'string' &&
-        (url.indexOf('/api/agents/chat') !== -1 || url.indexOf('/api/chat') !== -1)) {
-      console.log('[miro-trace] XHR chat request detected:', url);
+    if (isChatStreamUrl(url)) {
+      console.log('[miro-trace] XHR SSE stream detected:', url);
       startPolling();
-      // Monitor the XHR to detect when the stream ends
-      var xhr = this;
-      var _origOnReadyStateChange = null;
-      Object.defineProperty(this, 'onreadystatechange', {
-        get: function () { return _origOnReadyStateChange; },
-        set: function (fn) {
-          _origOnReadyStateChange = function () {
-            if (xhr.readyState === 4) {
-              console.log('[miro-trace] XHR stream ended (readyState=4)');
-              stopPolling();
-            }
-            if (fn) fn.apply(this, arguments);
-          };
-        },
-        configurable: true,
-      });
-      // Also listen for loadend as a backup
+      // Listen for loadend to detect stream end
       this.addEventListener('loadend', function () {
-        console.log('[miro-trace] XHR loadend');
+        console.log('[miro-trace] XHR stream ended (loadend)');
         stopPolling();
       });
     }

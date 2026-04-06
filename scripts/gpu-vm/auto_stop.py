@@ -29,7 +29,7 @@ def get_server_status(port: int) -> dict:
     """Query the inference server for current status.
 
     Tries multiple endpoints in priority order:
-    1. /metrics — Prometheus endpoint (vLLM); gives exact active request count.
+    1. /metrics — Prometheus endpoint (vLLM or SGLang); gives exact active request count.
     2. /health  — generic health check; confirms server is alive.
     3. /v1/models — OpenAI-compatible list; confirms server is alive.
 
@@ -45,15 +45,33 @@ def get_server_status(port: int) -> dict:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 body = resp.read().decode()
                 if path == "/metrics":
-                    # Parse Prometheus metrics for active requests
+                    # Parse Prometheus metrics for active requests.
+                    # Supports both vLLM and SGLang metric names.
                     running = 0
                     waiting = 0
+                    found_known_metric = False
                     for line in body.split("\n"):
-                        if "vllm:num_requests_running" in line and not line.startswith("#"):
+                        if line.startswith("#"):
+                            continue
+                        # vLLM metrics (may use "vllm:" or "vllm_" prefix)
+                        if "vllm:num_requests_running" in line or "vllm_num_requests_running" in line:
                             running = int(float(line.split()[-1]))
-                        if "vllm:num_requests_waiting" in line and not line.startswith("#"):
+                            found_known_metric = True
+                        if "vllm:num_requests_waiting" in line or "vllm_num_requests_waiting" in line:
                             waiting = int(float(line.split()[-1]))
-                    return {"alive": True, "active": running + waiting, "source": "metrics"}
+                            found_known_metric = True
+                        # SGLang metrics
+                        if "sglang:num_running_reqs" in line or "sglang_num_running_reqs" in line:
+                            running = int(float(line.split()[-1]))
+                            found_known_metric = True
+                        if "sglang:num_waiting_reqs" in line or "sglang_num_waiting_reqs" in line:
+                            waiting = int(float(line.split()[-1]))
+                            found_known_metric = True
+                    if found_known_metric:
+                        return {"alive": True, "active": running + waiting, "source": "metrics"}
+                    # /metrics responded but no recognized metric names —
+                    # conservatively treat as unknown to avoid false idle.
+                    return {"alive": True, "active": -1, "source": "metrics-unknown"}
                 elif path == "/health":
                     return {"alive": True, "active": -1, "source": "health"}
                 else:

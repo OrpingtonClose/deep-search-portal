@@ -500,7 +500,13 @@ async def _collect_full_response(
     req_id: str,
     _max_retries: int = 2,
 ) -> tuple[str, str]:
-    """Call Venice and collect the full response (non-streaming).
+    """Call Venice via **streaming** and collect the full response.
+
+    Using ``stream: True`` is more resilient than ``stream: False`` because
+    Venice can start returning tokens immediately — even if the total
+    generation takes minutes, each individual chunk arrives within seconds.
+    This avoids the 300 s read-timeout that occurs with non-streaming
+    requests on large contexts (system prompt + tool results).
 
     Returns (content, reasoning_content).  Retries on read timeouts.
     """
@@ -508,43 +514,66 @@ async def _collect_full_response(
     last_exc: Exception | None = None
     for attempt in range(1, _max_retries + 1):
         try:
-            resp = await client.post(
+            # Use a generous per-chunk read timeout (120 s between chunks)
+            # but connect quickly.
+            timeout = httpx.Timeout(120.0, connect=30.0)
+            async with client.stream(
+                "POST",
                 f"{UPSTREAM_BASE}/chat/completions",
-                json={**upstream_body, "stream": False},
+                json={**upstream_body, "stream": True},
                 headers={
                     "Authorization": f"Bearer {UPSTREAM_KEY}",
                     "Content-Type": "application/json",
                     "HTTP-Referer": "https://deep-search.uk",
                     "X-Title": "Deep Search Miro Proxy",
                 },
-                timeout=300.0,
-            )
-            if resp.status_code != 200:
-                error_text = resp.text[:500]
-                log.error(f"[{req_id}] Venice error {resp.status_code}: {error_text}")
-                raise RuntimeError(f"Venice HTTP {resp.status_code}: {error_text}")
+                timeout=timeout,
+            ) as resp:
+                if resp.status_code != 200:
+                    error_text = (await resp.aread()).decode("utf-8", errors="replace")[:500]
+                    log.error(f"[{req_id}] Venice error {resp.status_code}: {error_text}")
+                    raise RuntimeError(f"Venice HTTP {resp.status_code}: {error_text}")
 
-            data = resp.json()
-            choices = data.get("choices", [])
-            if not choices:
-                raise RuntimeError("Venice returned no choices")
+                # Collect streamed SSE chunks into content + reasoning
+                content_parts: list[str] = []
+                reasoning_parts: list[str] = []
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    payload = line[6:]
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        chunk_data = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = chunk_data.get("choices", [])
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta", {})
+                    if delta.get("content"):
+                        content_parts.append(delta["content"])
+                    if delta.get("reasoning_content"):
+                        reasoning_parts.append(delta["reasoning_content"])
 
-            message = choices[0].get("message", {})
-            content = message.get("content", "") or ""
-            reasoning = message.get("reasoning_content", "") or ""
+            content = "".join(content_parts)
+            reasoning = "".join(reasoning_parts)
             return content, reasoning
 
-        except httpx.ReadTimeout as exc:
+        except (httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
             last_exc = exc
             if attempt < _max_retries:
                 wait = 2 ** attempt
                 log.warning(
-                    f"[{req_id}] Venice read timeout on attempt {attempt}, "
-                    f"retrying in {wait}s ..."
+                    f"[{req_id}] Venice stream error on attempt {attempt} "
+                    f"({type(exc).__name__}), retrying in {wait}s ..."
                 )
                 await asyncio.sleep(wait)
             else:
-                log.error(f"[{req_id}] Venice read timeout after {_max_retries} attempts")
+                log.error(
+                    f"[{req_id}] Venice stream error after {_max_retries} attempts: {exc}"
+                )
 
     raise last_exc  # type: ignore[misc]
 

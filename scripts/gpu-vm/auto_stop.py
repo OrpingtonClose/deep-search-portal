@@ -123,6 +123,8 @@ def main():
     parser.add_argument("--timeout", type=int, default=1200, help="Idle timeout in seconds")
     parser.add_argument("--poll-interval", type=int, default=30, help="Seconds between checks")
     parser.add_argument("--vast-api-key", type=str, default=os.getenv("VAST_API_KEY", ""))
+    parser.add_argument("--startup-grace", type=int, default=3600,
+                        help="Seconds to wait for server to come alive before allowing shutdown (default: 3600)")
     parser.add_argument("--dry-run", action="store_true", help="Log but don't actually stop")
     args = parser.parse_args()
 
@@ -131,11 +133,14 @@ def main():
         sys.exit(1)
 
     last_activity = time.time()
+    daemon_start = time.time()
+    server_seen_alive = False
     log.info(
-        "Auto-stop daemon started. Port=%d, timeout=%ds, poll=%ds",
+        "Auto-stop daemon started. Port=%d, timeout=%ds, poll=%ds, startup_grace=%ds",
         args.port,
         args.timeout,
         args.poll_interval,
+        args.startup_grace,
     )
 
     while True:
@@ -144,19 +149,31 @@ def main():
         status = get_server_status(args.port)
 
         if not status["alive"]:
-            log.warning("Server not responding — treating as idle")
+            if not server_seen_alive:
+                elapsed = time.time() - daemon_start
+                log.info("Server not yet alive (%.0fs / %ds grace)", elapsed, args.startup_grace)
+            else:
+                log.warning("Server not responding — treating as idle")
         elif status["active"] > 0:
+            server_seen_alive = True
             last_activity = time.time()
             log.debug("Active requests: %d", status["active"])
         elif status["active"] == 0:
+            server_seen_alive = True
             idle_secs = time.time() - last_activity
             log.info("Idle for %.0fs / %ds", idle_secs, args.timeout)
         else:
             # active == -1 means we couldn't determine (health-only endpoint)
             # Conservatively treat as active
+            server_seen_alive = True
             last_activity = time.time()
 
+        # During startup grace period, don't shut down if server has never been alive.
+        # This prevents killing the VM during model download + loading.
         idle_duration = time.time() - last_activity
+        if not server_seen_alive and (time.time() - daemon_start) < args.startup_grace:
+            continue
+
         if idle_duration >= args.timeout:
             log.info("Idle timeout reached (%.0fs >= %ds)", idle_duration, args.timeout)
             if args.dry_run:

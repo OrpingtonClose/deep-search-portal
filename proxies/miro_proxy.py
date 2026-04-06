@@ -693,6 +693,16 @@ async def run_agent_loop(
     seen_queries: set[str] = set()
     consecutive_rollbacks = 0
     total_tool_calls = 0
+    trace_events: list[dict] = []  # Execution trace for client-side capture
+
+    def _trace_chunk(data: dict) -> str:
+        """Emit a hidden trace marker as a fenced code block.
+
+        The injected miro-trace.js hides these via CSS and captures the JSON
+        data into sessionStorage / localStorage for the trace and knowledge
+        viewer pages.
+        """
+        return _chunk(content=f"\n\n```miro-trace\n{json.dumps(data)}\n```\n\n")
 
     try:
         for turn in range(MAX_AGENT_TURNS):
@@ -751,6 +761,17 @@ async def run_agent_loop(
                     async for chunk in _stream_content(final_content):
                         yield chunk
 
+                # Emit final trace summary
+                summary_trace = {
+                    "type": "summary",
+                    "turns_used": turn + 1,
+                    "total_tool_calls": total_tool_calls,
+                    "elapsed_s": round(time.monotonic() - start_time, 1),
+                    "request_id": req_id,
+                    "events": trace_events,
+                }
+                yield _trace_chunk(summary_trace)
+
                 yield _chunk(finish_reason="stop")
                 yield "data: [DONE]\n\n"
                 return
@@ -796,6 +817,7 @@ async def run_agent_loop(
 
             # Execute tools and build tool response
             tool_response_parts = []
+            turn_tool_events: list[dict] = []
             for tc in valid_calls:
                 fn_name = tc["function"]["name"]
                 try:
@@ -816,9 +838,14 @@ async def run_agent_loop(
                         f"Use a DIFFERENT search query or tool to find new information.\n"
                         f"</tool_response>"
                     )
+                    turn_tool_events.append({
+                        "tool": fn_name, "args": fn_args,
+                        "status": "duplicate", "chars": 0, "ms": 0,
+                    })
                     continue
 
                 log.info(f"[{req_id}] Executing tool: {fn_name}({fn_args})")
+                tool_start = time.monotonic()
                 tool_task = asyncio.create_task(
                     execute_tool(fn_name, fn_args)
                 )
@@ -831,6 +858,7 @@ async def run_agent_loop(
                     except asyncio.TimeoutError:
                         yield ": keepalive\n\n"
                 result = tool_task.result()
+                tool_elapsed_ms = int((time.monotonic() - tool_start) * 1000)
                 seen_queries.add(query_key)
                 total_tool_calls += 1
                 tool_response_parts.append(
@@ -839,6 +867,22 @@ async def run_agent_loop(
                 log.info(
                     f"[{req_id}] Tool {fn_name} returned {len(result)} chars"
                 )
+                turn_tool_events.append({
+                    "tool": fn_name, "args": fn_args,
+                    "status": "ok", "chars": len(result),
+                    "ms": tool_elapsed_ms,
+                })
+
+            # Emit trace marker for this turn's tool calls
+            turn_trace = {
+                "type": "turn",
+                "turn": turn + 1,
+                "max_turns": MAX_AGENT_TURNS,
+                "tools": turn_tool_events,
+                "elapsed_s": round(time.monotonic() - start_time, 1),
+            }
+            trace_events.append(turn_trace)
+            yield _trace_chunk(turn_trace)
 
             # Append the assistant message and tool responses to conversation
             assistant_content = full_text
@@ -895,6 +939,18 @@ async def run_agent_loop(
         if final:
             async for chunk in _stream_content(final):
                 yield chunk
+
+        # Emit final trace summary (forced synthesis path)
+        summary_trace = {
+            "type": "summary",
+            "turns_used": turns_used,
+            "total_tool_calls": total_tool_calls,
+            "elapsed_s": round(time.monotonic() - start_time, 1),
+            "request_id": req_id,
+            "forced_synthesis": True,
+            "events": trace_events,
+        }
+        yield _trace_chunk(summary_trace)
 
         yield _chunk(finish_reason="stop")
         yield "data: [DONE]\n\n"

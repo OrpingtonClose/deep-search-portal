@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Miro — Execution Trace</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
+    --text: #e6edf3; --text2: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --yellow: #d29922; --red: #f85149;
+    --border: #30363d; --mono: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; font-size:14px; line-height:1.6; padding:24px; }
+
+  .header { display:flex; align-items:center; gap:12px; margin-bottom:24px; border-bottom:1px solid var(--border); padding-bottom:16px; }
+  .header h1 { font-size:20px; font-weight:600; }
+  .header .badge { background:var(--bg3); border:1px solid var(--border); border-radius:12px; padding:2px 10px; font-size:12px; color:var(--text2); }
+  .header .live { color:var(--green); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+
+  .empty { text-align:center; padding:60px 20px; color:var(--text2); }
+  .empty h2 { font-size:18px; margin-bottom:8px; color:var(--text); }
+
+  .summary-bar { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:20px; padding:12px 16px; background:var(--bg2); border:1px solid var(--border); border-radius:8px; }
+  .stat { display:flex; flex-direction:column; }
+  .stat-label { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--text2); }
+  .stat-value { font-size:18px; font-weight:600; color:var(--accent); }
+
+  .timeline { position:relative; padding-left:28px; }
+  .timeline::before { content:''; position:absolute; left:10px; top:0; bottom:0; width:2px; background:var(--border); }
+
+  .turn { position:relative; margin-bottom:20px; }
+  .turn-dot { position:absolute; left:-24px; top:6px; width:12px; height:12px; border-radius:50%; background:var(--accent); border:2px solid var(--bg); z-index:1; }
+  .turn-dot.forced { background:var(--yellow); }
+
+  .turn-header { font-weight:600; font-size:15px; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
+  .turn-header .elapsed { font-size:12px; color:var(--text2); font-weight:400; }
+
+  .tool-card { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin-bottom:8px; }
+  .tool-name { font-family:var(--mono); font-size:13px; font-weight:600; color:var(--green); }
+  .tool-name.duplicate { color:var(--yellow); }
+  .tool-query { font-size:13px; color:var(--text); margin-top:4px; word-break:break-word; }
+  .tool-meta { display:flex; gap:12px; margin-top:6px; font-size:11px; color:var(--text2); }
+  .tool-meta span { display:flex; align-items:center; gap:4px; }
+
+  .footer { margin-top:32px; padding-top:16px; border-top:1px solid var(--border); color:var(--text2); font-size:12px; text-align:center; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Execution Trace</h1>
+  <span class="badge live" id="status">● Listening</span>
+  <span class="badge" id="conv-id"></span>
+</div>
+
+<div id="content">
+  <div class="empty" id="empty-state">
+    <h2>No trace data yet</h2>
+    <p>Send a message to the Miro model and the execution trace will appear here in real time.</p>
+  </div>
+</div>
+
+<div class="footer">
+  Miro Execution Trace Viewer — data from sessionStorage + BroadcastChannel
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var contentEl = document.getElementById('content');
+  var emptyEl = document.getElementById('empty-state');
+  var statusEl = document.getElementById('status');
+  var convIdEl = document.getElementById('conv-id');
+  var summaryBarEl = null;
+  var timelineEl = null;
+  var currentTrace = { events: [], summary: null };
+
+  // ── Try to get conversationId from opener ────────────────────────────
+  function getConversationId() {
+    try {
+      if (window.opener && window.opener.location) {
+        var m = window.opener.location.pathname.match(/\/c\/([^/]+)/);
+        if (m) return m[1];
+      }
+    } catch (_e) { /* cross-origin */ }
+    return null;
+  }
+
+  function getTraceKey(convId) {
+    return 'miro_trace_' + (convId || 'unknown');
+  }
+
+  // ── Load initial data from sessionStorage ────────────────────────────
+  function loadInitialData() {
+    var convId = getConversationId();
+    if (convId) {
+      convIdEl.textContent = convId === 'new' ? 'New conversation' : convId.slice(0, 12) + '…';
+    }
+
+    // Try to read from opener's sessionStorage
+    try {
+      var raw = null;
+      if (window.opener && window.opener.sessionStorage) {
+        // Try all miro_trace_ keys, pick the most recent
+        for (var i = 0; i < window.opener.sessionStorage.length; i++) {
+          var key = window.opener.sessionStorage.key(i);
+          if (key && key.startsWith('miro_trace_')) {
+            raw = window.opener.sessionStorage.getItem(key);
+            if (!convId) {
+              convId = key.replace('miro_trace_', '');
+              convIdEl.textContent = convId.slice(0, 12) + '…';
+            }
+          }
+        }
+      }
+      if (raw) {
+        currentTrace = JSON.parse(raw);
+        render();
+      }
+    } catch (_e) { /* cross-origin or no opener */ }
+  }
+
+  // ── Render the trace ─────────────────────────────────────────────────
+  function render() {
+    if (!currentTrace.events.length && !currentTrace.summary) {
+      emptyEl.style.display = '';
+      return;
+    }
+    emptyEl.style.display = 'none';
+
+    // Summary bar
+    if (!summaryBarEl) {
+      summaryBarEl = document.createElement('div');
+      summaryBarEl.className = 'summary-bar';
+      contentEl.insertBefore(summaryBarEl, contentEl.firstChild);
+    }
+
+    var summary = currentTrace.summary;
+    var totalTools = summary ? summary.total_tool_calls : currentTrace.events.reduce(function (n, e) {
+      return n + (e.tools ? e.tools.filter(function (t) { return t.status === 'ok'; }).length : 0);
+    }, 0);
+    var totalTurns = summary ? summary.turns_used : currentTrace.events.length;
+    var elapsed = summary ? summary.elapsed_s : (currentTrace.events.length ? currentTrace.events[currentTrace.events.length - 1].elapsed_s : 0);
+
+    summaryBarEl.innerHTML = [
+      '<div class="stat"><span class="stat-label">Turns</span><span class="stat-value">' + totalTurns + '</span></div>',
+      '<div class="stat"><span class="stat-label">Tool Calls</span><span class="stat-value">' + totalTools + '</span></div>',
+      '<div class="stat"><span class="stat-label">Elapsed</span><span class="stat-value">' + elapsed + 's</span></div>',
+      summary && summary.forced_synthesis ? '<div class="stat"><span class="stat-label">Status</span><span class="stat-value" style="color:var(--yellow)">Forced</span></div>' : '<div class="stat"><span class="stat-label">Status</span><span class="stat-value" style="color:var(--green)">Complete</span></div>',
+      summary ? '<div class="stat"><span class="stat-label">Request</span><span class="stat-value" style="font-size:12px;font-family:var(--mono)">' + (summary.request_id || '—') + '</span></div>' : '',
+    ].join('');
+
+    // Timeline
+    if (!timelineEl) {
+      timelineEl = document.createElement('div');
+      timelineEl.className = 'timeline';
+      contentEl.appendChild(timelineEl);
+    }
+
+    var html = '';
+    var events = currentTrace.events;
+    for (var i = 0; i < events.length; i++) {
+      var evt = events[i];
+      if (evt.type !== 'turn') continue;
+
+      html += '<div class="turn">';
+      html += '<div class="turn-dot"></div>';
+      html += '<div class="turn-header">Turn ' + evt.turn + '/' + evt.max_turns;
+      html += ' <span class="elapsed">@ ' + evt.elapsed_s + 's</span></div>';
+
+      if (evt.tools) {
+        for (var j = 0; j < evt.tools.length; j++) {
+          var tool = evt.tools[j];
+          var isDup = tool.status === 'duplicate';
+          html += '<div class="tool-card">';
+          html += '<div class="tool-name' + (isDup ? ' duplicate' : '') + '">' + escapeHtml(tool.tool) + (isDup ? ' (duplicate)' : '') + '</div>';
+          if (tool.args) {
+            var query = tool.args.query || tool.args.url || JSON.stringify(tool.args);
+            html += '<div class="tool-query">' + escapeHtml(String(query)) + '</div>';
+          }
+          html += '<div class="tool-meta">';
+          if (!isDup) {
+            html += '<span>📊 ' + formatChars(tool.chars) + '</span>';
+            html += '<span>⏱ ' + tool.ms + 'ms</span>';
+          }
+          html += '<span>● ' + tool.status + '</span>';
+          html += '</div>';
+          html += '</div>';
+        }
+      }
+      html += '</div>';
+    }
+
+    // Summary turn
+    if (summary) {
+      html += '<div class="turn">';
+      html += '<div class="turn-dot' + (summary.forced_synthesis ? ' forced' : '') + '"></div>';
+      html += '<div class="turn-header">✓ Research Complete';
+      html += ' <span class="elapsed">@ ' + summary.elapsed_s + 's</span></div>';
+      html += '</div>';
+    }
+
+    timelineEl.innerHTML = html;
+
+    if (summary) {
+      statusEl.textContent = '✓ Complete';
+      statusEl.classList.remove('live');
+      statusEl.style.color = 'var(--green)';
+    }
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function formatChars(n) {
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'k chars';
+    return n + ' chars';
+  }
+
+  // ── BroadcastChannel for live updates ────────────────────────────────
+  try {
+    var channel = new BroadcastChannel('miro-trace');
+    channel.onmessage = function (e) {
+      var msg = e.data;
+      if (msg.action === 'turn') {
+        currentTrace.events.push(msg.data);
+        render();
+      } else if (msg.action === 'summary') {
+        currentTrace.summary = msg.data;
+        if (msg.data.events && msg.data.events.length) {
+          currentTrace.events = msg.data.events;
+        }
+        render();
+      }
+    };
+  } catch (_e) {
+    // Fallback: poll sessionStorage
+    setInterval(function () {
+      loadInitialData();
+      render();
+    }, 2000);
+  }
+
+  // ── Initialize ───────────────────────────────────────────────────────
+  loadInitialData();
+  render();
+})();
+</script>
+</body>
+</html>

@@ -77,10 +77,10 @@ else
     exit 1
 fi
 
-# Wait for model to load (can take several minutes for large models)
-wait_for_health "http://localhost:$SERVE_PORT/health" "Model Server" 600
-
-# --- Start auto-stop daemon ---
+# --- Start auto-stop daemon BEFORE health check ---
+# Critical: the auto-stop daemon must always be running to prevent unbounded
+# VM costs. If the model server fails to start, the daemon will detect the
+# unresponsive server as idle and stop the VM after IDLE_TIMEOUT.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 screen -dmS auto-stop bash -c "python3 ${SCRIPT_DIR}/auto_stop.py \
     --port $SERVE_PORT \
@@ -88,6 +88,11 @@ screen -dmS auto-stop bash -c "python3 ${SCRIPT_DIR}/auto_stop.py \
     --vast-api-key $VAST_API_KEY \
     2>&1 | tee /var/log/auto_stop.log"
 echo "Auto-stop daemon started (timeout: ${IDLE_TIMEOUT}s)"
+
+# Wait for model to load (can take several minutes for large models)
+# Use || true so the script continues even if the model fails to start —
+# the auto-stop daemon (already running) will shut down the VM on idle.
+wait_for_health "http://localhost:$SERVE_PORT/health" "Model Server" 600 || true
 
 # --- Optional: Cloudflare Tunnel ---
 if [ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]; then

@@ -361,6 +361,15 @@ modelSpecs:
         endpoint: "Tier Chooser"
         model: "tier-x-ai/grok-4.20"
 
+    # ====== SELF-HOSTED ======
+    - name: "gpt-oss-120b"
+      label: "GPT-OSS 120B"
+      description: "Self-hosted 120B uncensored model running on GPU VM via vLLM. Zero censorship, full control. Requires GPU VM to be running."
+      group: "Self-Hosted"
+      preset:
+        endpoint: "Self-Hosted GPU"
+        model: "gpt-oss-120b"
+
 # ── Backend endpoint wiring ──
 endpoints:
   custom:
@@ -602,6 +611,25 @@ endpoints:
       summarize: false
       forcePrompt: false
       maxContextTokens: 2000000
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+
+    - name: "Self-Hosted GPU"
+      apiKey: "not-needed"
+      baseURL: "https://gpu.deep-research.uk/v1"
+      models:
+        default:
+          - "gpt-oss-120b"
+        fetch: true
+      titleConvo: true
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
+      summarize: false
+      maxContextTokens: 32768
       dropParams:
         - "stop"
         - "user"

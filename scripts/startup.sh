@@ -305,4 +305,14 @@ elif ! pgrep -f "heretic_proxy.py" > /dev/null; then
     wait_for_health "http://localhost:9950/health" "Heretic Proxy" 15
 fi
 
+# --- Self-hosted GPU VM health check (optional) ---
+if [ -n "${GPU_VM_URL:-}" ]; then
+    echo "Checking self-hosted GPU VM at $GPU_VM_URL..."
+    if curl -sf "${GPU_VM_URL}/health" > /dev/null 2>&1; then
+        echo "GPU VM is online: $GPU_VM_URL"
+    else
+        echo "WARNING: GPU VM at $GPU_VM_URL is not responding (may be stopped)"
+    fi
+fi
+
 echo "All services started. Portal: ${DOMAIN_CLIENT:-https://deep-search.uk}"

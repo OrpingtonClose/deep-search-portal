@@ -619,10 +619,9 @@ endpoints:
 
     - name: "Self-Hosted GPU"
       apiKey: "not-needed"
-      # Set GPU_VM_URL in .env to the GPU inference VM address
-      # (e.g., http://gpu-vm-ip:8000 or https://gpu.deep-research.uk)
-      # If using Cloudflare Tunnel, use the tunnel URL here.
-      baseURL: "${GPU_VM_URL:-http://localhost:8000}/v1"
+      # Replace with your GPU VM address when deployed
+      # (e.g., http://gpu-vm-ip:8000/v1 or https://gpu.deep-research.uk/v1)
+      baseURL: "http://localhost:8000/v1"
       models:
         default:
           - "gpt-oss-120b"

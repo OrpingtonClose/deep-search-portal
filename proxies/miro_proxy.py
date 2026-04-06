@@ -696,19 +696,24 @@ async def run_agent_loop(
     trace_events: list[dict] = []  # Execution trace for client-side capture
 
     def _trace_chunk(data: dict) -> str:
-        """Emit a trace marker as an SSE comment.
+        """Emit a trace marker as a *named* SSE event.
 
-        SSE comments (lines starting with ':') are valid SSE but ignored by
-        EventSource parsers.  The injected miro-trace.js monkey-patches fetch()
-        to intercept these comments before LibreChat's SSE reader sees them,
-        extracts the JSON payload, and stores it in sessionStorage / localStorage
-        for the trace and knowledge viewer pages.
+        Format:  event: miro-trace\\ndata: {json}\\n\\n
 
-        Using SSE comments instead of fenced code blocks avoids interfering with
-        LibreChat's message content accumulation (which was causing empty
-        messages in MongoDB).
+        Named SSE events only fire on listeners registered for that specific
+        event name.  LibreChat's ``message`` handler (which processes chat
+        content) will never see these events.  The injected ``miro-trace.js``
+        patches ``EventTarget.prototype.addEventListener`` to automatically
+        attach a ``miro-trace`` listener on every EventSource-like object,
+        capturing the JSON payload into sessionStorage / localStorage.
+
+        Previous approaches that failed:
+        - Fenced code blocks in content: broke LibreChat's message accumulation.
+        - SSE comments (': miro-trace …'): invisible to EventSource clients
+          (both native and custom implementations silently drop comments).
         """
-        return f": miro-trace {json.dumps(data)}\n\n"
+        payload = json.dumps(data)
+        return f"event: miro-trace\ndata: {payload}\n\n"
 
     try:
         for turn in range(MAX_AGENT_TURNS):

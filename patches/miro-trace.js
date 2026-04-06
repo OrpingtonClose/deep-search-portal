@@ -1,15 +1,24 @@
 /**
  * Miro Execution Trace & Knowledge Corpus — Client-Side Capture
  *
- * Injected into LibreChat's index.html alongside the YouTube embed script.
+ * Injected into LibreChat's index.html BEFORE the first <script type="module">
+ * tag so that our EventTarget patch is in place before any SSE client is created.
  *
- * 1. Monkey-patches fetch() to intercept SSE comments containing trace data
- *    (": miro-trace {json}") from the Miro proxy's SSE stream.
- * 2. Stores trace data in sessionStorage (per-conversation) and knowledge
- *    corpus in localStorage (persistent across sessions).
- * 3. Overrides the Bookmark icon  → opens /trace.html in a new window.
- * 4. Overrides the Plus-Circle icon → opens /knowledge.html in a new window.
- * 5. Broadcasts updates via BroadcastChannel so the viewer pages update live.
+ * Strategy:
+ *   The Miro proxy emits trace data as *named* SSE events:
+ *     event: miro-trace
+ *     data: {"type":"turn","turn":1,...}
+ *
+ *   Named events only fire on listeners registered for that specific event
+ *   name — LibreChat's "message" handler never sees them.  We patch
+ *   EventTarget.prototype.addEventListener to detect when any object gets a
+ *   "message" listener (the hallmark of an SSE client) and piggyback our own
+ *   "miro-trace" listener onto the same target.
+ *
+ * Also:
+ *   3. Overrides the Bookmark icon  → opens /trace.html in a new window.
+ *   4. Overrides the Plus-Circle icon → opens /knowledge.html in a new window.
+ *   5. Broadcasts updates via BroadcastChannel so the viewer pages update live.
  */
 (function () {
   'use strict';
@@ -122,105 +131,51 @@
     }
   }
 
-  // ── Monkey-patch fetch() to intercept SSE trace comments ─────────────
+  // ── Intercept EventTarget.addEventListener to capture SSE trace events ─
   //
-  // The Miro proxy emits trace data as SSE comments:
-  //   : miro-trace {"type":"turn","turn":1,...}
+  // LibreChat uses a custom EventSource-like class (ResumableSSE) that
+  // registers "message" listeners on an EventTarget.  The Miro proxy emits
+  // trace data as *named* SSE events ("event: miro-trace\ndata: {json}\n\n")
+  // which only fire on listeners registered for that specific event name.
+  // LibreChat's "message" handler never sees them.
   //
-  // We intercept the Response body stream, strip out the trace comments,
-  // process the JSON payloads, and forward the remaining (clean) SSE data
-  // to LibreChat's reader so message accumulation works normally.
+  // We patch addEventListener so that whenever *any* object gets a "message"
+  // listener, we also attach our own "miro-trace" listener on the same
+  // target.  A WeakSet tracks targets we've already attached to.
 
-  var TRACE_PREFIX = ': miro-trace ';
-  var _origFetch = window.fetch;
+  var _origAddEventListener = EventTarget.prototype.addEventListener;
+  var _trackedTargets = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+  // Fallback for environments without WeakSet (unlikely but safe)
+  var _trackedArray = _trackedTargets ? null : [];
 
-  window.fetch = function () {
-    var fetchArgs = Array.prototype.slice.call(arguments);
-    return _origFetch.apply(this, fetchArgs).then(function (response) {
-      // Only intercept SSE streams to the chat endpoint
-      var url = typeof fetchArgs[0] === 'string'
-        ? fetchArgs[0]
-        : (fetchArgs[0] && fetchArgs[0].url ? fetchArgs[0].url : '');
-      var ct = '';
-      try { ct = response.headers.get('content-type') || ''; } catch (_e) { /* ignore */ }
+  function isTracked(target) {
+    if (_trackedTargets) return _trackedTargets.has(target);
+    return _trackedArray.indexOf(target) !== -1;
+  }
 
-      if (!url.includes('/chat/') || !ct.includes('text/event-stream')) {
-        return response;
-      }
+  function markTracked(target) {
+    if (_trackedTargets) { _trackedTargets.add(target); }
+    else { _trackedArray.push(target); }
+  }
 
-      var body = response.body;
-      if (!body) return response;
+  EventTarget.prototype.addEventListener = function (type, listener, options) {
+    // Call the original first
+    var result = _origAddEventListener.call(this, type, listener, options);
 
-      var reader = body.getReader();
-      var decoder = new TextDecoder();
-      var partialLine = '';
-
-      var newStream = new ReadableStream({
-        start: function (controller) {
-          function pump() {
-            reader.read().then(function (result) {
-              if (result.done) {
-                // Flush any remaining partial data
-                if (partialLine.length > 0) {
-                  controller.enqueue(new TextEncoder().encode(partialLine));
-                }
-                controller.close();
-                return;
-              }
-
-              var text = decoder.decode(result.value, { stream: true });
-              // Prepend any leftover from previous chunk
-              text = partialLine + text;
-              partialLine = '';
-
-              // Split into lines, keeping the delimiters
-              var lines = text.split('\n');
-
-              // The last element may be an incomplete line
-              partialLine = lines.pop() || '';
-
-              var cleanChunks = [];
-              for (var i = 0; i < lines.length; i++) {
-                var line = lines[i];
-                if (line.indexOf(TRACE_PREFIX) === 0) {
-                  // This is a trace comment — extract JSON and process it
-                  var jsonStr = line.substring(TRACE_PREFIX.length).trim();
-                  try {
-                    var data = JSON.parse(jsonStr);
-                    processTraceData(data);
-                  } catch (_e) {
-                    // Malformed JSON — skip
-                  }
-                  // Don't forward this line to LibreChat
-                } else {
-                  // Normal SSE line — forward it
-                  cleanChunks.push(line + '\n');
-                }
-              }
-
-              if (cleanChunks.length > 0) {
-                controller.enqueue(new TextEncoder().encode(cleanChunks.join('')));
-              }
-
-              pump();
-            }).catch(function (err) {
-              controller.error(err);
-            });
-          }
-          pump();
-        },
-        cancel: function () {
-          reader.cancel();
+    // If someone registers a "message" listener, piggyback a "miro-trace" listener
+    if (type === 'message' && !isTracked(this)) {
+      markTracked(this);
+      _origAddEventListener.call(this, 'miro-trace', function (evt) {
+        try {
+          var data = JSON.parse(evt.data);
+          processTraceData(data);
+        } catch (_e) {
+          // Malformed JSON or non-trace event — ignore
         }
       });
+    }
 
-      // Create a new Response with the filtered stream
-      return new Response(newStream, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers,
-      });
-    });
+    return result;
   };
 
   // ── Override header icon click handlers ───────────────────────────────

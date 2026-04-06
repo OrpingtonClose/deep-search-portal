@@ -260,14 +260,19 @@ def _coerce_xml_value(val: str):
     Tool functions use numeric parameters for slicing (e.g. ``results[:count]``),
     so we must convert numeric strings to actual numbers.
     """
-    # Try int first, then float, fall back to str.
+    # Try int first, then float (coerce whole-number floats to int for
+    # slice compatibility), fall back to str.
     try:
-        return int(val)
+        iv = int(val)
+        return iv
     except ValueError:
         pass
     try:
-        return float(val)
-    except ValueError:
+        fv = float(val)
+        if fv == int(fv):
+            return int(fv)
+        return fv
+    except (ValueError, OverflowError):
         pass
     # Boolean-ish
     if val.lower() in ("true", "false"):

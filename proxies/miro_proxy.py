@@ -90,6 +90,16 @@ log.info(
 # --- Request tracking ---
 tracker = RequestTracker()
 
+# --- In-memory trace store (side-channel for client) ---
+# The SSE stream between proxy → LibreChat agents controller is parsed by the
+# OpenAI SDK, which doesn't support named SSE events or comments.  Injecting
+# trace data into the SSE stream breaks content delivery.  Instead we store
+# trace data server-side and expose it via a REST endpoint that the client
+# polls separately (proxied through nginx at /miro-trace/).
+_trace_store: dict[str, dict] = {}     # req_id → {events, summary, ...}
+_trace_latest_id: str | None = None     # most recent req_id
+_TRACE_STORE_MAX = 50                   # keep last N traces to avoid unbounded growth
+
 
 # ============================================================================
 # Tool implementations (same as Heretic proxy)
@@ -695,25 +705,43 @@ async def run_agent_loop(
     total_tool_calls = 0
     trace_events: list[dict] = []  # Execution trace for client-side capture
 
-    def _trace_chunk(data: dict) -> str:
-        """Emit a trace marker as a *named* SSE event.
+    def _store_trace(data: dict) -> None:
+        """Store trace data server-side (no SSE emission).
 
-        Format:  event: miro-trace\\ndata: {json}\\n\\n
+        Trace data is stored in-memory and exposed via the
+        ``GET /trace/{req_id}`` REST endpoint.  The client-side
+        ``miro-trace.js`` polls this endpoint (proxied through nginx
+        at ``/miro-trace/``) to capture trace data separately from
+        the SSE content stream.
 
-        Named SSE events only fire on listeners registered for that specific
-        event name.  LibreChat's ``message`` handler (which processes chat
-        content) will never see these events.  The injected ``miro-trace.js``
-        patches ``EventTarget.prototype.addEventListener`` to automatically
-        attach a ``miro-trace`` listener on every EventSource-like object,
-        capturing the JSON payload into sessionStorage / localStorage.
-
-        Previous approaches that failed:
-        - Fenced code blocks in content: broke LibreChat's message accumulation.
-        - SSE comments (': miro-trace …'): invisible to EventSource clients
-          (both native and custom implementations silently drop comments).
+        Previous approaches that failed (all tried to inject trace
+        data into the SSE stream between proxy → agents controller):
+        1. Fenced code blocks in content: broke LibreChat's message
+           accumulation (contentParts pipeline).
+        2. SSE comments (': miro-trace …'): invisible to EventSource
+           clients (spec says comments are silently dropped).
+        3. Named SSE events ('event: miro-trace'): the OpenAI SDK's
+           server-side SSE parser doesn't support named events and
+           breaks content delivery.
+        4. XHR interception on client: the browser never sees the
+           proxy's SSE stream — the agents controller creates its
+           own SSE stream for the browser.
         """
-        payload = json.dumps(data)
-        return f"event: miro-trace\ndata: {payload}\n\n"
+        global _trace_latest_id
+        if req_id not in _trace_store:
+            _trace_store[req_id] = {"events": [], "summary": None, "started": time.time()}
+            _trace_latest_id = req_id
+            # Evict oldest entries if store is too large
+            if len(_trace_store) > _TRACE_STORE_MAX:
+                oldest = sorted(_trace_store, key=lambda k: _trace_store[k].get("started", 0))
+                for old_id in oldest[:len(_trace_store) - _TRACE_STORE_MAX]:
+                    del _trace_store[old_id]
+
+        if data.get("type") == "turn":
+            _trace_store[req_id]["events"].append(data)
+        elif data.get("type") == "summary":
+            _trace_store[req_id]["summary"] = data
+            _trace_store[req_id]["events"] = data.get("events", _trace_store[req_id]["events"])
 
     try:
         for turn in range(MAX_AGENT_TURNS):
@@ -781,7 +809,7 @@ async def run_agent_loop(
                     "request_id": req_id,
                     "events": trace_events,
                 }
-                yield _trace_chunk(summary_trace)
+                _store_trace(summary_trace)
 
                 yield _chunk(finish_reason="stop")
                 yield "data: [DONE]\n\n"
@@ -893,7 +921,7 @@ async def run_agent_loop(
                 "elapsed_s": round(time.monotonic() - start_time, 1),
             }
             trace_events.append(turn_trace)
-            yield _trace_chunk(turn_trace)
+            _store_trace(turn_trace)
 
             # Append the assistant message and tool responses to conversation
             assistant_content = full_text
@@ -961,7 +989,7 @@ async def run_agent_loop(
             "forced_synthesis": True,
             "events": trace_events,
         }
-        yield _trace_chunk(summary_trace)
+        _store_trace(summary_trace)
 
         yield _chunk(finish_reason="stop")
         yield "data: [DONE]\n\n"
@@ -1005,6 +1033,37 @@ register_standard_routes(
         "active_tools": [t["function"]["name"] for t in TOOLS],
     },
 )
+
+
+# ── Trace side-channel REST endpoints ─────────────────────────────────
+
+@app.get("/trace/latest")
+async def trace_latest():
+    """Return the most recent trace data (for single-user staging use)."""
+    if _trace_latest_id and _trace_latest_id in _trace_store:
+        return JSONResponse(
+            {"request_id": _trace_latest_id, **_trace_store[_trace_latest_id]},
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+    return JSONResponse(
+        {"request_id": None, "events": [], "summary": None},
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+
+@app.get("/trace/{req_id}")
+async def trace_by_id(req_id: str):
+    """Return trace data for a specific request ID."""
+    if req_id in _trace_store:
+        return JSONResponse(
+            {"request_id": req_id, **_trace_store[req_id]},
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+    return JSONResponse(
+        status_code=404,
+        content={"error": f"No trace found for {req_id}"},
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 
 @app.get("/v1/models")

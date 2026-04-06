@@ -2,18 +2,23 @@
  * Miro Execution Trace & Knowledge Corpus — Client-Side Capture
  *
  * Injected into LibreChat's index.html BEFORE the first <script type="module">
- * tag so that our EventTarget patch is in place before any SSE client is created.
+ * tag so that our XHR patch is in place before any SSE client is created.
  *
  * Strategy:
  *   The Miro proxy emits trace data as *named* SSE events:
  *     event: miro-trace
  *     data: {"type":"turn","turn":1,...}
  *
- *   Named events only fire on listeners registered for that specific event
- *   name — LibreChat's "message" handler never sees them.  We patch
- *   EventTarget.prototype.addEventListener to detect when any object gets a
- *   "message" listener (the hallmark of an SSE client) and piggyback our own
- *   "miro-trace" listener onto the same target.
+ *   LibreChat uses sse.js (mpetazzoni/sse.js) which is an EventSource polyfill
+ *   built on XMLHttpRequest.  sse.js has its OWN addEventListener/dispatchEvent
+ *   (it does NOT extend EventTarget), and it DOES dispatch named SSE events to
+ *   listeners registered for that event name.  However, LibreChat only registers
+ *   a "message" handler, so "miro-trace" events are silently ignored.
+ *
+ *   We patch XMLHttpRequest.prototype to scan the raw responseText as it streams
+ *   in and extract any "event: miro-trace\ndata: {...}" blocks.  This captures
+ *   trace data at the XHR transport layer — before sse.js even parses the SSE
+ *   stream — so it works regardless of which SSE client library is used.
  *
  * Also:
  *   3. Overrides the Bookmark icon  → opens /trace.html in a new window.
@@ -131,51 +136,76 @@
     }
   }
 
-  // ── Intercept EventTarget.addEventListener to capture SSE trace events ─
+  // ── Intercept XHR to capture trace data from SSE streams ────────────
   //
-  // LibreChat uses a custom EventSource-like class (ResumableSSE) that
-  // registers "message" listeners on an EventTarget.  The Miro proxy emits
-  // trace data as *named* SSE events ("event: miro-trace\ndata: {json}\n\n")
-  // which only fire on listeners registered for that specific event name.
-  // LibreChat's "message" handler never sees them.
+  // LibreChat uses sse.js (mpetazzoni/sse.js) — an EventSource polyfill
+  // built on XMLHttpRequest.  sse.js has its OWN addEventListener (it does
+  // NOT extend EventTarget), so we cannot patch EventTarget.prototype.
   //
-  // We patch addEventListener so that whenever *any* object gets a "message"
-  // listener, we also attach our own "miro-trace" listener on the same
-  // target.  A WeakSet tracks targets we've already attached to.
+  // The Miro proxy emits trace data as named SSE events:
+  //   event: miro-trace
+  //   data: {"type":"turn",...}
+  //
+  // We patch XMLHttpRequest.prototype.open to detect SSE streams to the
+  // chat endpoint, then scan responseText as it streams in for
+  // "event: miro-trace\ndata: {json}" blocks and extract the trace JSON.
+  // This works at the XHR transport layer, before sse.js parses anything.
 
-  var _origAddEventListener = EventTarget.prototype.addEventListener;
-  var _trackedTargets = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
-  // Fallback for environments without WeakSet (unlikely but safe)
-  var _trackedArray = _trackedTargets ? null : [];
+  var TRACE_EVENT_RE = /event:\s*miro-trace\ndata:\s*(.+)/g;
+  var _origXhrOpen = XMLHttpRequest.prototype.open;
 
-  function isTracked(target) {
-    if (_trackedTargets) return _trackedTargets.has(target);
-    return _trackedArray.indexOf(target) !== -1;
-  }
-
-  function markTracked(target) {
-    if (_trackedTargets) { _trackedTargets.add(target); }
-    else { _trackedArray.push(target); }
-  }
-
-  EventTarget.prototype.addEventListener = function (type, listener, options) {
-    // Call the original first
-    var result = _origAddEventListener.call(this, type, listener, options);
-
-    // If someone registers a "message" listener, piggyback a "miro-trace" listener
-    if (type === 'message' && !isTracked(this)) {
-      markTracked(this);
-      _origAddEventListener.call(this, 'miro-trace', function (evt) {
-        try {
-          var data = JSON.parse(evt.data);
-          processTraceData(data);
-        } catch (_e) {
-          // Malformed JSON or non-trace event — ignore
-        }
-      });
+  XMLHttpRequest.prototype.open = function (method, url) {
+    // Tag SSE chat streams so the progress handler knows to scan them.
+    // The flag is checked lazily (at progress-event time, not at
+    // addEventListener time) because sse.js registers its progress
+    // listener BEFORE calling open().
+    if (typeof url === 'string' && url.indexOf('/agents/chat/stream/') !== -1) {
+      this._miroTraceStream = true;
+      this._miroTraceProgress = 0;  // bytes already scanned
     }
+    return _origXhrOpen.apply(this, arguments);
+  };
 
-    return result;
+  var _origXhrAddEL = XMLHttpRequest.prototype.addEventListener;
+
+  XMLHttpRequest.prototype.addEventListener = function (type, listener, options) {
+    if (type === 'progress') {
+      // Wrap ALL progress listeners; the trace-scanning logic inside only
+      // activates if _miroTraceStream was set by our patched open().
+      // This is necessary because sse.js calls addEventListener('progress')
+      // BEFORE calling xhr.open(), so the flag isn't set at registration time.
+      var xhr = this;
+      var wrappedListener = function (evt) {
+        if (xhr._miroTraceStream) {
+          // Scan the new portion of responseText for trace events
+          try {
+            var text = xhr.responseText;
+            if (text && text.length > xhr._miroTraceProgress) {
+              var newData = text.substring(xhr._miroTraceProgress);
+              xhr._miroTraceProgress = text.length;
+
+              // Find all "event: miro-trace\ndata: {json}" blocks
+              var match;
+              TRACE_EVENT_RE.lastIndex = 0;
+              while ((match = TRACE_EVENT_RE.exec(newData)) !== null) {
+                try {
+                  var data = JSON.parse(match[1].trim());
+                  processTraceData(data);
+                } catch (_e) {
+                  // Malformed JSON — skip
+                }
+              }
+            }
+          } catch (_e) {
+            // responseText not available yet or other error — ignore
+          }
+        }
+        // Always call the original progress listener
+        return listener.call(this, evt);
+      };
+      return _origXhrAddEL.call(this, type, wrappedListener, options);
+    }
+    return _origXhrAddEL.call(this, type, listener, options);
   };
 
   // ── Override header icon click handlers ───────────────────────────────

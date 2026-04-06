@@ -254,6 +254,27 @@ _XML_ARG_PAIR_RE = re.compile(
 )
 
 
+def _coerce_xml_value(val: str):
+    """Coerce an XML-arg string value to int/float when appropriate.
+
+    Tool functions use numeric parameters for slicing (e.g. ``results[:count]``),
+    so we must convert numeric strings to actual numbers.
+    """
+    # Try int first, then float, fall back to str.
+    try:
+        return int(val)
+    except ValueError:
+        pass
+    try:
+        return float(val)
+    except ValueError:
+        pass
+    # Boolean-ish
+    if val.lower() in ("true", "false"):
+        return val.lower() == "true"
+    return val
+
+
 def _extract_braced_json(text: str, start: int) -> str | None:
     """Extract a balanced JSON object from *text* starting at *start*.
 
@@ -358,7 +379,7 @@ def parse_xml_tool_calls(content: str) -> list[dict] | None:
         pairs = _XML_ARG_PAIR_RE.findall(body)
         if not pairs:
             continue
-        args = {k.strip(): v.strip() for k, v in pairs}
+        args = {k.strip(): _coerce_xml_value(v.strip()) for k, v in pairs}
         tool_calls.append({
             "id": f"call_{uuid.uuid4().hex[:8]}",
             "type": "function",

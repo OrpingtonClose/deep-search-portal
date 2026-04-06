@@ -180,69 +180,50 @@
   traceObserver.observe(document.body, { childList: true, subtree: true });
 
   // ── Override header icon click handlers ───────────────────────────────
+  //
+  // Strategy: Use a single *capturing* click listener on <document> that
+  // intercepts clicks on the bookmark and plus-circle buttons BEFORE
+  // React's delegated handlers fire.  This never modifies the DOM, so
+  // React's virtual-DOM reconciliation is not disrupted.
 
-  // Re-check periodically because the header re-renders on navigation
-  var lastBookmarkOverride = null;
-  var lastPlusOverride = null;
-
-  function overrideHeaderIcons() {
-    // Bookmark icon — data-testid="bookmark-menu"
-    var bookmarkBtn = document.querySelector('[data-testid="bookmark-menu"]');
-    if (bookmarkBtn && bookmarkBtn !== lastBookmarkOverride) {
-      lastBookmarkOverride = bookmarkBtn;
-      // Remove existing click listeners by cloning
-      var clone = bookmarkBtn.cloneNode(true);
-      clone.addEventListener('click', function (e) {
+  document.addEventListener('click', function (e) {
+    // Walk up from the click target to find the button with data-testid
+    var node = e.target;
+    while (node && node !== document.body) {
+      var testid = node.getAttribute && node.getAttribute('data-testid');
+      if (testid === 'bookmark-menu') {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
         window.open('/trace.html', 'miro-trace', 'width=900,height=700');
-      }, true);
-      // Update tooltip
-      clone.setAttribute('aria-label', 'Execution Trace');
-      clone.setAttribute('title', 'Execution Trace');
-      if (bookmarkBtn.parentNode) {
-        bookmarkBtn.parentNode.replaceChild(clone, bookmarkBtn);
-        lastBookmarkOverride = clone;
+        return;
       }
-    }
-
-    // Plus-circle icon — data-testid="add-multi-convo-button"
-    var plusBtn = document.querySelector('[data-testid="add-multi-convo-button"]');
-    if (plusBtn && plusBtn !== lastPlusOverride) {
-      lastPlusOverride = plusBtn;
-      var clone2 = plusBtn.cloneNode(true);
-      clone2.addEventListener('click', function (e) {
+      if (testid === 'add-multi-convo-button') {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
         window.open('/knowledge.html', 'miro-knowledge', 'width=1000,height=700');
-      }, true);
-      // Update tooltip
-      clone2.setAttribute('aria-label', 'Knowledge Corpus');
-      clone2.setAttribute('title', 'Knowledge Corpus');
-      if (plusBtn.parentNode) {
-        plusBtn.parentNode.replaceChild(clone2, plusBtn);
-        lastPlusOverride = clone2;
+        return;
       }
+      node = node.parentNode;
+    }
+  }, true);  // true = capture phase, fires before React's bubble handlers
+
+  // ── Tooltip override — update aria-label/title without touching DOM tree ─
+  function updateTooltips() {
+    var bk = document.querySelector('[data-testid="bookmark-menu"]');
+    if (bk && bk.getAttribute('title') !== 'Execution Trace') {
+      bk.setAttribute('title', 'Execution Trace');
+      bk.setAttribute('aria-label', 'Execution Trace');
+    }
+    var pb = document.querySelector('[data-testid="add-multi-convo-button"]');
+    if (pb && pb.getAttribute('title') !== 'Knowledge Corpus') {
+      pb.setAttribute('title', 'Knowledge Corpus');
+      pb.setAttribute('aria-label', 'Knowledge Corpus');
     }
   }
 
-  // Run override immediately and on interval (header re-renders on nav)
-  overrideHeaderIcons();
-  setInterval(overrideHeaderIcons, 2000);
-
-  // Also override on URL changes (SPA navigation)
-  var lastHref = window.location.href;
-  var navObserver = new MutationObserver(function () {
-    if (window.location.href !== lastHref) {
-      lastHref = window.location.href;
-      // Reset per-conversation trace for new conversations
-      lastBookmarkOverride = null;
-      lastPlusOverride = null;
-      setTimeout(overrideHeaderIcons, 500);
-    }
-  });
-  navObserver.observe(document.body, { childList: true, subtree: true });
+  updateTooltips();
+  setInterval(updateTooltips, 2000);
 
 })();

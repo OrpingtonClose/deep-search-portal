@@ -155,16 +155,26 @@ def main():
             else:
                 log.warning("Server not responding — treating as idle")
         elif status["active"] > 0:
+            if not server_seen_alive:
+                log.info("Server is alive (first seen with active requests)")
             server_seen_alive = True
             last_activity = time.time()
             log.debug("Active requests: %d", status["active"])
         elif status["active"] == 0:
+            if not server_seen_alive:
+                # First time seeing server alive — reset last_activity so idle
+                # timeout starts from NOW, not from daemon start time.
+                log.info("Server is alive (first seen idle) — resetting idle timer")
+                last_activity = time.time()
             server_seen_alive = True
             idle_secs = time.time() - last_activity
             log.info("Idle for %.0fs / %ds", idle_secs, args.timeout)
         else:
             # active == -1 means we couldn't determine (health-only endpoint)
             # Conservatively treat as active
+            if not server_seen_alive:
+                log.info("Server is alive (first seen, unknown activity) — resetting idle timer")
+                last_activity = time.time()
             server_seen_alive = True
             last_activity = time.time()
 

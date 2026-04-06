@@ -26,6 +26,7 @@ Architecture:
 Runs as a FastAPI app under uvicorn in a screen session (port 9951).
 """
 
+import asyncio
 import json
 import os
 import re
@@ -503,8 +504,6 @@ async def _collect_full_response(
 
     Returns (content, reasoning_content).  Retries on read timeouts.
     """
-    import asyncio as _asyncio
-
     client = http_client()
     last_exc: Exception | None = None
     for attempt in range(1, _max_retries + 1):
@@ -543,11 +542,18 @@ async def _collect_full_response(
                     f"[{req_id}] Venice read timeout on attempt {attempt}, "
                     f"retrying in {wait}s ..."
                 )
-                await _asyncio.sleep(wait)
+                await asyncio.sleep(wait)
             else:
                 log.error(f"[{req_id}] Venice read timeout after {_max_retries} attempts")
 
     raise last_exc  # type: ignore[misc]
+
+
+# Keep-alive interval for SSE connections (seconds).
+# During long-running Venice API calls, we send SSE comment lines
+# (`: keepalive\n\n`) at this interval to prevent LibreChat and
+# reverse proxies from dropping the idle connection.
+_KEEPALIVE_INTERVAL = 15
 
 
 async def run_agent_loop(
@@ -641,8 +647,23 @@ async def run_agent_loop(
             )
             upstream_body["messages"] = compressed_messages
 
-            # Call Venice (non-streaming for tool-calling turns)
-            content, reasoning = await _collect_full_response(upstream_body, req_id)
+            # Call Venice (non-streaming for tool-calling turns).
+            # Run the API call as a background task and send SSE keep-alive
+            # comments every _KEEPALIVE_INTERVAL seconds so that LibreChat
+            # (and any reverse proxy) doesn't drop the idle SSE connection.
+            venice_task = asyncio.create_task(
+                _collect_full_response(upstream_body, req_id)
+            )
+            while not venice_task.done():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(venice_task),
+                        timeout=_KEEPALIVE_INTERVAL,
+                    )
+                except asyncio.TimeoutError:
+                    # Venice is still thinking — send SSE keep-alive comment
+                    yield ": keepalive\n\n"
+            content, reasoning = venice_task.result()
 
             # Combine content from both fields for tool-call parsing
             full_text = content + "\n" + reasoning if reasoning else content
@@ -741,7 +762,18 @@ async def run_agent_loop(
                     continue
 
                 log.info(f"[{req_id}] Executing tool: {fn_name}({fn_args})")
-                result = await execute_tool(fn_name, fn_args)
+                tool_task = asyncio.create_task(
+                    execute_tool(fn_name, fn_args)
+                )
+                while not tool_task.done():
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(tool_task),
+                            timeout=_KEEPALIVE_INTERVAL,
+                        )
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                result = tool_task.result()
                 seen_queries.add(query_key)
                 total_tool_calls += 1
                 tool_response_parts.append(
@@ -790,7 +822,18 @@ async def run_agent_loop(
         )
         upstream_body["messages"] = compressed_messages
 
-        content, reasoning = await _collect_full_response(upstream_body, req_id)
+        venice_task = asyncio.create_task(
+            _collect_full_response(upstream_body, req_id)
+        )
+        while not venice_task.done():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(venice_task),
+                    timeout=_KEEPALIVE_INTERVAL,
+                )
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+        content, reasoning = venice_task.result()
         final = content if content else reasoning
         if final:
             async for chunk in _stream_content(final):

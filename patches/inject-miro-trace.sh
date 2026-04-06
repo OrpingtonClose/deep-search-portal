@@ -5,7 +5,11 @@
 # What it does:
 #   1. Copies trace-page.html and knowledge-page.html into LibreChat's
 #      client/dist/ so they're served as static files.
-#   2. Injects miro-trace.js into index.html (before </body>).
+#   2. Injects miro-trace.js into index.html BEFORE the first <script
+#      type="module"> tag.  This is critical: LibreChat's ES-module bundle
+#      captures a reference to window.fetch at import time.  Our fetch
+#      monkey-patch must run before any module loads, otherwise the patched
+#      fetch is never called and trace data is silently lost.
 #
 # Usage:  bash patches/inject-miro-trace.sh /opt/LibreChat
 #
@@ -43,13 +47,24 @@ html = re.sub(r'<script>\s*/\*\*\s*\*\s*Miro Execution Trace.*?</script>\s*', ''
 open('$INDEX_HTML', 'w').write(html)
 "
 
-# ── Inject miro-trace.js before </body> ─────────────────────────────────
+# ── Inject miro-trace.js BEFORE the first <script type="module"> ────────
+#
+# LibreChat's bundled JS (ES modules) captures window.fetch at import time.
+# If we inject after the modules, our fetch monkey-patch is never called.
+# Injecting before the first module ensures window.fetch is patched before
+# any module can capture a stale reference.
 python3 -c "
-import sys
+import re, sys
 js = open('$TRACE_JS').read()
 html = open('$INDEX_HTML').read()
-tag = '<script>' + js + '</script>\n</body>'
-html = html.replace('</body>', tag, 1)
+tag = '<script>' + js + '</script>\n'
+# Insert before the first <script type=\"module\">
+m = re.search(r'<script type=\"module\"', html)
+if m:
+    html = html[:m.start()] + tag + html[m.start():]
+else:
+    # Fallback: inject before </head>
+    html = html.replace('</head>', tag + '</head>', 1)
 open('$INDEX_HTML', 'w').write(html)
 "
 

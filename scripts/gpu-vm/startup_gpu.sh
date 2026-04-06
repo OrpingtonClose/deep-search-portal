@@ -85,7 +85,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 screen -dmS auto-stop bash -c "python3 ${SCRIPT_DIR}/auto_stop.py \
     --port $SERVE_PORT \
     --timeout $IDLE_TIMEOUT \
-    --vast-api-key $VAST_API_KEY \
     2>&1 | tee /var/log/auto_stop.log"
 echo "Auto-stop daemon started (timeout: ${IDLE_TIMEOUT}s)"
 

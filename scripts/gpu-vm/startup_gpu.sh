@@ -18,6 +18,18 @@ TP_SIZE="${TP_SIZE:-4}"
 IDLE_TIMEOUT="${IDLE_TIMEOUT:-1200}"  # 20 minutes default
 VAST_API_KEY="${VAST_API_KEY:?VAST_API_KEY not set}"
 
+# --- Start auto-stop daemon FIRST ---
+# Critical: the auto-stop daemon must always be running to prevent unbounded
+# VM costs. Started before model download, server launch, and health check so
+# that ANY subsequent failure still leaves cost protection in place. The daemon
+# handles an unresponsive server gracefully (treats it as idle).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+screen -dmS auto-stop bash -c "python3 ${SCRIPT_DIR}/auto_stop.py \
+    --port $SERVE_PORT \
+    --timeout $IDLE_TIMEOUT \
+    2>&1 | tee /var/log/auto_stop.log"
+echo "Auto-stop daemon started (timeout: ${IDLE_TIMEOUT}s)"
+
 # --- Download model if not cached ---
 mkdir -p "$MODEL_DIR"
 if [ ! -f "$MODEL_DIR/config.json" ]; then
@@ -76,17 +88,6 @@ else
     echo "FATAL: Neither vLLM nor SGLang installed. Install with: pip install vllm"
     exit 1
 fi
-
-# --- Start auto-stop daemon BEFORE health check ---
-# Critical: the auto-stop daemon must always be running to prevent unbounded
-# VM costs. If the model server fails to start, the daemon will detect the
-# unresponsive server as idle and stop the VM after IDLE_TIMEOUT.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-screen -dmS auto-stop bash -c "python3 ${SCRIPT_DIR}/auto_stop.py \
-    --port $SERVE_PORT \
-    --timeout $IDLE_TIMEOUT \
-    2>&1 | tee /var/log/auto_stop.log"
-echo "Auto-stop daemon started (timeout: ${IDLE_TIMEOUT}s)"
 
 # Wait for model to load (can take several minutes for large models)
 # Use || true so the script continues even if the model fails to start —

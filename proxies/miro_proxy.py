@@ -528,7 +528,7 @@ async def _collect_full_response(
     """
     client = http_client()
     last_exc: Exception | None = None
-    for attempt in range(1, _max_retries + 1):
+    for attempt in range(_max_retries + 1):
         try:
             # Per-chunk read timeout (120 s between chunks) + fast connect.
             timeout = httpx.Timeout(120.0, connect=30.0)
@@ -585,11 +585,13 @@ async def _collect_full_response(
             content = "".join(content_parts)
             reasoning = "".join(reasoning_parts)
 
-            # If wall time was exceeded but we got some content, use it
-            if wall_exceeded and not content:
+            # If wall time was exceeded but we got some content, use it.
+            # Also preserve reasoning-only responses — Venice sometimes puts
+            # everything in reasoning_content (confirmed in heretic_proxy.py).
+            if wall_exceeded and not content and not reasoning:
                 raise httpx.ReadTimeout(
                     f"Venice stream wall-time exceeded ({_max_wall_seconds}s) "
-                    f"with no content (reasoning: {len(reasoning)} chars)"
+                    f"with no content and no reasoning"
                 )
             if wall_exceeded:
                 log.info(
@@ -602,15 +604,15 @@ async def _collect_full_response(
         except (httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
             last_exc = exc
             if attempt < _max_retries:
-                wait = 2 ** attempt
+                wait = 2 ** (attempt + 1)
                 log.warning(
-                    f"[{req_id}] Venice stream error on attempt {attempt} "
+                    f"[{req_id}] Venice stream error on attempt {attempt + 1} "
                     f"({type(exc).__name__}), retrying in {wait}s ..."
                 )
                 await asyncio.sleep(wait)
             else:
                 log.error(
-                    f"[{req_id}] Venice stream error after {_max_retries} attempts: {exc}"
+                    f"[{req_id}] Venice stream error after {_max_retries + 1} attempts: {exc}"
                 )
 
     raise last_exc  # type: ignore[misc]

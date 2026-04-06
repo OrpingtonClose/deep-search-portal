@@ -161,6 +161,7 @@
   var _pollTimer = null;
   var _lastSeenRequestId = null;
   var _isPolling = false;
+  var _xhrManaged = false;  // true when XHR interception is managing the lifecycle
 
   function pollTrace() {
     _origFetch('/miro-trace/latest', { credentials: 'same-origin' })
@@ -223,10 +224,12 @@
     var url = arguments[1] || '';
     if (isChatStreamUrl(url)) {
       console.log('[miro-trace] XHR SSE stream detected:', url);
+      _xhrManaged = true;
       startPolling();
       // Listen for loadend to detect stream end
       this.addEventListener('loadend', function () {
         console.log('[miro-trace] XHR stream ended (loadend)');
+        _xhrManaged = false;
         stopPolling();
       });
     }
@@ -234,7 +237,13 @@
   };
 
   // ── Trigger 2: Stop button fallback ──────────────────────────────────
+  //
+  // Only starts/stops polling when the XHR interception is NOT managing
+  // the lifecycle.  This prevents the stop button check from prematurely
+  // stopping polling that the XHR loadend handler should control.
+
   function checkStreamingState() {
+    if (_xhrManaged) return;  // XHR interception is authoritative
     var stopBtn = document.querySelector('[data-testid="stop-button"]') ||
                   document.querySelector('button[aria-label="Stop"]') ||
                   document.querySelector('button[aria-label="stop generating"]');

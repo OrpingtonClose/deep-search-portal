@@ -760,13 +760,14 @@ async def run_agent_loop(
             })
 
         # Exhausted all turns — force final answer (MiroThinker concept)
+        turns_used = turn + 1
         log.warning(
-            f"[{req_id}] Exhausted {MAX_AGENT_TURNS} agent turns, "
+            f"[{req_id}] Exhausted {turns_used} agent turns, "
             f"forcing final answer ({total_tool_calls} total tool calls)"
         )
         async for chunk in _stream_content(
             f"*Research complete ({total_tool_calls} tool calls across "
-            f"{MAX_AGENT_TURNS} turns). Synthesizing final answer...*\n\n"
+            f"{turns_used} turns). Synthesizing final answer...*\n\n"
         ):
             yield chunk
 

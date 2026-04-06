@@ -619,9 +619,7 @@ endpoints:
 
     - name: "Self-Hosted GPU"
       apiKey: "not-needed"
-      # Replace with your GPU VM address when deployed
-      # (e.g., http://gpu-vm-ip:8000/v1 or https://gpu.deep-research.uk/v1)
-      baseURL: "http://localhost:8000/v1"
+      baseURL: "https://gpu.deep-research.uk/v1"
       models:
         default:
           - "gpt-oss-120b"

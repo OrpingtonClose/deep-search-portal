@@ -228,7 +228,9 @@
     channel.onmessage = function (e) {
       var msg = e.data;
       if (msg.action === 'turn') {
-        currentTrace.events.push(msg.data);
+        if (msg.data.events && msg.data.events.length) {
+          currentTrace.events = msg.data.events;
+        }
         render();
       } else if (msg.action === 'summary') {
         currentTrace.summary = msg.data;

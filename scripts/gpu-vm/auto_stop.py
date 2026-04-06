@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""
+Auto-stop daemon for GPU inference VM on Vast.ai.
+
+Monitors the inference server for activity. When no requests have been
+processed for IDLE_TIMEOUT seconds, stops the Vast.ai instance via API.
+
+Much more reliable than counting TCP connections — uses the server's
+own metrics endpoint to detect actual inference activity.
+"""
+import argparse
+import json
+import logging
+import os
+import sys
+import time
+import urllib.request
+import urllib.error
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [auto-stop] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("auto-stop")
+
+
+def get_server_status(port: int) -> dict:
+    """Query the inference server for current status.
+
+    Tries multiple endpoints in priority order:
+    1. /metrics — Prometheus endpoint (vLLM); gives exact active request count.
+    2. /health  — generic health check; confirms server is alive.
+    3. /v1/models — OpenAI-compatible list; confirms server is alive.
+
+    Returns a dict with keys:
+        alive  (bool): whether the server responded at all
+        active (int):  number of active requests (-1 = unknown)
+        source (str):  which endpoint answered
+    """
+    for path in ["/metrics", "/health", "/v1/models"]:
+        try:
+            url = f"http://localhost:{port}{path}"
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                body = resp.read().decode()
+                if path == "/metrics":
+                    # Parse Prometheus metrics for active requests
+                    running = 0
+                    waiting = 0
+                    for line in body.split("\n"):
+                        if "vllm:num_requests_running" in line and not line.startswith("#"):
+                            running = int(float(line.split()[-1]))
+                        if "vllm:num_requests_waiting" in line and not line.startswith("#"):
+                            waiting = int(float(line.split()[-1]))
+                    return {"alive": True, "active": running + waiting, "source": "metrics"}
+                elif path == "/health":
+                    return {"alive": True, "active": -1, "source": "health"}
+                else:
+                    return {"alive": True, "active": -1, "source": "models"}
+        except Exception:
+            continue
+    return {"alive": False, "active": 0, "source": "none"}
+
+
+def stop_instance(api_key: str) -> bool:
+    """Stop this Vast.ai instance via the API."""
+    instance_id = os.getenv("VAST_CONTAINERLABEL", "")
+    if not instance_id:
+        # Try to get from /etc/vast_containerlabel
+        try:
+            with open("/etc/vast_containerlabel", "r") as f:
+                instance_id = f.read().strip()
+        except FileNotFoundError:
+            pass
+
+    if not instance_id:
+        log.error("Cannot determine Vast.ai instance ID. Set VAST_CONTAINERLABEL env var.")
+        return False
+
+    log.info("Stopping Vast.ai instance %s...", instance_id)
+    try:
+        url = f"https://console.vast.ai/api/v0/instances/{instance_id}/"
+        data = json.dumps({"state": "stopped"}).encode()
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method="PUT",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            log.info("Stop response: %s", resp.status)
+            return resp.status in (200, 201, 204)
+    except Exception as e:
+        log.error("Failed to stop instance: %s", e)
+        return False
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Auto-stop GPU VM on idle")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--timeout", type=int, default=1200, help="Idle timeout in seconds")
+    parser.add_argument("--poll-interval", type=int, default=30, help="Seconds between checks")
+    parser.add_argument("--vast-api-key", type=str, default=os.getenv("VAST_API_KEY", ""))
+    parser.add_argument("--dry-run", action="store_true", help="Log but don't actually stop")
+    args = parser.parse_args()
+
+    if not args.vast_api_key:
+        log.error("VAST_API_KEY required (--vast-api-key or env var)")
+        sys.exit(1)
+
+    last_activity = time.time()
+    log.info(
+        "Auto-stop daemon started. Port=%d, timeout=%ds, poll=%ds",
+        args.port,
+        args.timeout,
+        args.poll_interval,
+    )
+
+    while True:
+        time.sleep(args.poll_interval)
+
+        status = get_server_status(args.port)
+
+        if not status["alive"]:
+            log.warning("Server not responding — treating as idle")
+        elif status["active"] > 0:
+            last_activity = time.time()
+            log.debug("Active requests: %d", status["active"])
+        elif status["active"] == 0:
+            idle_secs = time.time() - last_activity
+            log.info("Idle for %.0fs / %ds", idle_secs, args.timeout)
+        else:
+            # active == -1 means we couldn't determine (health-only endpoint)
+            # Conservatively treat as active
+            last_activity = time.time()
+
+        idle_duration = time.time() - last_activity
+        if idle_duration >= args.timeout:
+            log.info("Idle timeout reached (%.0fs >= %ds)", idle_duration, args.timeout)
+            if args.dry_run:
+                log.info("[DRY RUN] Would stop instance now")
+                last_activity = time.time()  # Reset to avoid repeated logs
+            else:
+                if stop_instance(args.vast_api_key):
+                    log.info("Instance stop requested. Exiting.")
+                    sys.exit(0)
+                else:
+                    log.error("Failed to stop instance. Will retry in 60s.")
+                    time.sleep(60)
+
+
+if __name__ == "__main__":
+    main()

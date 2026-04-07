@@ -88,7 +88,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in heretic-proxy mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng; do
+    for session in miro-proxy heretic-proxy mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -305,6 +305,15 @@ elif ! pgrep -f "heretic_proxy.py" > /dev/null; then
     wait_for_health "http://localhost:9950/health" "Heretic Proxy" 15
 fi
 
+# --- Miro Proxy (MiroThinker-style deep research on GLM Heretic + tools) ---
+if [ -z "$VENICE_API_KEY" ]; then
+    echo "WARNING: Skipping Miro Proxy — VENICE_API_KEY not set"
+elif ! pgrep -f "miro_proxy.py" > /dev/null; then
+    screen -dmS miro-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && MIRO_PROXY_PORT=9951 python3 miro_proxy.py 2>&1 | tee /var/log/miro_proxy.log"
+    echo "Miro Proxy starting..."
+    wait_for_health "http://localhost:9951/health" "Miro Proxy" 15
+fi
+
 # --- Self-hosted GPU VM health check (optional) ---
 if [ -n "${GPU_VM_URL:-}" ]; then
     echo "Checking self-hosted GPU VM at $GPU_VM_URL..."
@@ -314,5 +323,4 @@ if [ -n "${GPU_VM_URL:-}" ]; then
         echo "WARNING: GPU VM at $GPU_VM_URL is not responding (may be stopped)"
     fi
 fi
-
 echo "All services started. Portal: ${DOMAIN_CLIENT:-https://deep-search.uk}"

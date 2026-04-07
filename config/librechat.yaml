@@ -25,6 +25,14 @@ modelSpecs:
         endpoint: "Heretic"
         model: "glm-4.7-flash-heretic"
 
+    - name: "miro-glm-47-venice"
+      label: "uncensored miro glm-4.7 venice"
+      description: "MiroThinker-style deep research agent on GLM-4.7 Flash Heretic. Up to 30 research turns with context management, duplicate detection, and forced synthesis. Uncensored."
+      group: "Experimental"
+      preset:
+        endpoint: "Miro GLM"
+        model: "miro-glm-4.7-venice"
+
     - name: "ultraplinian-fast"
       label: "Consortium Fast"
       description: "Races the fastest models from multiple providers. Quick results, unfiltered."
@@ -649,6 +657,25 @@ endpoints:
       titleMethod: "completion"
       summarize: false
       maxContextTokens: 128000
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+
+    - name: "Miro GLM"
+      apiKey: "not-needed"
+      baseURL: "http://host.docker.internal:9951/v1"
+      models:
+        default:
+          - "miro-glm-4.7-venice"
+        fetch: true
+      titleConvo: true
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
+      summarize: false
+      maxContextTokens: 256000
       dropParams:
         - "stop"
         - "user"

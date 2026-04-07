@@ -27,6 +27,8 @@ import traceback
 import uuid
 from typing import AsyncGenerator, Optional
 
+import httpx
+
 from fastapi import Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
@@ -409,38 +411,59 @@ async def execute_tool(name: str, arguments: dict) -> str:
 async def _collect_full_response(
     upstream_body: dict,
     req_id: str,
+    _max_retries: int = 2,
 ) -> tuple[str, str]:
     """Call Venice and collect the full response (non-streaming).
 
     Returns (content, reasoning_content) — GLM Heretic may put its output
-    in either or both fields.
+    in either or both fields.  Retries once on read timeouts since Venice
+    can be slow for complex multi-turn reasoning queries.
     """
+    import asyncio as _asyncio
+
     client = http_client()
-    resp = await client.post(
-        f"{UPSTREAM_BASE}/chat/completions",
-        json={**upstream_body, "stream": False},
-        headers={
-            "Authorization": f"Bearer {UPSTREAM_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://deep-search.uk",
-            "X-Title": "Deep Search Heretic Proxy",
-        },
-        timeout=120.0,
-    )
-    if resp.status_code != 200:
-        error_text = resp.text[:500]
-        log.error(f"[{req_id}] Venice error {resp.status_code}: {error_text}")
-        raise RuntimeError(f"Venice HTTP {resp.status_code}: {error_text}")
+    last_exc: Exception | None = None
+    for attempt in range(1, _max_retries + 1):
+        try:
+            resp = await client.post(
+                f"{UPSTREAM_BASE}/chat/completions",
+                json={**upstream_body, "stream": False},
+                headers={
+                    "Authorization": f"Bearer {UPSTREAM_KEY}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://deep-search.uk",
+                    "X-Title": "Deep Search Heretic Proxy",
+                },
+                timeout=300.0,
+            )
+            if resp.status_code != 200:
+                error_text = resp.text[:500]
+                log.error(f"[{req_id}] Venice error {resp.status_code}: {error_text}")
+                raise RuntimeError(f"Venice HTTP {resp.status_code}: {error_text}")
 
-    data = resp.json()
-    choices = data.get("choices", [])
-    if not choices:
-        raise RuntimeError("Venice returned no choices")
+            data = resp.json()
+            choices = data.get("choices", [])
+            if not choices:
+                raise RuntimeError("Venice returned no choices")
 
-    message = choices[0].get("message", {})
-    content = message.get("content", "") or ""
-    reasoning = message.get("reasoning_content", "") or ""
-    return content, reasoning
+            message = choices[0].get("message", {})
+            content = message.get("content", "") or ""
+            reasoning = message.get("reasoning_content", "") or ""
+            return content, reasoning
+
+        except httpx.ReadTimeout as exc:
+            last_exc = exc
+            if attempt < _max_retries:
+                wait = 2 ** attempt
+                log.warning(
+                    f"[{req_id}] Venice read timeout on attempt {attempt}, "
+                    f"retrying in {wait}s ..."
+                )
+                await _asyncio.sleep(wait)
+            else:
+                log.error(f"[{req_id}] Venice read timeout after {_max_retries} attempts")
+
+    raise last_exc  # type: ignore[misc]
 
 
 async def run_agent_loop(
@@ -454,12 +477,15 @@ async def run_agent_loop(
     model_id = original_body.get("model", "glm-4.7-flash-heretic")
     start_time = time.monotonic()
 
+    first_chunk_sent = False
+
     def _chunk(
         content: str = "",
         finish_reason: Optional[str] = None,
         reasoning: Optional[str] = None,
     ) -> str:
-        return make_sse_chunk(
+        nonlocal first_chunk_sent
+        chunk = make_sse_chunk(
             content,
             request_id=request_id,
             created=created,
@@ -467,6 +493,32 @@ async def run_agent_loop(
             finish_reason=finish_reason,
             reasoning_content=reasoning,
         )
+        if not first_chunk_sent:
+            # Send an initial role chunk before the first content chunk,
+            # matching the OpenAI streaming format that LibreChat expects.
+            first_chunk_sent = True
+            role_data = {
+                "id": request_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_id,
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}],
+            }
+            return f"data: {json.dumps(role_data)}\n\n" + chunk
+        return chunk
+
+    async def _stream_content(text: str) -> AsyncGenerator[str, None]:
+        """Yield text as incremental word-level SSE chunks.
+
+        LibreChat (via OpenAI SDK v5) expects incremental streaming, not
+        single bulk chunks.  Splitting on whitespace boundaries keeps the
+        UI responsive and avoids edge-cases in the SDK stream parser.
+        """
+        words = text.split(" ")
+        for i, word in enumerate(words):
+            token = word if i == 0 else " " + word
+            yield _chunk(content=token)
+
 
     # Build the XML tools system prompt
     xml_tools_prompt = build_xml_tools_system_prompt(TOOLS)
@@ -518,21 +570,23 @@ async def run_agent_loop(
                     f"({time.monotonic() - start_time:.1f}s)"
                 )
 
-                # Stream any reasoning as collapsible thinking block
+                # Clean reasoning of tool-call XML artifacts
+                clean_reasoning = ""
                 if reasoning:
-                    # Clean reasoning of tool-call XML artifacts
                     clean_reasoning = reasoning
                     for tag in ("<tool_call>", "</tool_call>"):
                         clean_reasoning = clean_reasoning.replace(tag, "")
-                    if clean_reasoning.strip():
-                        yield _chunk(reasoning=clean_reasoning)
+                    clean_reasoning = clean_reasoning.strip()
 
-                # Stream the final content
-                if content:
-                    yield _chunk(content=content)
-                elif reasoning and not content:
-                    # Model put everything in reasoning_content — use cleaned version
-                    yield _chunk(content=clean_reasoning)
+                # Stream only the final answer as content.
+                # Reasoning is omitted from the response to keep the
+                # output clean and avoid rendering issues.
+                final_content = content if content else (
+                    clean_reasoning if clean_reasoning else ""
+                )
+                if final_content:
+                    async for chunk in _stream_content(final_content):
+                        yield chunk
 
                 yield _chunk(finish_reason="stop")
                 yield "data: [DONE]\n\n"
@@ -544,18 +598,22 @@ async def run_agent_loop(
                 f"{[tc['function']['name'] for tc in tool_calls]}"
             )
 
-            # Stream the reasoning as a thinking block so user sees progress
+            # Stream the reasoning as a visible progress block
+            turn_reasoning = ""
             if reasoning:
-                yield _chunk(reasoning=f"[Turn {turn + 1}] {reasoning[:2000]}")
+                turn_reasoning = reasoning[:2000]
             elif content:
                 # Some models put tool-call reasoning in content
                 clean = content
                 for tag in ("<tool_call>", "</tool_call>"):
                     clean = clean.replace(tag, "")
-                # Remove JSON tool call blocks from visible reasoning
                 clean = re.sub(r'\{"name":\s*"[^"]+",\s*"arguments":\s*\{[^}]*\}\}', '', clean)
-                if clean.strip():
-                    yield _chunk(reasoning=f"[Turn {turn + 1}] {clean.strip()[:2000]}")
+                turn_reasoning = clean.strip()[:2000]
+            if turn_reasoning:
+                # Stream intermediate turn progress as regular content
+                progress_text = f"*Researching (turn {turn + 1})...*\n\n"
+                async for chunk in _stream_content(progress_text):
+                    yield chunk
 
             # Execute tools and build tool response
             tool_response_parts = []
@@ -589,9 +647,8 @@ async def run_agent_loop(
             f"[{req_id}] Exhausted {MAX_AGENT_TURNS} agent turns, "
             f"forcing final answer"
         )
-        yield _chunk(
-            reasoning=f"[Reached maximum {MAX_AGENT_TURNS} research turns, synthesizing answer...]"
-        )
+        async for chunk in _stream_content(f"*Reached maximum {MAX_AGENT_TURNS} research turns, synthesizing answer...*\n\n"):
+            yield chunk
 
         # One final call with instruction to stop using tools
         working_messages.append({
@@ -605,11 +662,10 @@ async def run_agent_loop(
         upstream_body["messages"] = working_messages
 
         content, reasoning = await _collect_full_response(upstream_body, req_id)
-        if reasoning:
-            yield _chunk(reasoning=reasoning)
         final = content if content else reasoning
         if final:
-            yield _chunk(content=final)
+            async for chunk in _stream_content(final):
+                yield chunk
 
         yield _chunk(finish_reason="stop")
         yield "data: [DONE]\n\n"
@@ -624,7 +680,8 @@ async def run_agent_loop(
             f"```\n{type(e).__name__}: {str(e)}\n```\n\n"
             f"_Request: {req_id}_"
         )
-        yield _chunk(content=error_msg)
+        async for chunk in _stream_content(error_msg):
+            yield chunk
         yield _chunk(finish_reason="stop")
         yield "data: [DONE]\n\n"
 

@@ -242,6 +242,42 @@ _XML_TC_RE = re.compile(
 _XML_TC_ALT_PREFIX_RE = re.compile(
     r"<tool_call>\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(?=\{)",
 )
+# GLM XML-arg format: <tool_call>function_name\n<arg_key>k</arg_key><arg_value>v</arg_value>...</tool_call>
+# The model sometimes emits arguments as XML key/value pairs instead of JSON.
+_XML_TC_XMLARG_RE = re.compile(
+    r"<tool_call>\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\n(.*?)</tool_call>",
+    re.DOTALL,
+)
+_XML_ARG_PAIR_RE = re.compile(
+    r"<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>\s*(.*?)\s*</arg_value>",
+    re.DOTALL,
+)
+
+
+def _coerce_xml_value(val: str):
+    """Coerce an XML-arg string value to int/float when appropriate.
+
+    Tool functions use numeric parameters for slicing (e.g. ``results[:count]``),
+    so we must convert numeric strings to actual numbers.
+    """
+    # Try int first, then float (coerce whole-number floats to int for
+    # slice compatibility), fall back to str.
+    try:
+        iv = int(val)
+        return iv
+    except ValueError:
+        pass
+    try:
+        fv = float(val)
+        if fv == int(fv):
+            return int(fv)
+        return fv
+    except (ValueError, OverflowError):
+        pass
+    # Boolean-ish
+    if val.lower() in ("true", "false"):
+        return val.lower() == "true"
+    return val
 
 
 def _extract_braced_json(text: str, start: int) -> str | None:
@@ -280,9 +316,10 @@ def _extract_braced_json(text: str, start: int) -> str | None:
 def parse_xml_tool_calls(content: str) -> list[dict] | None:
     """Parse ``<tool_call>`` blocks into OpenAI-format dicts.
 
-    Supports two formats:
+    Supports three formats:
       1. Hermes-3 standard: ``<tool_call>{"name": "fn", "arguments": {...}}</tool_call>``
       2. GLM Heretic style: ``<tool_call>fn_name{"arg": "val"}</tool_call>``
+      3. GLM XML-arg style: ``<tool_call>fn_name\n<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>``
 
     Returns a list of tool-call dicts (same shape as
     ``response.choices[0].message.tool_calls``) or *None* if no valid
@@ -313,6 +350,7 @@ def parse_xml_tool_calls(content: str) -> list[dict] | None:
         return tool_calls
 
     # Fallback: GLM Heretic format — <tool_call>function_name{...}</tool_call>
+    # The closing </tool_call> is optional; uses brace-counting extraction.
     for m in _XML_TC_ALT_PREFIX_RE.finditer(content):
         fn_name = m.group(1)
         json_start = m.end()  # position of the opening '{'
@@ -331,6 +369,28 @@ def parse_xml_tool_calls(content: str) -> list[dict] | None:
             "function": {
                 "name": fn_name,
                 "arguments": json.dumps(args) if isinstance(args, dict) else str(args),
+            },
+        })
+
+    if tool_calls:
+        return tool_calls
+
+    # Fallback 2: GLM XML-arg format — <tool_call>fn_name\n<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>
+    for m in _XML_TC_XMLARG_RE.finditer(content):
+        fn_name = m.group(1)
+        body = m.group(2)
+        if not fn_name:
+            continue
+        pairs = _XML_ARG_PAIR_RE.findall(body)
+        if not pairs:
+            continue
+        args = {k.strip(): _coerce_xml_value(v.strip()) for k, v in pairs}
+        tool_calls.append({
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "function",
+            "function": {
+                "name": fn_name,
+                "arguments": json.dumps(args),
             },
         })
 

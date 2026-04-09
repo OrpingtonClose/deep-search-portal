@@ -6,8 +6,8 @@ The Deep Search Portal runs on **two Vast.ai GPU instances**, both accessible vi
 
 | Instance | Role | SSH | Description |
 |----------|------|-----|-------------|
-| 33706037 | **Production** | `ssh7.vast.ai:26036` | End-user facing. **3 models only** (Simple group). |
-| 33703935 | **Staging** | `ssh5.vast.ai:23934` | Testing/dev. Full model list + "Simple PROD" group marking the curated production models. Accessible via `https://staging.deep-search.uk` (Cloudflare tunnel). |
+| 34445148 | **Production** | `ssh5.vast.ai:15148` | End-user facing at `https://deep-search.uk`. **3 models only** (Simple group). RTX 3070, 64GB RAM, 14 CPUs, Norway. |
+| *(TBD)* | **Staging** | *(TBD)* | Testing/dev. Full model list + "Simple PROD" group marking the curated production models. Accessible via `https://staging.deep-search.uk`. |
 
 > **Note:** Instance IDs, SSH hosts, and ports may change if instances are recreated. Always verify via `vastai show instances` or the Vast.ai API.
 
@@ -72,13 +72,15 @@ cp /opt/deep-search-portal/config/librechat-staging.yaml /opt/LibreChat/librecha
 
 ### 3. Restart LibreChat
 
-LibreChat runs via `npm run backend` in a GNU `screen` session (NOT Docker):
+LibreChat runs as a standalone Node process in a GNU `screen` session (NOT Docker):
 
 ```bash
 screen -S librechat -X quit
 sleep 1
-cd /opt/LibreChat && screen -dmS librechat bash -c 'set -a; source /opt/.env 2>/dev/null; source .env 2>/dev/null; set +a; npm run backend 2>&1 | tee /var/log/librechat.log'
+cd /opt/LibreChat && screen -dmS librechat bash -c 'node api/server/index.js 2>&1 | tee /var/log/librechat.log'
 ```
+
+nginx reverse-proxies port 3000 → LibreChat on port 3001 (Cloudflare tunnel connects to port 3000).
 
 ### 4. Restart proxies (if proxy code changed)
 
@@ -116,7 +118,8 @@ for s in data.get('modelSpecs',{}).get('list',[]):
 
 | Service | Port | Screen Session |
 |---------|------|----------------|
-| LibreChat | 3000 | `librechat` |
+| nginx (reverse proxy) | 3000 | — |
+| LibreChat | 3001 | `librechat` |
 | Mistral Thinking Proxy | 9100 | `thinking-proxy` |
 | Deep Research Proxy | 9200 | `deep-research` |
 | Persistent MiroFlow | 9300 | `persistent-research` |
@@ -126,8 +129,9 @@ for s in data.get('modelSpecs',{}).get('list',[]):
 | xAI Native Proxy | 9700 | `xai-native-proxy` |
 | Persistent MiroFlow Wiki | 9800 | (shared) |
 | MiroFlow Sprint Wiki | 9850 | (shared) |
-| Tier Chooser Proxy | 9900 | `litellm` |
+| Tier Chooser Proxy | 9900 | `tier-chooser` |
 | Heretic Proxy | 9950 | `heretic-proxy` |
+| Miro Proxy | 9951 | `miro-proxy` |
 | SearXNG | 8888 | `searxng` |
 
 ---
@@ -136,8 +140,12 @@ for s in data.get('modelSpecs',{}).get('list',[]):
 
 All env vars are stored in `/opt/.env` on each instance. Key variables:
 
-- `VENICE_API_KEY` — Required for Heretic proxy (port 9950)
+- `VENICE_API_KEY` — Required for Heretic proxy (port 9950) and Miro proxy (port 9951)
 - `XAI_API_KEY` — Required for xAI Native proxy (port 9700)
+- `UPSTREAM_KEY` — Derived from VENICE_API_KEY, used by proxy shared module
+- `UPSTREAM_BASE` — Venice API base URL (`https://api.venice.ai/api/v1`)
+- `UPSTREAM_MODEL` — Default model for Heretic (`olafangensan-glm-4.7-flash-heretic`)
+- `CLOUDFLARE_TUNNEL_TOKEN` — Cloudflare tunnel token for deep-search.uk
 - `FIRECRAWL_API_KEY` — Used by Heretic proxy for web scraping tools
 - `EXA_API_KEY` — Used by Heretic proxy for semantic search tools
 - `BRAVE_SEARCH_API_KEY` — Used by Heretic proxy and search providers
@@ -179,6 +187,8 @@ vastai attach ssh-key <instance_id> "$(cat ~/.ssh/id_ed25519.pub)"
 
 - **Config drift**: The server's `/opt/LibreChat/librechat.yaml` is a standalone copy. Always copy the repo config after `git pull`.
 - **Wrong config on wrong instance**: Production uses `config/librechat.yaml`, staging uses `config/librechat-staging.yaml`. Deploying the wrong one breaks the model list.
-- **LibreChat is NOT Docker**: It runs via `npm run backend` in a screen session. Do not try `docker compose restart`.
+- **LibreChat is NOT Docker**: It runs as `node api/server/index.js` in a screen session. Do not try `docker compose restart`.
+- **nginx on port 3000**: Cloudflare tunnel connects to port 3000 (nginx), which reverse-proxies to LibreChat on port 3001. Do not run LibreChat on port 3000 directly.
+- **Miro trace side-channel**: nginx proxies `/miro-trace/` → Miro proxy (port 9951) for execution trace REST endpoints.
 - **Proxy won't start**: Check that the required API keys are set in `/opt/.env`. Use `source /opt/.env && env | grep KEY` to verify.
 - **Models not visible after deploy**: You forgot to copy the config to `/opt/LibreChat/librechat.yaml` and restart LibreChat.

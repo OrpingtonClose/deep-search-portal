@@ -178,11 +178,15 @@ fi
 
 # --- SearXNG ---
 if ! pgrep -f "searx.webapp" > /dev/null; then
-    cd /tmp/searxng
-    screen -dmS searxng /opt/searxng-env/bin/python -m searx.webapp
-    echo "SearXNG started"
+    if [ -d /tmp/searxng ] && [ -f /opt/searxng-env/bin/python ]; then
+        cd /tmp/searxng
+        screen -dmS searxng /opt/searxng-env/bin/python -m searx.webapp
+        echo "SearXNG started"
+    else
+        echo "WARNING: SearXNG not installed (/tmp/searxng or /opt/searxng-env missing) — skipping"
+    fi
 fi
-wait_for_health "http://localhost:8888" "SearXNG" 30
+wait_for_health "http://localhost:8888" "SearXNG" 30 || true
 
 # --- LibreChat (Docker Compose: API + MongoDB + Meilisearch) ---
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"

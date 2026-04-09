@@ -113,7 +113,11 @@ log "Python dependencies installed."
 # ---------------------------------------------------------------------------
 log "Writing /opt/.env..."
 
-# Generate LibreChat secrets if not provided
+# Preserve existing secrets on rerun (CREDS_KEY/JWT_SECRET from prior deploy)
+if [ -f /opt/.env ]; then
+    set -a; source /opt/.env 2>/dev/null; set +a
+    log "Loaded existing /opt/.env (preserving CREDS_KEY/JWT_SECRET)."
+fi
 CREDS_KEY="${CREDS_KEY:-$(openssl rand -hex 32)}"
 JWT_SECRET="${JWT_SECRET:-$(openssl rand -hex 32)}"
 

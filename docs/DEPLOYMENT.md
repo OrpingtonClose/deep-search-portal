@@ -77,7 +77,7 @@ LibreChat runs as a standalone Node process in a GNU `screen` session (NOT Docke
 ```bash
 screen -S librechat -X quit
 sleep 1
-cd /opt/LibreChat && screen -dmS librechat bash -c 'node api/server/index.js 2>&1 | tee /var/log/librechat.log'
+cd /opt/LibreChat && screen -dmS librechat bash -c 'set -a; source /opt/.env 2>/dev/null; source .env 2>/dev/null; set +a; node api/server/index.js 2>&1 | tee /var/log/librechat.log'
 ```
 
 nginx reverse-proxies port 3000 → LibreChat on port 3001 (Cloudflare tunnel connects to port 3000).

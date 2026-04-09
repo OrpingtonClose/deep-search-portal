@@ -146,6 +146,9 @@ All env vars are stored in `/opt/.env` on each instance. Key variables:
 - `UPSTREAM_BASE` — Venice API base URL (`https://api.venice.ai/api/v1`)
 - `UPSTREAM_MODEL` — Default model for Heretic (`olafangensan-glm-4.7-flash-heretic`)
 - `CLOUDFLARE_TUNNEL_TOKEN` — Cloudflare tunnel token for deep-search.uk
+- `GOOGLE_CLIENT_ID` — Google OAuth client ID for social login
+- `GOOGLE_CLIENT_SECRET` — Google OAuth client secret
+- `GOOGLE_CALLBACK_URL` — Set to `/oauth/google/callback`
 - `FIRECRAWL_API_KEY` — Used by Heretic proxy for web scraping tools
 - `EXA_API_KEY` — Used by Heretic proxy for semantic search tools
 - `BRAVE_SEARCH_API_KEY` — Used by Heretic proxy and search providers
@@ -190,5 +193,6 @@ vastai attach ssh-key <instance_id> "$(cat ~/.ssh/id_ed25519.pub)"
 - **LibreChat is NOT Docker**: It runs as `node api/server/index.js` in a screen session. Do not try `docker compose restart`.
 - **nginx on port 3000**: Cloudflare tunnel connects to port 3000 (nginx), which reverse-proxies to LibreChat on port 3001. Do not run LibreChat on port 3000 directly.
 - **Miro trace side-channel**: nginx proxies `/miro-trace/` → Miro proxy (port 9951) for execution trace REST endpoints.
+- **Docker does NOT work**: Vast.ai instances lack overlayfs/iptables permissions for Docker-in-Docker. LibreChat runs as standalone Node.js with a separate MongoDB process — not via Docker Compose.
 - **Proxy won't start**: Check that the required API keys are set in `/opt/.env`. Use `source /opt/.env && env | grep KEY` to verify.
 - **Models not visible after deploy**: You forgot to copy the config to `/opt/LibreChat/librechat.yaml` and restart LibreChat.

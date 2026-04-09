@@ -3,8 +3,8 @@
 ## Architecture
 
 ```
-Internet → Cloudflare Tunnel → nginx (:3000) → LibreChat Docker (:3080)
-                                              → Proxy services (:9100–9951)
+Internet → Cloudflare Tunnel → LibreChat Docker (:3000 → :3080 inside container)
+                              → Proxy services (:9100–9951)
 ```
 
 - **LibreChat**: Docker Compose stack (`config/docker-compose.librechat.yml`) — API + MongoDB + Meilisearch
@@ -92,7 +92,7 @@ All other models exist only in staging.
 
 | Service | Port | Screen Session |
 |---------|------|----------------|
-| LibreChat (Docker) | 3000 (nginx) → 3080 (container) | N/A (Docker) |
+| LibreChat (Docker) | 3000 (host) → 3080 (container) | N/A (Docker) |
 | Thinking Proxy | 9100 | `thinking-proxy` |
 | Deep Research Proxy | 9200 | `deep-research` |
 | Persistent MiroFlow | 9300 | `persistent-research` |

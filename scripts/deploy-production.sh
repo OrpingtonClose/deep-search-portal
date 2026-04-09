@@ -59,7 +59,7 @@ log "Installing system packages..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
-    git curl wget screen nginx python3 python3-pip \
+    git curl wget screen python3 python3-pip \
     apt-transport-https ca-certificates gnupg lsb-release \
     > /dev/null 2>&1
 log "System packages installed."
@@ -168,84 +168,23 @@ cp /opt/deep-search-portal/config/librechat.yaml /opt/deep-search-portal/config/
 log "LibreChat config ready (production: 3 models, enforce: true)."
 
 # ---------------------------------------------------------------------------
-# 8. Set up nginx reverse proxy (port 3000 → Docker LibreChat on 3000)
+# 8. Add host.docker.internal to /etc/hosts (required by LibreChat endpoints)
 # ---------------------------------------------------------------------------
-log "Configuring nginx..."
-cat > /etc/nginx/sites-available/default << 'NGINXEOF'
-server {
-    listen 3000 default_server;
-    server_name _;
-    client_max_body_size 100M;
-
-    location / {
-        proxy_pass http://127.0.0.1:3080;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
-    }
-}
-NGINXEOF
-
-# Remove default listener on port 80 if it conflicts
-if nginx -t 2>/dev/null; then
-    nginx -s reload 2>/dev/null || nginx
-    log "nginx configured and running."
-else
-    nginx
-    log "nginx started."
+if ! grep -q 'host.docker.internal' /etc/hosts 2>/dev/null; then
+    echo '127.0.0.1 host.docker.internal' >> /etc/hosts
+    log "Added host.docker.internal to /etc/hosts."
 fi
 
 # ---------------------------------------------------------------------------
-# 9. Start LibreChat via Docker Compose
+# 9. Start all services via startup.sh
+#    (LibreChat Docker Compose + all proxies + Cloudflare tunnel)
 # ---------------------------------------------------------------------------
-log "Starting LibreChat Docker Compose stack..."
+log "Starting all services via startup.sh..."
 cd /opt/deep-search-portal
-set -a; source /opt/.env; set +a
-bash scripts/start_librechat.sh up
-
-# Wait for LibreChat to be healthy
-log "Waiting for LibreChat to become healthy..."
-for i in $(seq 1 90); do
-    if curl -sf http://localhost:3000 > /dev/null 2>&1; then
-        log "LibreChat is healthy on port 3000."
-        break
-    fi
-    if [ "$i" -eq 90 ]; then
-        log "WARNING: LibreChat did not become healthy within 90s."
-    fi
-    sleep 1
-done
+bash scripts/startup.sh || log "WARNING: Some services may have failed to start."
 
 # ---------------------------------------------------------------------------
-# 10. Start all proxies via startup.sh
-# ---------------------------------------------------------------------------
-log "Starting all proxy services..."
-bash /opt/deep-search-portal/scripts/startup.sh || log "WARNING: Some proxy services may have failed to start."
-
-# ---------------------------------------------------------------------------
-# 11. Start Cloudflare tunnel
-# ---------------------------------------------------------------------------
-if ! pgrep -f "cloudflared tunnel" > /dev/null; then
-    log "Starting Cloudflare tunnel..."
-    screen -dmS cftunnel cloudflared tunnel run --token "$CLOUDFLARE_TUNNEL_TOKEN"
-    sleep 3
-    if pgrep -f "cloudflared tunnel" > /dev/null; then
-        log "Cloudflare tunnel running."
-    else
-        log "WARNING: Cloudflare tunnel may have failed to start."
-    fi
-else
-    log "Cloudflare tunnel already running."
-fi
-
-# ---------------------------------------------------------------------------
-# 12. Health check summary
+# 10. Health check summary
 # ---------------------------------------------------------------------------
 log ""
 log "=========================================="

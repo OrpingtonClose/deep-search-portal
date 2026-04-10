@@ -88,7 +88,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in miro-proxy heretic-proxy mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng; do
+    for session in miro-proxy heretic-proxy tier-chooser mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -299,6 +299,13 @@ if ! pgrep -f "xai_native_proxy.py" > /dev/null; then
     echo "xAI Native Proxy starting..."
 fi
 wait_for_health "http://localhost:9700/health" "xAI Native Proxy" 15
+
+# --- Tier Chooser Proxy (multi-provider model racing + media enrichment) ---
+if ! pgrep -f "tier_chooser_proxy.py" > /dev/null; then
+    screen -dmS tier-chooser bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && TIER_CHOOSER_PORT=9900 python3 tier_chooser_proxy.py 2>&1 | tee /var/log/tier_chooser_proxy.log"
+    echo "Tier Chooser Proxy starting..."
+fi
+wait_for_health "http://localhost:9900/health" "Tier Chooser Proxy" 15
 
 # --- Heretic Proxy (GLM-4.7 Flash Heretic + Firecrawl/Exa/Brave tools) ---
 if [ -z "$VENICE_API_KEY" ]; then

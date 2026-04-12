@@ -67,7 +67,7 @@ MAX_CONCURRENT_MODELS = env_int("TIER_CHOOSER_MAX_CONCURRENT", 10, minimum=1)
 MODEL_TIMEOUT = int(os.getenv("TIER_CHOOSER_MODEL_TIMEOUT", "90"))
 
 # Synthesis configuration
-SYNTHESIS_MODEL = os.getenv("TIER_CHOOSER_SYNTHESIS_MODEL", "google/gemini-3.1-flash")
+SYNTHESIS_MODEL = os.getenv("TIER_CHOOSER_SYNTHESIS_MODEL", "google/gemini-2.5-flash")
 KNOWLEDGE_NAMESPACE = os.getenv("TIER_CHOOSER_NAMESPACE", "tier-chooser")
 
 IMAGE_ENRICHMENT_ENABLED = os.getenv("TIER_CHOOSER_IMAGE_ENRICHMENT", "true").lower() in ("1", "true", "yes")
@@ -134,8 +134,9 @@ NATIVE_MODEL_MAP: dict[str, str] = {
     "gemini-3.1-flash":    "gemini-3-flash-preview",
     "gemini-3-pro":        "gemini-3-pro-preview",
     "gemini-3.1-pro":      "gemini-3.1-pro-preview",
-    # OpenAI — high-effort variant is called "pro"
+    # OpenAI — high-effort variant is called "pro"; o3-mini-high maps to o3-mini
     "gpt-5.4-high":        "gpt-5.4-pro",
+    "o3-mini-high":        "o3-mini",
     # Qwen/DashScope — native API model IDs
     "qwen3.5-turbo":       "qwen3.5-flash",
     "qwen3.5-max":         "qwen3-max",
@@ -143,8 +144,11 @@ NATIVE_MODEL_MAP: dict[str, str] = {
     # DeepSeek — native API model IDs
     "deepseek-v3.2":       "deepseek-chat",
     "deepseek-v3.2-lite":  "deepseek-chat",
+    "deepseek-chat-v3.1":  "deepseek-chat",
     "deepseek-r1":         "deepseek-reasoner",
-    # Anthropic — native API uses hyphens (not dots); no haiku 4.6 exists yet
+    "deepseek-r1-0528":    "deepseek-reasoner",
+    # Anthropic — native API uses hyphens (not dots)
+    "claude-haiku-4.5":    "claude-haiku-4-5-20251001",
     "claude-haiku-4.6":    "claude-haiku-4-5-20251001",
     "claude-sonnet-4.6":   "claude-sonnet-4-6",
     "claude-opus-4.6":     "claude-opus-4-6",
@@ -187,24 +191,24 @@ log.info(
 
 TIER_MODELS = {
     "quick": [  # Fast Model — strict ≤1.5s, max tok/s, lowest latency
-        "anthropic/claude-haiku-4.6",          # Anthropic fast tier
-        "google/gemini-3.1-flash",             # Google DeepMind Flash
-        "openai/gpt-5.4-mini",                 # OpenAI Nano/mini
-        "x-ai/grok-4.20-non-reasoning",       # xAI Grok 4.20 fast/non-reasoning
-        "mistralai/mistral-large-3-efficient", # Mistral Large 3 efficient (41B active)
-        "deepseek/deepseek-v3.2-lite",         # DeepSeek V3.2 Lite/fast
-        "qwen/qwen3.5-turbo",                  # Alibaba Qwen 3.5 Turbo/Light
-        "z-ai/glm-5-light",                    # Zhipu GLM-5 Light
-        "moonshotai/kimi-k2.5-instant",        # Moonshot Kimi K2.5 Instant
+        "anthropic/claude-haiku-4.5",          # Anthropic fast tier
+        "google/gemini-3.1-flash-lite-preview", # Google DeepMind Flash Lite
+        "openai/o3-mini",                      # OpenAI fast reasoning
+        "x-ai/grok-4.1-fast",                 # xAI Grok fast variant
+        "mistralai/mistral-medium-3.1",        # Mistral medium-3.1 (efficient)
+        "deepseek/deepseek-chat-v3.1",         # DeepSeek V3.1 chat (fast)
+        "qwen/qwen-turbo",                     # Alibaba Qwen Turbo
+        "z-ai/glm-4.7-flash",                 # Zhipu GLM-4.7 Flash
+        "moonshotai/kimi-k2.5",                # Moonshot Kimi K2.5
     ],
-    "medium": [  # Best price/performance balance (unchanged)
+    "medium": [  # Best price/performance balance
         "anthropic/claude-sonnet-4.6",
-        "google/gemini-3-pro",
-        "openai/gpt-5.4",
+        "google/gemini-2.5-pro",
+        "openai/o3-mini-high",
         "x-ai/grok-4",
         "deepseek/deepseek-v3.2",
-        "qwen/qwen3.5-72b",
-        "mistralai/mistral-large-4",
+        "qwen/qwen3-235b-a22b",
+        "mistralai/mistral-large-2512",
         "z-ai/glm-5",
     ],
     "full-throttle": [  # Maximum capability, no compromises
@@ -212,8 +216,8 @@ TIER_MODELS = {
         "google/gemini-3.1-pro-preview",  # Often #1 or #2 overall
         "openai/o3",                        # Highest-effort OpenAI reasoning model
         "x-ai/grok-4.20",                 # Competitive frontier model
-        "deepseek/deepseek-reasoner",      # Top reasoning/value performer
-        "qwen/qwq-plus",                  # Qwen thinking model (reasoning)
+        "deepseek/deepseek-r1-0528",        # Top reasoning/value performer
+        "qwen/qwen3-max-thinking",        # Qwen thinking model (reasoning)
         "z-ai/glm-5",                     # Max-effort GLM variant
     ],
 }
@@ -484,14 +488,14 @@ _MAX_COMPLETION_TOKENS_PREFIXES = {"openai"}
 _THINKING_MODELS = {
     "qwen3-235b-a22b", "qwen3-235b-a22b-instruct-2507",
     "qwen3-235b-a22b-thinking-2507",
-    "qwen3-max",
+    "qwen3-max", "qwen3-max-thinking",
     "qwq-plus",
 }
 
 # Models that do not support custom temperature (only default=1)
 _NO_CUSTOM_TEMPERATURE_MODELS = {
     "gpt-5",
-    "o3",
+    "o3", "o3-mini", "o3-mini-high",
 }
 
 # Models that MUST use streaming even when call_model() is invoked (non-streaming).
@@ -501,7 +505,7 @@ _NO_CUSTOM_TEMPERATURE_MODELS = {
 #           content. Complex queries take 80-90s+ non-streaming, hitting the
 #           90s timeout. Streaming avoids this since tokens flow progressively.
 _FORCE_STREAM_MODELS = {
-    "qwq-plus",
+    "qwq-plus", "qwen3-max-thinking",
     "glm-5",
 }
 

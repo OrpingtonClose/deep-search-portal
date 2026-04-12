@@ -648,7 +648,8 @@ endpoints:
       - huihui_ai/gemma-4-abliterated:e2b
       fetch: true
     titleConvo: true
-    titleModel: huihui_ai/gemma-4-abliterated:e2b
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
     summarize: false
     maxContextTokens: 128000
     dropParams:

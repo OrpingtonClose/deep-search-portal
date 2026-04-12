@@ -88,7 +88,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in miro-proxy heretic-proxy tier-chooser mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng; do
+    for session in miro-proxy heretic-proxy tier-chooser ollama mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -328,7 +328,7 @@ fi
 # --- Ollama (local model inference — self-hosted models) ---
 if command -v ollama > /dev/null 2>&1; then
     if ! pgrep -f "ollama serve" > /dev/null; then
-        nohup ollama serve > /var/log/ollama.log 2>&1 &
+        screen -dmS ollama bash -c "ollama serve 2>&1 | tee /var/log/ollama.log"
         echo "Ollama server starting on port 11434..."
     fi
     wait_for_health "http://localhost:11434" "Ollama" 15 || true

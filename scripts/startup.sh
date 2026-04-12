@@ -325,6 +325,17 @@ elif ! pgrep -f "miro_proxy.py" > /dev/null; then
     wait_for_health "http://localhost:9951/health" "Miro Proxy" 15
 fi
 
+# --- Ollama (local model inference — self-hosted models) ---
+if command -v ollama > /dev/null 2>&1; then
+    if ! pgrep -f "ollama serve" > /dev/null; then
+        nohup ollama serve > /var/log/ollama.log 2>&1 &
+        echo "Ollama server starting on port 11434..."
+    fi
+    wait_for_health "http://localhost:11434" "Ollama" 15 || true
+else
+    echo "WARNING: Ollama not installed — self-hosted models will be unavailable"
+fi
+
 # --- Self-hosted GPU VM health check (optional) ---
 if [ -n "${GPU_VM_URL:-}" ]; then
     echo "Checking self-hosted GPU VM at $GPU_VM_URL..."

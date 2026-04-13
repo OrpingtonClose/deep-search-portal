@@ -68,7 +68,7 @@ ssh root@<host> 'set -a; source /opt/.env; set +a; cd /opt/LibreChat/app && nohu
 ssh root@<host> 'cd /opt/deep-search-portal && bash scripts/startup.sh'
 ```
 
-> **NOTE:** `scripts/startup.sh` tries to start LibreChat via Docker Compose (will fail harmlessly since Docker isn't available). LibreChat is already running natively from step 12. The proxies and tunnel sections of startup.sh work correctly.
+> **NOTE:** `scripts/startup.sh` attempts Docker Compose for LibreChat first. On native deployments (no Docker), this fails gracefully (patched with `|| true`) and the script continues to start all proxies and the Cloudflare tunnel. LibreChat must already be running from step 12.
 
 Optional env vars: `FIRECRAWL_API_KEY`, `EXA_API_KEY`, `BRAVE_SEARCH_API_KEY`, `MISTRAL_API_KEY`, `BRIGHT_DATA_API_KEY`, `APIFY_API_TOKEN`.
 

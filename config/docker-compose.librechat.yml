@@ -1,9 +1,16 @@
 # =============================================================================
-# Deep Search Portal — LibreChat Gateway
+# Deep Search Portal — LibreChat Gateway (LEGACY — not used on Vast.ai)
 #
 # Docker Compose stack for LibreChat (ChatGPT-like UI) with MongoDB and
 # Meilisearch.  Custom endpoints are configured in config/librechat.yaml
 # to point at the Deep Search proxy services.
+#
+# NOTE: The config files (librechat.yaml / librechat-staging.yaml) now use
+# "localhost" in baseURL fields for native Vast.ai deployment. If using this
+# Docker Compose setup, you must replace "localhost" with "host.docker.internal"
+# in the mounted config, e.g.:
+#   sed 's|localhost|host.docker.internal|g' config/librechat.yaml > /tmp/librechat-docker.yaml
+# Then mount /tmp/librechat-docker.yaml instead.
 #
 # Usage:
 #   docker compose -f config/docker-compose.librechat.yml up -d

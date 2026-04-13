@@ -77,21 +77,22 @@ Optional env vars: `FIRECRAWL_API_KEY`, `EXA_API_KEY`, `BRAVE_SEARCH_API_KEY`, `
 cd /opt/deep-search-portal && git pull origin main
 
 # Copy the RIGHT config (back up first!)
-cp /opt/LibreChat/librechat.yaml /opt/LibreChat/librechat.yaml.bak
+cp /opt/LibreChat/app/librechat.yaml /opt/LibreChat/app/librechat.yaml.bak
 
 # Production:
-cp config/librechat.yaml /opt/LibreChat/librechat.yaml
+cp config/librechat.yaml /opt/LibreChat/app/librechat.yaml
 # Staging:
-cp config/librechat-staging.yaml /opt/LibreChat/librechat.yaml
+cp config/librechat-staging.yaml /opt/LibreChat/app/librechat.yaml
 
-# Restart LibreChat
-bash scripts/start_librechat.sh restart
+# Restart LibreChat (kill old process and relaunch)
+pkill -f 'node api/server/index.js' || true
+cd /opt/LibreChat/app && set -a && source /opt/.env && set +a && nohup env HOST=0.0.0.0 PORT=3000 NODE_ENV=production MONGO_URI=mongodb://127.0.0.1:27017/LibreChat MEILI_HOST=http://127.0.0.1:7700 ENDPOINTS=custom ALLOW_SOCIAL_LOGIN=true ALLOW_SOCIAL_REGISTRATION=true ALLOW_EMAIL_LOGIN=true ALLOW_REGISTRATION=false GOOGLE_CALLBACK_URL=/oauth/google/callback node api/server/index.js > /var/log/librechat.log 2>&1 &
 
 # Restart proxies (if proxy code changed)
 bash scripts/startup.sh
 ```
 
-> **CRITICAL:** `/opt/LibreChat/librechat.yaml` is a standalone copy. `git pull` does NOT update it. You must copy explicitly.
+> **CRITICAL:** `/opt/LibreChat/app/librechat.yaml` is a standalone copy. `git pull` does NOT update it. You must copy explicitly.
 
 ---
 
@@ -201,8 +202,8 @@ Requires `VAST_AI_API_KEY` (or `VASTAI_API_KEY`) env var.
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| Models not visible after deploy | Forgot to copy config to `/opt/LibreChat/librechat.yaml` | Copy the right config file and restart LibreChat |
+| Models not visible after deploy | Forgot to copy config to `/opt/LibreChat/app/librechat.yaml` | Copy the right config file and restart LibreChat |
 | Wrong models on wrong server | Used production config on staging or vice versa | Check instance role with `vastai show instances`, use correct config file |
 | LibreChat won't start | Missing `GOOGLE_CLIENT_ID`, `CREDS_KEY`, or `JWT_SECRET` | Check `/opt/.env` has all required vars. `CREDS_KEY`/`JWT_SECRET` auto-generate if missing. |
 | Proxy won't start | Missing API key in `/opt/.env` | `source /opt/.env && env \| grep KEY` to verify |
-| Config drift between repo and server | `/opt/LibreChat/librechat.yaml` is a standalone copy | Always copy from repo after `git pull` |
+| Config drift between repo and server | `/opt/LibreChat/app/librechat.yaml` is a standalone copy | Always copy from repo after `git pull` |

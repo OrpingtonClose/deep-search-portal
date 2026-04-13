@@ -3,39 +3,70 @@
 ## Architecture
 
 ```
-Internet → Cloudflare Tunnel → LibreChat Docker (:3000 → :3080 inside container)
+Internet → Cloudflare Tunnel → LibreChat (Node.js, :3000)
                               → Proxy services (:9100–9951)
 ```
 
-- **LibreChat**: Docker Compose stack (`config/docker-compose.librechat.yml`) — API + MongoDB + Meilisearch
+- **LibreChat**: Standalone Node.js process (extracted from Docker image via `crane`). MongoDB + Meilisearch run natively.
 - **Proxies**: Python FastAPI processes in GNU `screen` sessions (managed by `scripts/startup.sh`)
 - **Tunnel**: `cloudflared` routes `deep-search.uk` / `staging.deep-search.uk` to the VM
 - **Host**: Vast.ai instances (Ubuntu). Instance IDs change on recreation — always check `vastai show instances`.
 
+### Current Instances
+
+| Role | Instance ID | SSH | URL |
+|------|-------------|-----|-----|
+| **Production** | 34809675 | `ssh -p 19674 root@ssh1.vast.ai` | https://deep-search.uk |
+| **Staging** | 34809851 | `ssh -p 19850 root@ssh8.vast.ai` | https://staging.deep-search.uk |
+
 ---
 
-## Fresh VM Setup (One Command)
+## Fresh VM Setup (Native — No Docker)
+
+Vast.ai containers lack `CAP_NET_ADMIN`, so Docker-in-Docker is impossible. We run everything natively.
 
 ```bash
-# 1. Create a Vast.ai instance (Ubuntu, >=32GB RAM, >=80GB disk)
+# 1. Create a Vast.ai instance (Ubuntu 22.04, >=32GB RAM, >=80GB disk)
 vastai create instance <offer_id> --image ubuntu:22.04 --disk 100 --ssh --direct
 
-# 2. Wait for SSH, then deploy
-scp scripts/deploy-production.sh root@<host>:/tmp/deploy.sh
-ssh root@<host> "
-  export VENICE_API_KEY=...
-  export XAI_API_KEY=...
-  export OPENROUTER_API_KEY=...
-  export GOOGLE_CLIENT_ID=...
-  export GOOGLE_CLIENT_SECRET=...
-  export CLOUDFLARE_TUNNEL_TOKEN=...
-  bash /tmp/deploy.sh
-"
+# 2. Wait for SSH, then run Phase 1 (system packages)
+ssh root@<host> "apt-get update -qq && apt-get install -y git curl wget screen python3 python3-pip gnupg lsb-release ca-certificates"
+
+# 3. Install MongoDB
+ssh root@<host> 'curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg && echo "deb [signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] http://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse" > /etc/apt/sources.list.d/mongodb-org-8.0.list && apt-get update -qq && apt-get install -y mongodb-org && mkdir -p /data/db && nohup mongod --dbpath /data/db --bind_ip 127.0.0.1 --noauth > /var/log/mongod.log 2>&1 &'
+
+# 4. Install Meilisearch
+ssh root@<host> 'curl -fsSL https://install.meilisearch.com | sh && mkdir -p /data/meili && nohup meilisearch --http-addr 127.0.0.1:7700 --db-path /data/meili --no-analytics > /var/log/meilisearch.log 2>&1 &'
+
+# 5. Install cloudflared
+ssh root@<host> 'curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb && dpkg -i /tmp/cloudflared.deb'
+
+# 6. Install Node.js 20
+ssh root@<host> 'curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs'
+
+# 7. Clone repo
+ssh root@<host> 'git clone https://github.com/OrpingtonClose/deep-search-portal.git /opt/deep-search-portal'
+
+# 8. Extract pre-built LibreChat from Docker image (avoids fragile source builds)
+ssh root@<host> 'curl -fsSL https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz | tar xz -C /usr/local/bin crane && mkdir -p /opt/LibreChat/app && cd /opt/LibreChat/app && crane export ghcr.io/danny-avila/librechat:latest - | tar x'
+
+# 9. Copy config (PRODUCTION or STAGING)
+ssh root@<host> 'cp /opt/deep-search-portal/config/librechat.yaml /opt/LibreChat/app/librechat.yaml'        # production
+# ssh root@<host> 'cp /opt/deep-search-portal/config/librechat-staging.yaml /opt/LibreChat/app/librechat.yaml'  # staging
+
+# 10. SCP the .env file (contains all API keys — see .env.example)
+scp /tmp/prod.env root@<host>:/opt/.env
+
+# 11. Start LibreChat natively
+ssh root@<host> 'set -a; source /opt/.env; set +a; cd /opt/LibreChat/app && nohup env HOST=0.0.0.0 PORT=3000 NODE_ENV=production MONGO_URI=mongodb://127.0.0.1:27017/LibreChat MEILI_HOST=http://127.0.0.1:7700 ENDPOINTS=custom ALLOW_SOCIAL_LOGIN=true ALLOW_SOCIAL_REGISTRATION=true ALLOW_EMAIL_LOGIN=true ALLOW_REGISTRATION=false GOOGLE_CALLBACK_URL=/oauth/google/callback node api/server/index.js > /var/log/librechat.log 2>&1 &'
+
+# 12. Install Python deps + start all proxies and tunnel
+ssh root@<host> 'pip3 install fastapi uvicorn httpx pydantic aiohttp requests beautifulsoup4 langgraph langgraph-checkpoint-sqlite -q && cd /opt/deep-search-portal && bash scripts/startup.sh'
 ```
 
-The script installs Docker, clones the repo, writes `/opt/.env`, starts LibreChat via Docker Compose, launches all proxies, connects the Cloudflare tunnel, and runs health checks. ~5 minutes total.
+> **NOTE:** `scripts/startup.sh` tries to start LibreChat via Docker Compose (will fail harmlessly since Docker isn't available). LibreChat is already running natively from step 11. The proxies and tunnel sections of startup.sh work correctly.
 
-Optional env vars: `FIRECRAWL_API_KEY`, `EXA_API_KEY`, `BRAVE_SEARCH_API_KEY`, `MISTRAL_API_KEY`, `BRIGHT_DATA_API_KEY`.
+Optional env vars: `FIRECRAWL_API_KEY`, `EXA_API_KEY`, `BRAVE_SEARCH_API_KEY`, `MISTRAL_API_KEY`, `BRIGHT_DATA_API_KEY`, `APIFY_API_TOKEN`.
 
 ---
 
@@ -92,7 +123,7 @@ All other models exist only in staging.
 
 | Service | Port | Screen Session |
 |---------|------|----------------|
-| LibreChat (Docker) | 3000 (host) → 3080 (container) | N/A (Docker) |
+| LibreChat (Node.js) | 3000 | N/A (nohup) |
 | Thinking Proxy | 9100 | `thinking-proxy` |
 | Deep Research Proxy | 9200 | `deep-research` |
 | Persistent MiroFlow | 9300 | `persistent-research` |
@@ -101,7 +132,7 @@ All other models exist only in staging.
 | G0DM0D3 Proxy | 9600 | `godmode-proxy` |
 | xAI Native Proxy | 9700 | `xai-native-proxy` |
 | Knowledge Engine | 9850 | `knowledge-engine` |
-| Tier Chooser Proxy | 9900 | `litellm` |
+| Tier Chooser Proxy | 9900 | `tier-chooser` |
 | Heretic Proxy | 9950 | `heretic-proxy` |
 | Miro Proxy | 9951 | `miro-proxy` |
 | SearXNG | 8888 | `searxng` |

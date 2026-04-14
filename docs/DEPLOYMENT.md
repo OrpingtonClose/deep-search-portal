@@ -16,8 +16,8 @@ Internet → Cloudflare Tunnel → LibreChat (Node.js, :3000)
 
 | Role | Instance ID | SSH | URL |
 |------|-------------|-----|-----|
-| **Production** | 34949639 | `ssh -p 29638 root@ssh7.vast.ai` | https://deep-search.uk |
-| **Staging** | 34947651 | `ssh -p 27650 root@ssh2.vast.ai` | https://staging.deep-search.uk |
+| **Production** | 34951881 | `ssh -p 31880 root@ssh6.vast.ai` | https://deep-search.uk |
+| **Staging** | 34954619 | `ssh -p 34618 root@ssh7.vast.ai` | https://staging.deep-search.uk |
 
 ---
 

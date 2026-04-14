@@ -16,8 +16,8 @@ Internet → Cloudflare Tunnel → LibreChat (Node.js, :3000)
 
 | Role | Instance ID | SSH | URL |
 |------|-------------|-----|-----|
-| **Production** | 34937875 | `ssh -p 17874 root@ssh7.vast.ai` | https://deep-search.uk |
-| **Staging** | 34938458 | `ssh -p 18458 root@ssh6.vast.ai` | https://staging.deep-search.uk |
+| **Production** | 34949639 | `ssh -p 29638 root@ssh7.vast.ai` | https://deep-search.uk |
+| **Staging** | 34947651 | `ssh -p 27650 root@ssh2.vast.ai` | https://staging.deep-search.uk |
 
 ---
 
@@ -242,7 +242,7 @@ Requires `VAST_AI_API_KEY` (or `VASTAI_API_KEY`) env var.
 | Login fails ("unknown error") | Missing `JWT_REFRESH_SECRET` or `CREDS_IV` in `.env` | Generate and add: `openssl rand -hex 32` / `openssl rand -hex 16` |
 | Login redirects to wrong domain | `DOMAIN_CLIENT`/`DOMAIN_SERVER` set to wrong URL in `.env` | Ensure production uses `https://deep-search.uk`, staging uses `https://staging.deep-search.uk` |
 | Proxy won't start in screen | `source /opt/.env` doesn't work in screen sessions | Use `export $(grep -v "^#" /opt/.env | xargs)` instead |
-| MongoDB won't start | CPU lacks AVX (required by MongoDB 5.0+) | Use Percona MongoDB 4.4 instead |
+| MongoDB won't start | CPU lacks AVX (required by MongoDB 5.0+) | Use Percona MongoDB 4.4 instead (check AVX: `grep avx /proc/cpuinfo`) |
 | Config drift between repo and server | `/opt/LibreChat/app/app/librechat.yaml` is a standalone copy | Always copy from repo after `git pull` |
 | Staging tunnel uses wrong token | Each tunnel has its own token | Get the staging-specific token from the Cloudflare API (see Cloudflare Tunnels section) |
 | `host.docker.internal` in config | Config written for Docker but running natively | Run `sed -i 's/host\.docker\.internal/localhost/g'` on the config |

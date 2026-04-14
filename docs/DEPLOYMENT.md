@@ -3,39 +3,84 @@
 ## Architecture
 
 ```
-Internet → Cloudflare Tunnel → LibreChat Docker (:3000 → :3080 inside container)
+Internet → Cloudflare Tunnel → LibreChat (Node.js, :3000)
                               → Proxy services (:9100–9951)
 ```
 
-- **LibreChat**: Docker Compose stack (`config/docker-compose.librechat.yml`) — API + MongoDB + Meilisearch
+- **LibreChat**: Standalone Node.js process (extracted from Docker image via `crane`). MongoDB + Meilisearch run natively.
 - **Proxies**: Python FastAPI processes in GNU `screen` sessions (managed by `scripts/startup.sh`)
 - **Tunnel**: `cloudflared` routes `deep-search.uk` / `staging.deep-search.uk` to the VM
 - **Host**: Vast.ai instances (Ubuntu). Instance IDs change on recreation — always check `vastai show instances`.
 
+### Current Instances
+
+| Role | Instance ID | SSH | URL |
+|------|-------------|-----|-----|
+| **Production** | 34937875 | `ssh -p 17874 root@ssh7.vast.ai` | https://deep-search.uk |
+| **Staging** | 34938458 | `ssh -p 18458 root@ssh6.vast.ai` | https://staging.deep-search.uk |
+
 ---
 
-## Fresh VM Setup (One Command)
+## Fresh VM Setup (Native — No Docker)
+
+Vast.ai containers lack `CAP_NET_ADMIN`, so Docker-in-Docker is impossible. We run everything natively.
 
 ```bash
-# 1. Create a Vast.ai instance (Ubuntu, >=32GB RAM, >=80GB disk)
+# 1. Create a Vast.ai instance (Ubuntu 22.04, >=32GB RAM, >=80GB disk)
 vastai create instance <offer_id> --image ubuntu:22.04 --disk 100 --ssh --direct
 
-# 2. Wait for SSH, then deploy
-scp scripts/deploy-production.sh root@<host>:/tmp/deploy.sh
-ssh root@<host> "
-  export VENICE_API_KEY=...
-  export XAI_API_KEY=...
-  export OPENROUTER_API_KEY=...
-  export GOOGLE_CLIENT_ID=...
-  export GOOGLE_CLIENT_SECRET=...
-  export CLOUDFLARE_TUNNEL_TOKEN=...
-  bash /tmp/deploy.sh
-"
+# 2. Wait for SSH, then run Phase 1 (system packages)
+ssh root@<host> "apt-get update -qq && apt-get install -y git curl wget screen python3 python3-pip gnupg lsb-release ca-certificates"
+
+# 3. Install Percona MongoDB 4.4 (MongoDB 7.0 requires AVX — many Vast.ai CPUs lack it)
+ssh root@<host> 'wget https://repo.percona.com/apt/percona-release_latest.$(lsb_release -sc)_all.deb && dpkg -i percona-release_latest.*.deb && percona-release setup psmdb44 && apt-get install -y percona-server-mongodb && mkdir -p /var/lib/mongodb && mongod --dbpath /var/lib/mongodb --bind_ip 127.0.0.1 --fork --logpath /var/log/mongodb/mongod.log'
+
+# 4. Install Meilisearch
+ssh root@<host> 'curl -fsSL https://install.meilisearch.com | sh && mkdir -p /data/meili && nohup meilisearch --http-addr 127.0.0.1:7700 --db-path /data/meili --no-analytics > /var/log/meilisearch.log 2>&1 &'
+
+# 5. Install cloudflared
+ssh root@<host> 'curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb && dpkg -i /tmp/cloudflared.deb'
+
+# 6. Install Node.js 22
+ssh root@<host> 'curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs'
+
+# 7. Clone repo
+ssh root@<host> 'git clone https://github.com/OrpingtonClose/deep-search-portal.git /opt/deep-search-portal'
+
+# 8. Extract pre-built LibreChat from Docker image (avoids fragile source builds)
+ssh root@<host> 'curl -fsSL https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz | tar xz -C /usr/local/bin crane && mkdir -p /opt/LibreChat/app && cd /opt/LibreChat/app && crane export ghcr.io/danny-avila/librechat:latest - | tar x'
+
+# 9. Copy config (PRODUCTION or STAGING)
+ssh root@<host> 'cp /opt/deep-search-portal/config/librechat.yaml /opt/LibreChat/app/app/librechat.yaml'
+# For staging:
+# ssh root@<host> 'cp /opt/deep-search-portal/config/librechat-staging.yaml /opt/LibreChat/app/app/librechat.yaml'
+
+# 10. Fix host.docker.internal references (native deployment uses localhost)
+ssh root@<host> "sed -i 's/host\.docker\.internal/localhost/g' /opt/LibreChat/app/app/librechat.yaml"
+
+# 11. SCP the .env file (contains all API keys — see .env.example)
+scp /tmp/prod.env root@<host>:/opt/.env
+# IMPORTANT: Also copy to LibreChat's working directory (dotenv loads from cwd)
+ssh root@<host> 'cp /opt/.env /opt/LibreChat/app/app/.env'
+
+# 12. Install Python dependencies
+ssh root@<host> 'pip3 install -q fastapi uvicorn httpx pydantic aiohttp requests beautifulsoup4 langgraph langgraph-checkpoint-sqlite langchain-openai langchain-core langchain'
+
+# 13. Start LibreChat natively
+ssh root@<host> 'cd /opt/LibreChat/app/app && export $(grep -v "^#" /opt/.env | xargs) && nohup node api/server/index.js > /var/log/librechat.log 2>&1 &'
+
+# 14. Start all proxies via screen sessions
+ssh root@<host> 'cd /opt/deep-search-portal && bash scripts/startup.sh'
+
+# 15. Start Cloudflare tunnel
+ssh root@<host> 'screen -dmS cftunnel bash -c "cloudflared tunnel run --token $CLOUDFLARE_TUNNEL_TOKEN 2>&1 | tee /var/log/cftunnel.log"'
 ```
 
-The script installs Docker, clones the repo, writes `/opt/.env`, starts LibreChat via Docker Compose, launches all proxies, connects the Cloudflare tunnel, and runs health checks. ~5 minutes total.
+> **NOTE:** `source /opt/.env` does NOT work inside screen sessions. Use `export $(grep -v "^#" /opt/.env | xargs)` instead.
 
-Optional env vars: `FIRECRAWL_API_KEY`, `EXA_API_KEY`, `BRAVE_SEARCH_API_KEY`, `MISTRAL_API_KEY`, `BRIGHT_DATA_API_KEY`.
+> **NOTE:** LibreChat extracted via `crane` ends up at `/opt/LibreChat/app/app/` (nested), not `/opt/LibreChat/app/`.
+
+Optional env vars: `FIRECRAWL_API_KEY`, `EXA_API_KEY`, `BRAVE_SEARCH_API_KEY`, `MISTRAL_API_KEY`, `BRIGHT_DATA_API_KEY`, `APIFY_API_TOKEN`.
 
 ---
 
@@ -46,21 +91,25 @@ Optional env vars: `FIRECRAWL_API_KEY`, `EXA_API_KEY`, `BRAVE_SEARCH_API_KEY`, `
 cd /opt/deep-search-portal && git pull origin main
 
 # Copy the RIGHT config (back up first!)
-cp /opt/LibreChat/librechat.yaml /opt/LibreChat/librechat.yaml.bak
+cp /opt/LibreChat/app/app/librechat.yaml /opt/LibreChat/app/app/librechat.yaml.bak
 
 # Production:
-cp config/librechat.yaml /opt/LibreChat/librechat.yaml
+cp config/librechat.yaml /opt/LibreChat/app/app/librechat.yaml
 # Staging:
-cp config/librechat-staging.yaml /opt/LibreChat/librechat.yaml
+# cp config/librechat-staging.yaml /opt/LibreChat/app/app/librechat.yaml
 
-# Restart LibreChat
-bash scripts/start_librechat.sh restart
+# Fix host.docker.internal references
+sed -i 's/host\.docker\.internal/localhost/g' /opt/LibreChat/app/app/librechat.yaml
+
+# Restart LibreChat (kill old process and relaunch)
+pkill -f 'node api/server/index.js' || true
+cd /opt/LibreChat/app/app && export $(grep -v "^#" /opt/.env | xargs) && nohup node api/server/index.js > /var/log/librechat.log 2>&1 &
 
 # Restart proxies (if proxy code changed)
 bash scripts/startup.sh
 ```
 
-> **CRITICAL:** `/opt/LibreChat/librechat.yaml` is a standalone copy. `git pull` does NOT update it. You must copy explicitly.
+> **CRITICAL:** `/opt/LibreChat/app/app/librechat.yaml` is a standalone copy. `git pull` does NOT update it. You must copy explicitly.
 
 ---
 
@@ -70,10 +119,9 @@ bash scripts/startup.sh
 |------|---------|
 | `config/librechat.yaml` | **Production** — 3 models (Simple group), `enforce: true` |
 | `config/librechat-staging.yaml` | **Staging** — 41+ models, "Simple PROD" marks production models, `enforce: false` |
-| `config/docker-compose.librechat.yml` | Docker Compose: LibreChat API + MongoDB + Meilisearch |
+| `config/docker-compose.librechat.yml` | Docker Compose (legacy, not used on Vast.ai — kept for local dev) |
 | `scripts/deploy-production.sh` | Full fresh-VM setup (single command) |
-| `scripts/startup.sh` | Master startup: all proxies + LibreChat + Cloudflare tunnel |
-| `scripts/start_librechat.sh` | Docker Compose wrapper (`up`, `stop`, `restart`, `status`, `logs`) |
+| `scripts/startup.sh` | Master startup: all proxies + Cloudflare tunnel |
 | `.env.example` | Template for all env vars |
 
 ---
@@ -92,7 +140,7 @@ All other models exist only in staging.
 
 | Service | Port | Screen Session |
 |---------|------|----------------|
-| LibreChat (Docker) | 3000 (host) → 3080 (container) | N/A (Docker) |
+| LibreChat (Node.js) | 3000 | N/A (nohup) |
 | Thinking Proxy | 9100 | `thinking-proxy` |
 | Deep Research Proxy | 9200 | `deep-research` |
 | Persistent MiroFlow | 9300 | `persistent-research` |
@@ -100,11 +148,9 @@ All other models exist only in staging.
 | Swarm Deep Search | 9500 | `swarm-proxy` |
 | G0DM0D3 Proxy | 9600 | `godmode-proxy` |
 | xAI Native Proxy | 9700 | `xai-native-proxy` |
-| Knowledge Engine | 9850 | `knowledge-engine` |
-| Tier Chooser Proxy | 9900 | `litellm` |
+| Tier Chooser Proxy | 9900 | `tier-chooser` |
 | Heretic Proxy | 9950 | `heretic-proxy` |
 | Miro Proxy | 9951 | `miro-proxy` |
-| SearXNG | 8888 | `searxng` |
 
 ---
 
@@ -122,8 +168,10 @@ All stored in `/opt/.env` on each instance. See `.env.example` for the full list
 | `GOOGLE_CLIENT_ID` | LibreChat Google OAuth login |
 | `GOOGLE_CLIENT_SECRET` | LibreChat Google OAuth login |
 | `CLOUDFLARE_TUNNEL_TOKEN` | Cloudflare tunnel (public routing) |
-| `CREDS_KEY` | LibreChat encryption (auto-generated if missing) |
-| `JWT_SECRET` | LibreChat JWT signing (auto-generated if missing) |
+| `CREDS_KEY` | LibreChat encryption (generate via `openssl rand -hex 32`) |
+| `CREDS_IV` | LibreChat encryption IV (generate via `openssl rand -hex 16`) |
+| `JWT_SECRET` | LibreChat JWT signing (generate via `openssl rand -hex 32`) |
+| `JWT_REFRESH_SECRET` | LibreChat JWT refresh (generate via `openssl rand -hex 32`) |
 
 **Optional (tools degrade gracefully without these):**
 
@@ -134,6 +182,24 @@ All stored in `/opt/.env` on each instance. See `.env.example` for the full list
 | `BRAVE_SEARCH_API_KEY` | Heretic/Miro web search + media enrichment |
 | `MISTRAL_API_KEY` | Thinking proxy |
 | `BRIGHT_DATA_API_KEY` | SearXNG proxy routing |
+
+---
+
+## Cloudflare Tunnels
+
+Production and staging use **separate** Cloudflare tunnels:
+
+| Role | Tunnel ID | Hostname |
+|------|-----------|----------|
+| Production | `6ef95cd2-6405-4257-ba6c-6790c7d7b97e` | `deep-search.uk` |
+| Staging | `ba0b804c-5969-4865-b4dd-7fb1f8b6a1b6` | `staging.deep-search.uk` |
+
+Each tunnel has its own token. The production `CLOUDFLARE_TUNNEL_TOKEN` must NOT be used on the staging server (and vice versa). To get the staging tunnel token, use the Cloudflare API:
+
+```bash
+curl -s "https://api.cloudflare.com/client/v4/accounts/<account_id>/cfd_tunnel/<tunnel_id>/token" \
+  -H "Authorization: Bearer <CF_API_TOKEN>" | jq -r '.result'
+```
 
 ---
 
@@ -170,8 +236,13 @@ Requires `VAST_AI_API_KEY` (or `VASTAI_API_KEY`) env var.
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| Models not visible after deploy | Forgot to copy config to `/opt/LibreChat/librechat.yaml` | Copy the right config file and restart LibreChat |
+| Models not visible after deploy | Forgot to copy config to `/opt/LibreChat/app/app/librechat.yaml` | Copy the right config file and restart LibreChat |
 | Wrong models on wrong server | Used production config on staging or vice versa | Check instance role with `vastai show instances`, use correct config file |
-| LibreChat won't start | Missing `GOOGLE_CLIENT_ID`, `CREDS_KEY`, or `JWT_SECRET` | Check `/opt/.env` has all required vars. `CREDS_KEY`/`JWT_SECRET` auto-generate if missing. |
-| Proxy won't start | Missing API key in `/opt/.env` | `source /opt/.env && env \| grep KEY` to verify |
-| Config drift between repo and server | `/opt/LibreChat/librechat.yaml` is a standalone copy | Always copy from repo after `git pull` |
+| LibreChat won't start | Missing `GOOGLE_CLIENT_ID`, `CREDS_KEY`, or `JWT_SECRET` | Check `/opt/.env` has all required vars |
+| Login fails ("unknown error") | Missing `JWT_REFRESH_SECRET` or `CREDS_IV` in `.env` | Generate and add: `openssl rand -hex 32` / `openssl rand -hex 16` |
+| Login redirects to wrong domain | `DOMAIN_CLIENT`/`DOMAIN_SERVER` set to wrong URL in `.env` | Ensure production uses `https://deep-search.uk`, staging uses `https://staging.deep-search.uk` |
+| Proxy won't start in screen | `source /opt/.env` doesn't work in screen sessions | Use `export $(grep -v "^#" /opt/.env | xargs)` instead |
+| MongoDB won't start | CPU lacks AVX (required by MongoDB 5.0+) | Use Percona MongoDB 4.4 instead |
+| Config drift between repo and server | `/opt/LibreChat/app/app/librechat.yaml` is a standalone copy | Always copy from repo after `git pull` |
+| Staging tunnel uses wrong token | Each tunnel has its own token | Get the staging-specific token from the Cloudflare API (see Cloudflare Tunnels section) |
+| `host.docker.internal` in config | Config written for Docker but running natively | Run `sed -i 's/host\.docker\.internal/localhost/g'` on the config |

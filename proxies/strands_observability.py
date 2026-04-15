@@ -220,7 +220,7 @@ def format_inline_log(
                 calls = tstats.get("total_calls", "?")
                 success = tstats.get("successful_calls", "?")
                 errors = tstats.get("errors", "?")
-                avg_time = tstats.get("average_execution_time", 0)
+                avg_time = tstats.get("average_execution_time") or 0
                 log_lines.append(
                     f"  {tname}: {calls} calls, {success} ok, {errors} err, avg {avg_time:.2f}s"
                 )
@@ -231,12 +231,12 @@ def format_inline_log(
     if not tool_events:
         log_lines.append("  (no tool calls)")
     else:
-        start_time = tool_events[0].get("time", 0) if tool_events else 0
+        start_time = tool_events[0].get("time") if tool_events else None
         for i, ev in enumerate(tool_events, 1):
             tool_name = ev.get("tool", "unknown")
             tool_input = ev.get("input", "")
-            t = ev.get("time", 0)
-            offset = f"+{t - start_time:.1f}s" if start_time else ""
+            t = ev.get("time")
+            offset = f"+{t - start_time:.1f}s" if (start_time is not None and t is not None) else ""
             log_lines.append(f"  [{i}] {offset:>8s}  {tool_name}")
             if tool_input and tool_input != "{}":
                 for line in tool_input[:300].split("\n"):

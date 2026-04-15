@@ -334,7 +334,7 @@ if [ -z "${VENICE_API_KEY:-}" ]; then
     echo "WARNING: Skipping Strands Agent — VENICE_API_KEY not set"
 elif ! pgrep -f "uvicorn.*main:app.*${STRANDS_AGENT_PORT}" > /dev/null 2>&1; then
     if [ -x "${REPO_ROOT}/scripts/start_strands_agent.sh" ]; then
-        bash "${REPO_ROOT}/scripts/start_strands_agent.sh"
+        bash "${REPO_ROOT}/scripts/start_strands_agent.sh" || echo "WARNING: start_strands_agent.sh failed — Strands Agent not started"
     else
         echo "WARNING: scripts/start_strands_agent.sh not found — skipping Strands Agent"
     fi

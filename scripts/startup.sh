@@ -338,8 +338,8 @@ elif ! pgrep -f "uvicorn.*main:app.*${STRANDS_AGENT_PORT}" > /dev/null 2>&1; the
     else
         echo "WARNING: scripts/start_strands_agent.sh not found — skipping Strands Agent"
     fi
+    wait_for_health "http://localhost:${STRANDS_AGENT_PORT}/health" "Strands Agent" 120 || true
 fi
-wait_for_health "http://localhost:${STRANDS_AGENT_PORT}/health" "Strands Agent" 120 || true
 
 # --- Self-hosted GPU VM health check (optional) ---
 if [ -n "${GPU_VM_URL:-}" ]; then

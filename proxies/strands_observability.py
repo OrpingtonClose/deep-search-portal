@@ -136,7 +136,7 @@ def write_metrics_jsonl(
         "query": query[:500] if query else "",
         "elapsed_s": elapsed,
         "tool_events": [
-            {"tool": e.get("tool", ""), "input": e.get("input", "")[:200]}
+            {"tool": e.get("tool", ""), "input": (e.get("input") or "")[:200]}
             for e in tool_events
         ],
         "metrics": trim_metrics(metrics_summary),

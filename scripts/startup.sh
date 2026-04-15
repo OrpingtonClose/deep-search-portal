@@ -88,7 +88,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in miro-proxy heretic-proxy tier-chooser mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng; do
+    for session in miro-proxy heretic-proxy tier-chooser mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng strands-agent; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -324,6 +324,22 @@ elif ! pgrep -f "miro_proxy.py" > /dev/null; then
     echo "Miro Proxy starting..."
     wait_for_health "http://localhost:9951/health" "Miro Proxy" 15
 fi
+
+# --- Strands Agent (Venice GLM-4.7 uncensored + MCP tools, single & multi agent) ---
+# Observability: JSONL metrics at /var/log/strands-metrics.jsonl,
+#   SDK debug logs at /var/log/strands-agent-debug.jsonl,
+#   logrotate via config/strands-logrotate.conf.
+STRANDS_AGENT_PORT="${STRANDS_AGENT_PORT:-8100}"
+if [ -z "${VENICE_API_KEY:-}" ]; then
+    echo "WARNING: Skipping Strands Agent — VENICE_API_KEY not set"
+elif ! pgrep -f "uvicorn.*main:app.*${STRANDS_AGENT_PORT}" > /dev/null 2>&1; then
+    if [ -x "${REPO_ROOT}/scripts/start_strands_agent.sh" ]; then
+        bash "${REPO_ROOT}/scripts/start_strands_agent.sh"
+    else
+        echo "WARNING: scripts/start_strands_agent.sh not found — skipping Strands Agent"
+    fi
+fi
+wait_for_health "http://localhost:${STRANDS_AGENT_PORT}/health" "Strands Agent" 120 || true
 
 # --- Self-hosted GPU VM health check (optional) ---
 if [ -n "${GPU_VM_URL:-}" ]; then

@@ -105,6 +105,22 @@ modelSpecs:
     preset:
       endpoint: xAI Native
       model: xai-race-all
+  - name: prod-strands-single
+    label: Strands Single Agent
+    description: Venice GLM-4.7 uncensored research agent with 24 MCP tools (Brave,
+      Firecrawl, Exa, Kagi). All tools directly available to a single agent.
+    group: Complex
+    preset:
+      endpoint: Strands Agent
+      model: strands-venice-single
+  - name: prod-strands-multi
+    label: Strands Multi Agent
+    description: Two-agent planner-researcher architecture. Planner decomposes queries
+      and delegates to a researcher agent with 24 MCP tools. Better for complex research.
+    group: Complex
+    preset:
+      endpoint: Strands Agent
+      model: strands-venice-multi
   - name: prod-tier-race-full-throttle
     label: Tier Race (Full Throttle)
     description: Races 9 flagship models (Opus, Gemini Pro, GPT-5.4 High, Grok 4.20,
@@ -639,6 +655,25 @@ endpoints:
     models:
       default:
       - glm-4.7-flash-heretic
+      fetch: true
+    titleConvo: true
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    titleMethod: completion
+    summarize: false
+    maxContextTokens: 128000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+  - name: Strands Agent
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:8100/v1
+    models:
+      default:
+      - strands-venice-single
+      - strands-venice-multi
       fetch: true
     titleConvo: true
     titleModel: mistral-large-thinking

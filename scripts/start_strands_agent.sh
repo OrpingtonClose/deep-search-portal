@@ -63,6 +63,24 @@ for logfile in /var/log/strands-metrics.jsonl /var/log/strands-agent-debug.jsonl
     chmod 666 "$logfile" 2>/dev/null || sudo chmod 666 "$logfile" 2>/dev/null || true
 done
 
+# ── Ensure qualitative research data directory exists ──
+QUAL_RESEARCH_DATA_DIR="${QUAL_RESEARCH_DATA_DIR:-/opt/qualitative-research}"
+mkdir -p "$QUAL_RESEARCH_DATA_DIR" 2>/dev/null || sudo mkdir -p "$QUAL_RESEARCH_DATA_DIR" 2>/dev/null || true
+chmod 755 "$QUAL_RESEARCH_DATA_DIR" 2>/dev/null || sudo chmod 755 "$QUAL_RESEARCH_DATA_DIR" 2>/dev/null || true
+export QUAL_RESEARCH_DATA_DIR
+
+# ── Install qualitative research MCP server if missing ──
+QUAL_RESEARCH_DIR="${QUAL_RESEARCH_DIR:-/opt/qualitativeresearch}"
+if [ ! -f "$QUAL_RESEARCH_DIR/index.js" ]; then
+    echo "Installing qualitative research MCP server..."
+    git clone https://github.com/tejpalvirk/qualitativeresearch.git "$QUAL_RESEARCH_DIR" 2>/dev/null || true
+    if [ -d "$QUAL_RESEARCH_DIR" ]; then
+        cd "$QUAL_RESEARCH_DIR" && npm install 2>/dev/null && npm run build 2>/dev/null || true
+        cd -
+    fi
+fi
+export QUAL_RESEARCH_DIR
+
 # ── Start the agent ──
 if pgrep -f "strands-agent.*main:app" > /dev/null 2>&1 || pgrep -f "uvicorn.*main:app.*${STRANDS_AGENT_PORT}" > /dev/null 2>&1; then
     echo "Strands agent is already running on port ${STRANDS_AGENT_PORT}"

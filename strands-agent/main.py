@@ -579,7 +579,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                             yield _openai_chunk(req_id, model, chunk)
                         yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
                         thinking_buffer.clear()
-                        thinking_flushed = True
+                    thinking_flushed = True
                     yield _openai_chunk(req_id, model, data)
                 elif event_type == "thinking":
                     # Buffer reasoning tokens — we'll decide how to present

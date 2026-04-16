@@ -527,6 +527,10 @@ async def openai_chat_completions(body: ChatCompletionRequest):
             await loop.run_in_executor(None, queue_ready.wait)
             token_queue = queue_holder["q"]
 
+            # Track whether we're inside a <details> thinking block so we
+            # can close it before the first answer token arrives.
+            in_thinking_block = False
+
             while True:
                 try:
                     item = await loop.run_in_executor(
@@ -538,15 +542,41 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                     continue
 
                 if item is None:
-                    # Agent finished
+                    # Agent finished.
+                    # If we have thinking tokens but NO answer text, the
+                    # reasoning IS the answer (Venice GLM quirk) — close the
+                    # details block and re-emit reasoning as normal content.
+                    if in_thinking_block:
+                        has_answer = bool(result_holder.get("streamed_text", "").strip())
+                        if has_answer:
+                            # Normal case: thinking + answer — just close block
+                            yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
+                        else:
+                            # Thinking-only: discard collapsed block, re-emit
+                            # reasoning as normal content so it's visible.
+                            yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
+                            reasoning = result_holder.get("reasoning_text", "")
+                            if reasoning:
+                                yield _openai_chunk(req_id, model, reasoning)
+                        in_thinking_block = False
                     break
 
                 event_type, data = item
                 if event_type == "text":
+                    # Close thinking block before first answer token
+                    if in_thinking_block:
+                        yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
+                        in_thinking_block = False
                     yield _openai_chunk(req_id, model, data)
                 elif event_type == "thinking":
-                    # Venice GLM with reasoning:high sends answer as reasoningText;
-                    # stream it as content so the user sees the response.
+                    # Open a collapsible <details> block for reasoning tokens.
+                    # The answer will appear normally beneath once "text" arrives.
+                    if not in_thinking_block:
+                        yield _openai_chunk(
+                            req_id, model,
+                            "<details><summary>💭 Thinking</summary>\n\n"
+                        )
+                        in_thinking_block = True
                     yield _openai_chunk(req_id, model, data)
                 elif event_type == "tool":
                     # Emit tool call as SSE comment (visible in logs)
@@ -634,7 +664,16 @@ async def openai_chat_completions(body: ChatCompletionRequest):
         reasoning=captured_reasoning,
         metrics=metrics,
     )
-    answer_with_log = f"{answer}{inline_log}"
+
+    # Wrap reasoning in a collapsible block if present
+    if captured_reasoning.strip():
+        thinking_block = (
+            f"<details><summary>💭 Thinking</summary>\n\n"
+            f"{captured_reasoning}\n\n</details>\n\n"
+        )
+        answer_with_log = f"{thinking_block}{answer}{inline_log}"
+    else:
+        answer_with_log = f"{answer}{inline_log}"
 
     _store_log(
         req_id,

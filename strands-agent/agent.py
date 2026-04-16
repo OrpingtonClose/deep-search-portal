@@ -257,9 +257,6 @@ def _enter_mcp_clients(mcp_clients):
     remaining clients still initialise.  This prevents a single flaky
     MCP server (e.g. network timeout on npx download) from taking down
     all tools.
-
-    Returns (tool_list, entered_clients) so the caller knows which
-    clients actually succeeded.
     """
     entered: list = []
     tool_list: list = []

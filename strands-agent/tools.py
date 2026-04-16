@@ -111,11 +111,16 @@ kagi_mcp = MCPClient(
 _QUAL_RESEARCH_DATA_DIR = os.environ.get(
     "QUAL_RESEARCH_DATA_DIR", "/opt/qualitative-research"
 )
+_QUAL_RESEARCH_DIR = os.environ.get(
+    "QUAL_RESEARCH_DIR", "/opt/qualitativeresearch"
+)
+_QUAL_RESEARCH_INDEX = os.path.join(_QUAL_RESEARCH_DIR, "index.js")
+
 qualitative_research_mcp = MCPClient(
     lambda: stdio_client(
         StdioServerParameters(
-            command="npx",
-            args=["-y", "github:tejpalvirk/qualitativeresearch"],
+            command="node",
+            args=[_QUAL_RESEARCH_INDEX],
             env=_full_env(
                 MEMORY_FILE_PATH=os.path.join(_QUAL_RESEARCH_DATA_DIR, "memory.json"),
                 SESSIONS_FILE_PATH=os.path.join(_QUAL_RESEARCH_DATA_DIR, "sessions.json"),

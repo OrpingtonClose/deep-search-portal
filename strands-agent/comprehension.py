@@ -58,7 +58,6 @@ def comprehend_query(query: str, tool_context) -> str:
             tool_specs=[],
         )
         # Extract text from model response
-        content = ""
         if hasattr(result, "output") and hasattr(result.output, "content"):
             for block in result.output.content:
                 if hasattr(block, "text"):
@@ -86,7 +85,7 @@ def comprehend_query(query: str, tool_context) -> str:
             "adjacent_territories": data.get("adjacent_territories", [])[:15],
             "relevance_keywords": data.get("relevance_keywords", [])[:40],
             "deep_knowledge_targets": data.get("deep_knowledge_targets", [])[:15],
-            "semantic_summary": data.get("semantic_summary", ""),
+            "semantic_summary": data.get("semantic_summary", "")[:1000],
             "core_need": data.get("core_need", "")[:500],
         }
 

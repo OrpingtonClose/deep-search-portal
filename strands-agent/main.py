@@ -287,17 +287,17 @@ def _load_conversation_history(
         user_message = strands_messages[-1]["content"][0]["text"]
     else:
         # Last strands message is not a user message (unusual — e.g.
-        # trailing assistant message).  Still strip the last user
-        # message from history to avoid duplication when agent() adds it.
+        # trailing assistant message).  Find the last user message by
+        # index and slice: history = everything before it.  Messages
+        # after it (assistant responses) are omitted since the agent
+        # will re-process the user message via agent().
         user_message = _extract_user_message(messages)
-        history = []
-        found_last = False
-        for m in reversed(strands_messages):
-            if not found_last and m["role"] == "user" and m["content"][0]["text"] == user_message:
-                found_last = True
-                continue
-            history.append(m)
-        history.reverse()
+        last_user_idx = None
+        for i in range(len(strands_messages) - 1, -1, -1):
+            if strands_messages[i]["role"] == "user" and strands_messages[i]["content"][0]["text"] == user_message:
+                last_user_idx = i
+                break
+        history = strands_messages[:last_user_idx] if last_user_idx is not None else strands_messages
 
     agent.messages.clear()
     agent.messages.extend(history)

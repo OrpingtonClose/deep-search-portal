@@ -11,6 +11,8 @@ dependencies = [
     "python-dotenv",
     "fastapi[standard]",
     "uvicorn[standard]",
+    "duckduckgo-search",
+    "httpx",
 ]
 
 [build-system]
@@ -18,4 +20,5 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["main", "agent", "config", "tools", "prompts"]
+py-modules = ["main", "agent", "config", "tools", "prompts", "native_tools", "comprehension"]
+packages = ["plugins"]

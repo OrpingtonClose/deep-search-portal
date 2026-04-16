@@ -146,8 +146,8 @@ def _get_client():
             if not base_url or not model:
                 continue
 
-            _client = OpenAI(api_key=key, base_url=base_url)
             _client_model = model
+            _client = OpenAI(api_key=key, base_url=base_url)
             log.info(
                 "Advisor initialised: provider=%s model=%s base=%s",
                 provider["key_env"], model, base_url,

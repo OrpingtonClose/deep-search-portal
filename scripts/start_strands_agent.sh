@@ -63,6 +63,12 @@ for logfile in /var/log/strands-metrics.jsonl /var/log/strands-agent-debug.jsonl
     chmod 666 "$logfile" 2>/dev/null || sudo chmod 666 "$logfile" 2>/dev/null || true
 done
 
+# ── Ensure qualitative research data directory exists ──
+QUAL_RESEARCH_DATA_DIR="${QUAL_RESEARCH_DATA_DIR:-/opt/qualitative-research}"
+mkdir -p "$QUAL_RESEARCH_DATA_DIR" 2>/dev/null || sudo mkdir -p "$QUAL_RESEARCH_DATA_DIR" 2>/dev/null || true
+chmod 777 "$QUAL_RESEARCH_DATA_DIR" 2>/dev/null || sudo chmod 777 "$QUAL_RESEARCH_DATA_DIR" 2>/dev/null || true
+export QUAL_RESEARCH_DATA_DIR
+
 # ── Start the agent ──
 if pgrep -f "strands-agent.*main:app" > /dev/null 2>&1 || pgrep -f "uvicorn.*main:app.*${STRANDS_AGENT_PORT}" > /dev/null 2>&1; then
     echo "Strands agent is already running on port ${STRANDS_AGENT_PORT}"

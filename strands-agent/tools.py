@@ -99,7 +99,34 @@ kagi_mcp = MCPClient(
     startup_timeout=_MCP_STARTUP_TIMEOUT,
 )
 
+# ── Qualitative Research MCP ──────────────────────────────────────────
+# GitHub: tejpalvirk/qualitativeresearch  (TypeScript, knowledge-graph MCP)
+# Tools: startsession, loadcontext, endsession, buildcontext,
+#   deletecontext, advancedcontext, getProjectOverview, getThematicAnalysis,
+#   getCodedData, getMemos, getMethodology, getChronologicalData,
+#   getCodeCoOccurrence + CRUD for projects/participants/interviews/
+#   observations/codes/themes/findings/memos/researchQuestions
+# No API key required — runs as a local Node.js process with file-based
+# knowledge graph storage.
+_QUAL_RESEARCH_DATA_DIR = os.environ.get(
+    "QUAL_RESEARCH_DATA_DIR", "/opt/qualitative-research"
+)
+qualitative_research_mcp = MCPClient(
+    lambda: stdio_client(
+        StdioServerParameters(
+            command="npx",
+            args=["-y", "github:tejpalvirk/qualitativeresearch"],
+            env=_full_env(
+                MEMORY_FILE_PATH=os.path.join(_QUAL_RESEARCH_DATA_DIR, "memory.json"),
+                SESSIONS_FILE_PATH=os.path.join(_QUAL_RESEARCH_DATA_DIR, "sessions.json"),
+            ),
+        )
+    ),
+    startup_timeout=_MCP_STARTUP_TIMEOUT,
+)
+
 # ── Registry mapping ─────────────────────────────────────────────────
+# API-key-gated tools: only loaded when the corresponding key is set.
 _MCP_REGISTRY = {
     "BRAVE_API_KEY": brave_mcp,
     "FIRECRAWL_API_KEY": firecrawl_mcp,
@@ -107,10 +134,13 @@ _MCP_REGISTRY = {
     "KAGI_API_KEY": kagi_mcp,
 }
 
+# Always-on tools: loaded unconditionally (no API key required).
+_ALWAYS_ON_MCP = [qualitative_research_mcp]
+
 
 def get_all_mcp_clients():
-    """Return list of MCP clients whose API keys are configured."""
-    clients = []
+    """Return list of MCP clients whose API keys are configured, plus always-on tools."""
+    clients = list(_ALWAYS_ON_MCP)
     for env_var, client in _MCP_REGISTRY.items():
         if os.environ.get(env_var):
             clients.append(client)

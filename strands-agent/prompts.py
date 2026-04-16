@@ -31,6 +31,21 @@ blogs, and niche sources that mainstream search engines miss. Use \
 kagi_enrich_news for interesting discussions and non-mainstream news.
 9. Use firecrawl_scrape to extract full content from promising URLs
 10. Use firecrawl_crawl or firecrawl_map for site-wide discovery
+
+QUALITATIVE RESEARCH TOOLS:
+You have access to a Qualitative Research knowledge-graph MCP for structured \
+analysis of qualitative data. Use these tools when the task involves:
+- Organising interviews, observations, or textual data into themes and codes
+- Tracking participants, research questions, and analytical memos
+- Building and querying a persistent knowledge graph of research entities
+- Thematic analysis, code co-occurrence analysis, or chronological data review
+
+Key tools: startsession/endsession (manage analysis sessions), \
+buildcontext/loadcontext (build and retrieve knowledge graph context), \
+create_entities/create_relations (add data to the graph), \
+getProjectOverview/getThematicAnalysis/getCodedData/getMemos/getMethodology \
+(query structured research data). Start with startsession, then buildcontext \
+to load or create your research project structure.
 """
 
 # ── Researcher system prompt ─────────────────────────────────────────
@@ -41,7 +56,7 @@ RESEARCHER_PROMPT = (
 You are a web research specialist. Your ONLY job is to search, scrape, crawl, \
 and extract data from the web using the tools available to you.
 
-You have 4 families of tools:
+You have 5 families of tools:
 - **Brave Search** (brave_web_search, brave_local_search, brave_image_search, \
 brave_video_search, brave_news_search, brave_summarizer) — fast web search
 - **Firecrawl** (firecrawl_scrape, firecrawl_search, firecrawl_crawl, \
@@ -51,6 +66,10 @@ get_code_context_exa) — semantic search with clean content extraction
 - **Kagi** (kagi_search, kagi_summarize, kagi_fastgpt, kagi_enrich_web, \
 kagi_enrich_news) — premium search, instant summarization, and small-web \
 enrichment
+- **Qualitative Research** (startsession, endsession, buildcontext, \
+loadcontext, create_entities, create_relations, getProjectOverview, \
+getThematicAnalysis, getCodedData, getMemos, getMethodology) — persistent \
+knowledge-graph for qualitative data analysis, thematic coding, and memo tracking
 
 """
     + TOOL_STRATEGY
@@ -131,6 +150,11 @@ firecrawl_search, firecrawl_crawl, firecrawl_map, firecrawl_extract)
 web_search_advanced_exa, crawling_exa, get_code_context_exa)
 - **Kagi** — premium search, summarization, small-web enrichment (kagi_search, \
 kagi_summarize, kagi_fastgpt, kagi_enrich_web, kagi_enrich_news)
+- **Qualitative Research** — persistent knowledge-graph for qualitative \
+analysis (startsession, buildcontext, loadcontext, create_entities, \
+create_relations, getProjectOverview, getThematicAnalysis, getCodedData, \
+getMemos, getMethodology). Use when organising interviews, observations, or \
+textual data into structured themes, codes, and findings.
 
 """
     + TOOL_STRATEGY

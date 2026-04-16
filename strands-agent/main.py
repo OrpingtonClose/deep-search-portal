@@ -238,6 +238,66 @@ def _extract_user_message(messages: list[ChatMessage]) -> str:
     return ""
 
 
+def _chatml_to_strands(messages: list[ChatMessage]) -> list[dict]:
+    """Convert LibreChat ChatML messages to Strands Converse format.
+
+    LibreChat sends the full conversation history on each request.  We
+    convert user/assistant turns into the Strands internal format so the
+    agent has full conversational context.
+
+    Strands format:  ``{"role": "user"|"assistant", "content": [{"text": "..."}]}``
+    """
+    result = []
+    for msg in messages:
+        if msg.role not in ("user", "assistant"):
+            continue
+        content = msg.content
+        if isinstance(content, list):
+            text = " ".join(
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+        else:
+            text = str(content) if content else ""
+        if text.strip():
+            result.append({"role": msg.role, "content": [{"text": text}]})
+    return result
+
+
+def _load_conversation_history(
+    agent, messages: list[ChatMessage], researcher=None
+) -> str:
+    """Load conversation history into the agent and return the latest user message.
+
+    Converts all previous turns from the ChatML request into Strands
+    format and injects them into ``agent.messages``.  The latest user
+    message is extracted and returned (it will be passed to ``agent()``
+    which adds it to messages internally).
+
+    For multi-agent, the researcher's messages are always cleared (it
+    starts fresh for each delegation from the planner).
+    """
+    strands_messages = _chatml_to_strands(messages)
+
+    # The last message should be the new user query — exclude it from
+    # history since agent() will add it.
+    if strands_messages and strands_messages[-1]["role"] == "user":
+        history = strands_messages[:-1]
+        user_message = strands_messages[-1]["content"][0]["text"]
+    else:
+        history = strands_messages
+        user_message = _extract_user_message(messages)
+
+    agent.messages.clear()
+    agent.messages.extend(history)
+
+    if researcher is not None:
+        researcher.messages.clear()
+
+    return user_message
+
+
 # ── Endpoints ────────────────────────────────────────────────────────
 
 
@@ -373,8 +433,17 @@ async def openai_models():
     )
 
 
-def _dispatch_agent(model: str, user_message: str) -> tuple[str, dict | None]:
+def _dispatch_agent(
+    model: str,
+    user_message: str,
+    chat_messages: list[ChatMessage] | None = None,
+) -> tuple[str, dict | None]:
     """Run the appropriate agent.  **Caller must already hold _agent_lock**.
+
+    When *chat_messages* is provided (from the OpenAI-compatible endpoint),
+    conversation history is loaded into the agent so it has full context
+    from previous turns.  Otherwise messages are simply cleared (legacy
+    ``/query`` endpoints).
 
     Returns (text_answer, metrics_summary).  If the agent result has no text
     content (e.g. it ended on a tool call), falls back to the captured
@@ -387,9 +456,14 @@ def _dispatch_agent(model: str, user_message: str) -> tuple[str, dict | None]:
     if model == _MODEL_MULTI:
         if _multi_agent is None:
             raise RuntimeError("Multi agent not initialised")
-        _multi_agent.messages.clear()
-        if _multi_researcher is not None:
-            _multi_researcher.messages.clear()
+        if chat_messages:
+            user_message = _load_conversation_history(
+                _multi_agent, chat_messages, researcher=_multi_researcher
+            )
+        else:
+            _multi_agent.messages.clear()
+            if _multi_researcher is not None:
+                _multi_researcher.messages.clear()
         reset_budget()
         agent_result = _multi_agent(user_message)
         result = str(agent_result)
@@ -398,7 +472,12 @@ def _dispatch_agent(model: str, user_message: str) -> tuple[str, dict | None]:
         except Exception:
             pass
     elif _single_agent is not None:
-        _single_agent.messages.clear()
+        if chat_messages:
+            user_message = _load_conversation_history(
+                _single_agent, chat_messages
+            )
+        else:
+            _single_agent.messages.clear()
         reset_budget()
         agent_result = _single_agent(user_message)
         result = str(agent_result)
@@ -416,14 +495,18 @@ def _dispatch_agent(model: str, user_message: str) -> tuple[str, dict | None]:
     return result, metrics_summary
 
 
-def _run_agent(model: str, user_message: str) -> tuple[str, dict | None]:
+def _run_agent(
+    model: str,
+    user_message: str,
+    chat_messages: list[ChatMessage] | None = None,
+) -> tuple[str, dict | None]:
     """Dispatch to the correct agent under lock (convenience wrapper)."""
     from agent import stream_capture
 
     with _agent_lock:
         stream_capture.activate()
         try:
-            return _dispatch_agent(model, user_message)
+            return _dispatch_agent(model, user_message, chat_messages=chat_messages)
         finally:
             stream_capture.deactivate()
 
@@ -486,6 +569,9 @@ async def openai_chat_completions(body: ChatCompletionRequest):
         user_message,
     )
 
+    # Capture messages for session persistence (used by both paths)
+    chat_messages = body.messages
+
     if stream:
         # ── Streaming mode ───────────────────────────────────────
         # activate() and deactivate() happen inside _agent_lock so
@@ -505,7 +591,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                 queue_holder["q"] = token_q
                 queue_ready.set()
                 try:
-                    text, metrics = _dispatch_agent(model, user_message)
+                    text, metrics = _dispatch_agent(model, user_message, chat_messages=chat_messages)
                     result_holder["text"] = text
                     result_holder["metrics"] = metrics
                 except Exception as exc:
@@ -642,7 +728,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
         with _agent_lock:
             stream_capture.activate()
             try:
-                answer, metrics = _dispatch_agent(model, user_message)
+                answer, metrics = _dispatch_agent(model, user_message, chat_messages=chat_messages)
             except Exception as exc:
                 logger.exception("Agent error in /v1/chat/completions [%s]", req_id)
                 raise

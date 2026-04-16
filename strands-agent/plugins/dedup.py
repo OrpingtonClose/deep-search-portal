@@ -11,7 +11,7 @@ import re
 import logging
 
 from strands.plugins import Plugin, hook
-from strands.hooks import AfterToolCallEvent
+from strands.hooks import AfterToolCallEvent, BeforeInvocationEvent
 
 log = logging.getLogger("dedup-plugin")
 
@@ -110,6 +110,13 @@ class DedupPlugin(Plugin):
         self._query = query
         self._duplicate_count = 0
         self._total_count = 0
+
+    @hook
+    def on_new_invocation(self, event: BeforeInvocationEvent) -> None:
+        """Reset dedup state at the start of each planner invocation."""
+        agent_name = (getattr(event.agent, "name", "") or "") if hasattr(event, "agent") else ""
+        if agent_name == "planner":
+            self.reset()
 
     @property
     def saturation_ratio(self) -> float:

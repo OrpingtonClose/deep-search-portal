@@ -92,6 +92,7 @@ class AdaptiveLoopPlugin(Plugin):
         similarity_threshold: float = SIMILARITY_THRESHOLD,
         max_similar_calls: int = MAX_SIMILAR_CALLS,
     ) -> None:
+        super().__init__()
         self._researcher_model = researcher_model
         self._tool_name = researcher_tool_name
         self._base_temp = base_temperature

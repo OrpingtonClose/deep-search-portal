@@ -7,14 +7,13 @@
 #   bash scripts/start_strands_agent.sh
 #
 # Prerequisites:
-#   - MiroThinker repo cloned at $STRANDS_AGENT_DIR (default: /opt/MiroThinker)
-#   - Python venv at $STRANDS_AGENT_DIR/apps/strands-agent/.venv
+#   - deep-search-portal repo at $REPO_ROOT (auto-detected from script location)
+#   - Python venv at $REPO_ROOT/strands-agent/.venv
 #   - /opt/.env with API keys (VENICE_API_KEY, BRAVE_API_KEY, etc.)
-#   - deep-search-portal repo at $REPO_ROOT (for observability module)
 #
 # The script:
 #   1. Sources API keys from /opt/.env
-#   2. Adds deep-search-portal/proxies to PYTHONPATH (observability module)
+#   2. Adds deep-search-portal/proxies to PYTHONPATH (observability + adaptive plugin)
 #   3. Installs logrotate config for JSONL log files
 #   4. Starts the agent via screen on port $STRANDS_AGENT_PORT (default: 8100)
 # =============================================================================
@@ -26,16 +25,15 @@ if [ -f /opt/.env ]; then
     set -a; source /opt/.env; set +a
 fi
 
-# Resolve paths
+# Resolve paths — agent code now lives inside deep-search-portal
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)}"
-STRANDS_AGENT_DIR="${STRANDS_AGENT_DIR:-/opt/MiroThinker}"
+STRANDS_AGENT_APP="${REPO_ROOT}/strands-agent"
 STRANDS_AGENT_PORT="${STRANDS_AGENT_PORT:-8100}"
-STRANDS_AGENT_APP="${STRANDS_AGENT_DIR}/apps/strands-agent"
 
 # Validate prerequisites
-if [ ! -d "$STRANDS_AGENT_APP" ]; then
+if [ ! -f "$STRANDS_AGENT_APP/main.py" ]; then
     echo "ERROR: Strands agent not found at $STRANDS_AGENT_APP"
-    echo "  Clone MiroThinker to $STRANDS_AGENT_DIR first."
+    echo "  Expected deep-search-portal/strands-agent/main.py"
     exit 1
 fi
 
@@ -72,7 +70,7 @@ if pgrep -f "strands-agent.*main:app" > /dev/null 2>&1 || pgrep -f "uvicorn.*mai
 fi
 
 # Add deep-search-portal/proxies to PYTHONPATH so the agent can import
-# strands_observability without copying the module.
+# strands_observability and strands_adaptive without copying modules.
 export PYTHONPATH="${REPO_ROOT}/proxies:${PYTHONPATH:-}"
 
 # Determine the Python interpreter
@@ -96,7 +94,9 @@ screen -dmS strands-agent bash -c "
 "
 
 echo "Strands agent starting on port ${STRANDS_AGENT_PORT}..."
+echo "  App: ${STRANDS_AGENT_APP}"
 echo "  Logs: /var/log/strands-agent.log"
 echo "  Metrics JSONL: /var/log/strands-metrics.jsonl"
 echo "  SDK debug: /var/log/strands-agent-debug.jsonl"
-echo "  Observability module: ${REPO_ROOT}/proxies/strands_observability.py"
+echo "  Observability: ${REPO_ROOT}/proxies/strands_observability.py"
+echo "  Adaptive plugin: ${REPO_ROOT}/proxies/strands_adaptive.py"

@@ -66,7 +66,7 @@ done
 # ── Ensure qualitative research data directory exists ──
 QUAL_RESEARCH_DATA_DIR="${QUAL_RESEARCH_DATA_DIR:-/opt/qualitative-research}"
 mkdir -p "$QUAL_RESEARCH_DATA_DIR" 2>/dev/null || sudo mkdir -p "$QUAL_RESEARCH_DATA_DIR" 2>/dev/null || true
-chmod 777 "$QUAL_RESEARCH_DATA_DIR" 2>/dev/null || sudo chmod 777 "$QUAL_RESEARCH_DATA_DIR" 2>/dev/null || true
+chmod 755 "$QUAL_RESEARCH_DATA_DIR" 2>/dev/null || sudo chmod 755 "$QUAL_RESEARCH_DATA_DIR" 2>/dev/null || true
 export QUAL_RESEARCH_DATA_DIR
 
 # ── Install qualitative research MCP server if missing ──

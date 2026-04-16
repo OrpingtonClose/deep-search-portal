@@ -527,6 +527,13 @@ async def openai_chat_completions(body: ChatCompletionRequest):
             await loop.run_in_executor(None, queue_ready.wait)
             token_queue = queue_holder["q"]
 
+            # Buffer thinking tokens so we can decide on presentation once
+            # we know whether answer ("text") tokens follow.
+            # - If text follows: emit buffered thinking in <details>, then answer normally.
+            # - If only thinking: emit thinking as plain content (it IS the answer).
+            thinking_buffer: list[str] = []
+            thinking_flushed = False  # True once we've emitted the <details> block
+
             while True:
                 try:
                     item = await loop.run_in_executor(
@@ -538,16 +545,46 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                     continue
 
                 if item is None:
-                    # Agent finished
+                    # Agent finished — emit any remaining buffered thinking.
+                    if thinking_buffer:
+                        if thinking_flushed:
+                            # We already emitted answer text earlier, so
+                            # this is a late batch — wrap in <details>.
+                            yield _openai_chunk(
+                                req_id, model,
+                                "<details><summary>💭 Thinking</summary>\n\n"
+                            )
+                            for chunk in thinking_buffer:
+                                yield _openai_chunk(req_id, model, chunk)
+                            yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
+                        else:
+                            # Thinking-only: no answer tokens arrived, so
+                            # the reasoning IS the answer — emit as plain.
+                            for chunk in thinking_buffer:
+                                yield _openai_chunk(req_id, model, chunk)
                     break
 
                 event_type, data = item
                 if event_type == "text":
+                    # Flush any buffered thinking into a collapsed <details>
+                    # block before emitting answer text.  This handles both
+                    # the initial batch and subsequent thinking→text cycles
+                    # in multi-step agent loops.
+                    if thinking_buffer:
+                        yield _openai_chunk(
+                            req_id, model,
+                            "<details><summary>💭 Thinking</summary>\n\n"
+                        )
+                        for chunk in thinking_buffer:
+                            yield _openai_chunk(req_id, model, chunk)
+                        yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
+                        thinking_buffer.clear()
+                    thinking_flushed = True
                     yield _openai_chunk(req_id, model, data)
                 elif event_type == "thinking":
-                    # Venice GLM with reasoning:high sends answer as reasoningText;
-                    # stream it as content so the user sees the response.
-                    yield _openai_chunk(req_id, model, data)
+                    # Buffer reasoning tokens — we'll decide how to present
+                    # them once we know if answer tokens follow.
+                    thinking_buffer.append(data)
                 elif event_type == "tool":
                     # Emit tool call as SSE comment (visible in logs)
                     yield f": tool {data['tool']}\n\n"
@@ -634,7 +671,22 @@ async def openai_chat_completions(body: ChatCompletionRequest):
         reasoning=captured_reasoning,
         metrics=metrics,
     )
-    answer_with_log = f"{answer}{inline_log}"
+
+    # Wrap reasoning in a collapsible block if present AND distinct from answer.
+    # When Venice GLM sends only reasoning tokens, _dispatch_agent promotes
+    # reasoning to the answer text — in that case don't duplicate it.
+    reasoning_is_answer = (
+        captured_reasoning.strip()
+        and answer.strip() == captured_reasoning.strip()
+    )
+    if captured_reasoning.strip() and not reasoning_is_answer:
+        thinking_block = (
+            f"<details><summary>💭 Thinking</summary>\n\n"
+            f"{captured_reasoning}\n\n</details>\n\n"
+        )
+        answer_with_log = f"{thinking_block}{answer}{inline_log}"
+    else:
+        answer_with_log = f"{answer}{inline_log}"
 
     _store_log(
         req_id,

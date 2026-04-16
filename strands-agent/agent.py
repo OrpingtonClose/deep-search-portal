@@ -51,17 +51,25 @@ _seen_tool_use_ids: set[str] = set()
 _MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", "200"))
 _SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT", "3600"))
 
+# Module-level reference to the AdaptiveLoopPlugin instance (if created).
+# Set by create_multi_agent() so reset_budget() can call plugin.reset().
+_adaptive_plugin = None
+
 
 def reset_budget() -> None:
-    """Reset per-request budget counters.
+    """Reset per-request budget counters and adaptive plugin state.
 
     Call this before each HTTP request so that budget globals don't
     accumulate across requests in a long-running server process.
+    Also resets the AdaptiveLoopPlugin (query history + temperature)
+    if one is registered.
     """
     global _session_start, _tool_call_count, _seen_tool_use_ids
     _session_start = time.time()
     _tool_call_count = 0
     _seen_tool_use_ids = set()
+    if _adaptive_plugin is not None:
+        _adaptive_plugin.reset()
 
 
 def budget_callback(**kwargs) -> None:
@@ -355,6 +363,8 @@ def create_multi_agent(tool_list=None, mcp_clients=None):
 
         plugin = AdaptiveLoopPlugin(researcher_model)
         plugins.append(plugin)
+        global _adaptive_plugin
+        _adaptive_plugin = plugin
         logger.info("AdaptiveLoopPlugin registered on planner")
     except ImportError:
         logger.warning(

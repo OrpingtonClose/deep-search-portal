@@ -146,9 +146,14 @@ class AdaptiveLoopPlugin(Plugin):
 
     @hook
     def on_invocation_start(self, event: BeforeInvocationEvent) -> None:
-        """Clear query history at the start of each planner invocation."""
+        """Clear query history at the start of each planner invocation.
+
+        Restores temperature first in case a prior invocation left it
+        escalated (e.g. researcher raised an exception before
+        ``after_researcher_call`` could fire).
+        """
+        self._restore_temperature()
         self._query_history.clear()
-        self._old_params = None
         log.debug("Adaptive loop plugin reset for new invocation")
 
     # ── Hook: intercept researcher calls ──────────────────────────

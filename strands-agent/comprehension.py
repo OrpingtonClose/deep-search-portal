@@ -50,6 +50,7 @@ def comprehend_query(query: str, tool_context) -> str:
     prompt = COMPREHENSION_PROMPT.format(query=query[:2000])
 
     # Store comprehension in agent state for other plugins to access
+    content = ""
     try:
         # Use the agent to generate the comprehension via its model
         result = agent.model.converse(

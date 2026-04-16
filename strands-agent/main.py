@@ -545,22 +545,32 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                     continue
 
                 if item is None:
-                    # Agent finished.
-                    if thinking_buffer and not thinking_flushed:
-                        # Thinking-only: no answer tokens arrived, so the
-                        # reasoning IS the answer — emit as plain content.
-                        for chunk in thinking_buffer:
-                            yield _openai_chunk(req_id, model, chunk)
-                    # Note: no elif for thinking_flushed — the </details>
-                    # close tag was already emitted during the flush at the
-                    # first "text" token arrival.
+                    # Agent finished — emit any remaining buffered thinking.
+                    if thinking_buffer:
+                        if thinking_flushed:
+                            # We already emitted answer text earlier, so
+                            # this is a late batch — wrap in <details>.
+                            yield _openai_chunk(
+                                req_id, model,
+                                "<details><summary>💭 Thinking</summary>\n\n"
+                            )
+                            for chunk in thinking_buffer:
+                                yield _openai_chunk(req_id, model, chunk)
+                            yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
+                        else:
+                            # Thinking-only: no answer tokens arrived, so
+                            # the reasoning IS the answer — emit as plain.
+                            for chunk in thinking_buffer:
+                                yield _openai_chunk(req_id, model, chunk)
                     break
 
                 event_type, data = item
                 if event_type == "text":
-                    # First answer token: flush buffered thinking into a
-                    # collapsed <details> block, then stream answer normally.
-                    if thinking_buffer and not thinking_flushed:
+                    # Flush any buffered thinking into a collapsed <details>
+                    # block before emitting answer text.  This handles both
+                    # the initial batch and subsequent thinking→text cycles
+                    # in multi-step agent loops.
+                    if thinking_buffer:
                         yield _openai_chunk(
                             req_id, model,
                             "<details><summary>💭 Thinking</summary>\n\n"

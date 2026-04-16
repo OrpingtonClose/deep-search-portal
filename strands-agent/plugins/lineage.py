@@ -104,7 +104,7 @@ class LineagePlugin(Plugin):
             return
 
         agent_name = (
-            getattr(event.agent, "name", "unknown")
+            getattr(event.agent, "name", None) or "unknown"
             if hasattr(event, "agent")
             else "unknown"
         )
@@ -119,7 +119,7 @@ class LineagePlugin(Plugin):
     def on_new_invocation(self, event: BeforeInvocationEvent) -> None:
         """Reset lineage at the start of each top-level research session."""
         # Only reset if this is the planner (top-level agent)
-        agent_name = getattr(event.agent, "name", "") if hasattr(event, "agent") else ""
+        agent_name = (getattr(event.agent, "name", "") or "") if hasattr(event, "agent") else ""
         if agent_name == "planner":
             self.reset()
 

@@ -43,7 +43,7 @@ class BudgetPlugin(Plugin):
     @hook
     def on_new_invocation(self, event: BeforeInvocationEvent) -> None:
         """Reset budget at the start of each planner invocation."""
-        agent_name = getattr(event.agent, "name", "") if hasattr(event, "agent") else ""
+        agent_name = (getattr(event.agent, "name", "") or "") if hasattr(event, "agent") else ""
         if agent_name == "planner":
             self.reset()
 

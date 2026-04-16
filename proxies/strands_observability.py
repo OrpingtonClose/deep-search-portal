@@ -1,8 +1,8 @@
 """Strands Agent Observability — JSONL metrics, enriched activity logs, structured logging.
 
 Self-contained observability module for the Strands Venice research agent.
-Designed to be imported by the strands-agent FastAPI server (in MiroThinker)
-or used standalone for metrics analysis.
+Designed to be imported by the strands-agent FastAPI server
+(in deep-search-portal/strands-agent/) or used standalone for metrics analysis.
 
 All output is structured for LLM consumption — an AI analyst can read the
 JSONL metrics file and recommend concrete improvements to agent behavior.

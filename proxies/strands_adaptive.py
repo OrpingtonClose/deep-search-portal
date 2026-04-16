@@ -12,8 +12,8 @@ The plugin is registered on the **planner** agent.  It intercepts
 ``BeforeToolCallEvent`` (before the researcher runs) and
 ``AfterToolCallEvent`` (to cache results and restore temperature).
 
-Designed to be imported by the strands-agent (in MiroThinker) via
-PYTHONPATH — same pattern as strands_observability.py.
+Designed to be imported by the strands-agent (in deep-search-portal/strands-agent/)
+via PYTHONPATH — same pattern as strands_observability.py.
 
 Configuration (env vars):
     BASE_TEMPERATURE      – starting researcher temp (default 0.7)

@@ -1,0 +1,21 @@
+[project]
+name = "strands-venice-agent"
+version = "0.2.0"
+description = "Venice GLM-4.7 uncensored research agent — Strands Agents SDK"
+requires-python = ">=3.10"
+dependencies = [
+    "strands-agents",
+    "strands-agents-tools",
+    "strands-agents-builder",
+    "openai",
+    "python-dotenv",
+    "fastapi[standard]",
+    "uvicorn[standard]",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["main", "agent", "config", "tools", "prompts"]

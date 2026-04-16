@@ -551,9 +551,9 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                         # reasoning IS the answer — emit as plain content.
                         for chunk in thinking_buffer:
                             yield _openai_chunk(req_id, model, chunk)
-                    elif thinking_flushed:
-                        # We opened a <details> block — close it
-                        yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
+                    # Note: no elif for thinking_flushed — the </details>
+                    # close tag was already emitted during the flush at the
+                    # first "text" token arrival.
                     break
 
                 event_type, data = item

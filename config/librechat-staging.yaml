@@ -669,7 +669,7 @@ endpoints:
     - presence_penalty
   - name: Strands Agent
     apiKey: not-needed
-    baseURL: http://localhost:8100/v1
+    baseURL: http://host.docker.internal:8100/v1
     models:
       default:
       - strands-venice-single

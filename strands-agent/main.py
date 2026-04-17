@@ -658,16 +658,20 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                 event_type, data = item
 
                 if event_type == "thinking":
-                    # Open a collapsible thinking block on first thinking
-                    # token.  Stream thinking in real-time so the user
-                    # sees the agent's reasoning as it happens.
+                    # Open a thinking block on first thinking token.
+                    # Use <details open> so content is visible during
+                    # streaming.  If text tokens follow, the block will
+                    # be closed and the answer appears below — the user
+                    # can manually collapse the thinking.  If only
+                    # thinking tokens arrive (Venice GLM quirk where
+                    # reasoning IS the answer), the content stays visible.
                     if not in_thinking_block:
                         # Close any previous context before starting thinking
                         if tool_count > 0 and not has_answer_text:
                             yield _openai_chunk(req_id, model, "\n")
                         yield _openai_chunk(
                             req_id, model,
-                            "<details><summary>💭 Thinking</summary>\n\n"
+                            "<details open><summary>💭 Thinking</summary>\n\n"
                         )
                         in_thinking_block = True
                     yield _openai_chunk(req_id, model, data)

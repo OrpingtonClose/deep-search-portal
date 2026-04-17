@@ -194,10 +194,10 @@ LIBRECHAT_COMPOSE="$REPO_ROOT/config/docker-compose.librechat.yml"
 if [ -f "$LIBRECHAT_COMPOSE" ]; then
     if ! docker ps --format '{{.Names}}' | grep -q librechat-api; then
         echo "Starting LibreChat stack..."
-        bash "$REPO_ROOT/scripts/start_librechat.sh" up
+        bash "$REPO_ROOT/scripts/start_librechat.sh" up || echo "WARNING: Docker Compose failed (expected on native deployments without Docker)"
     fi
     echo "Waiting for LibreChat..."
-    wait_for_health "http://localhost:3000" "LibreChat" 90
+    wait_for_health "http://localhost:3000" "LibreChat" 90 || true
 else
     echo "WARNING: $LIBRECHAT_COMPOSE not found, skipping LibreChat"
 fi

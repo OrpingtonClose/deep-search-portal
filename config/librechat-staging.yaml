@@ -321,7 +321,7 @@ endpoints:
   custom:
   - name: Mistral Thinking
     apiKey: not-needed
-    baseURL: http://host.docker.internal:9100/v1
+    baseURL: http://localhost:9100/v1
     models:
       default:
       - mistral-large-thinking
@@ -340,7 +340,7 @@ endpoints:
     titleMethod: completion
   - name: Persistent MiroFlow
     apiKey: not-needed
-    baseURL: http://host.docker.internal:9300/v1
+    baseURL: http://localhost:9300/v1
     models:
       default:
       - persistent-miroflow
@@ -359,7 +359,7 @@ endpoints:
     titleMethod: completion
   - name: MiroFlow Sprint
     apiKey: not-needed
-    baseURL: http://host.docker.internal:9400/v1
+    baseURL: http://localhost:9400/v1
     models:
       default:
       - miroflow-sprint
@@ -378,7 +378,7 @@ endpoints:
     titleMethod: completion
   - name: Deep Research
     apiKey: not-needed
-    baseURL: http://host.docker.internal:9200/v1
+    baseURL: http://localhost:9200/v1
     models:
       default:
       - miroflow
@@ -397,7 +397,7 @@ endpoints:
     titleMethod: completion
   - name: Swarm Deep Search
     apiKey: not-needed
-    baseURL: http://host.docker.internal:9500/v1
+    baseURL: http://localhost:9500/v1
     models:
       default:
       - swarm-miroflow
@@ -416,7 +416,7 @@ endpoints:
     titleMethod: completion
   - name: G0DM0D3
     apiKey: not-needed
-    baseURL: http://host.docker.internal:9600/v1
+    baseURL: http://localhost:9600/v1
     models:
       default:
       - godmode-classic
@@ -497,7 +497,7 @@ endpoints:
     titleMethod: completion
   - name: Singular
     apiKey: not-needed
-    baseURL: http://host.docker.internal:9600/v1
+    baseURL: http://localhost:9600/v1
     models:
       default:
       - g0dm0d3-x-ai/grok-4.20-0309-reasoning
@@ -515,7 +515,7 @@ endpoints:
     - presence_penalty
   - name: Persistent MiroFlow Wiki
     apiKey: not-needed
-    baseURL: http://host.docker.internal:9800/v1
+    baseURL: http://localhost:9800/v1
     models:
       default:
       - persistent-miroflow-wiki
@@ -534,7 +534,7 @@ endpoints:
     - presence_penalty
   - name: MiroFlow Sprint Wiki
     apiKey: not-needed
-    baseURL: http://host.docker.internal:9850/v1
+    baseURL: http://localhost:9850/v1
     models:
       default:
       - miroflow-sprint-wiki
@@ -553,7 +553,7 @@ endpoints:
     - presence_penalty
   - name: xAI Native
     apiKey: not-needed
-    baseURL: http://host.docker.internal:9700/v1
+    baseURL: http://localhost:9700/v1
     models:
       default:
       - xai-grok-4.20-0309-reasoning
@@ -588,7 +588,7 @@ endpoints:
     - presence_penalty
   - name: Tier Chooser
     apiKey: not-needed
-    baseURL: http://host.docker.internal:9900/v1
+    baseURL: http://localhost:9900/v1
     models:
       default:
       - tier-race-quick
@@ -635,7 +635,7 @@ endpoints:
     - presence_penalty
   - name: Heretic
     apiKey: not-needed
-    baseURL: http://host.docker.internal:9950/v1
+    baseURL: http://localhost:9950/v1
     models:
       default:
       - glm-4.7-flash-heretic

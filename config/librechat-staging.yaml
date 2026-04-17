@@ -317,6 +317,22 @@ modelSpecs:
     preset:
       endpoint: Tier Chooser
       model: tier-x-ai/grok-4.20
+  - name: strands-venice-single
+    label: Strands Single Agent
+    description: Venice GLM-4.7 uncensored research agent with Brave, Exa, Firecrawl,
+      and Kagi tools. Single-agent mode — one focused research chain.
+    group: Complex
+    preset:
+      endpoint: Strands Agent
+      model: strands-venice-single
+  - name: strands-venice-multi
+    label: Strands Multi Agent
+    description: Venice GLM-4.7 uncensored research with planner + researcher architecture.
+      Breaks queries into sub-tasks for deeper coverage.
+    group: Complex
+    preset:
+      endpoint: Strands Agent
+      model: strands-venice-multi
 endpoints:
   custom:
   - name: Mistral Thinking
@@ -639,6 +655,25 @@ endpoints:
     models:
       default:
       - glm-4.7-flash-heretic
+      fetch: true
+    titleConvo: true
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    titleMethod: completion
+    summarize: false
+    maxContextTokens: 128000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+  - name: Strands Agent
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:8100/v1
+    models:
+      default:
+      - strands-venice-single
+      - strands-venice-multi
       fetch: true
     titleConvo: true
     titleModel: mistral-large-thinking

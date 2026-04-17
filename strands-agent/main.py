@@ -57,6 +57,7 @@ logger = logging.getLogger(__name__)
 
 _single_agent = None
 _multi_agent = None
+_deep_agent = None
 _mcp_clients: list = []
 _multi_researcher = None
 _agent_lock = threading.Lock()
@@ -125,11 +126,12 @@ def _extract_usage(metrics_summary: dict | None) -> dict[str, int]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: create agents. Shutdown: close MCP connections."""
-    global _single_agent, _multi_agent, _multi_researcher, _mcp_clients
+    global _single_agent, _multi_agent, _deep_agent, _multi_researcher, _mcp_clients
 
     from agent import (
         _enter_mcp_clients,
         _setup_otel,
+        create_deep_agent_instance,
         create_multi_agent,
         create_single_agent,
     )
@@ -176,6 +178,14 @@ async def lifespan(app: FastAPI):
         logger.info("Multi agent ready")
     except Exception:
         logger.exception("Failed to create multi agent")
+
+    try:
+        _deep_agent, _ = create_deep_agent_instance(
+            tool_list=tool_list, mcp_clients=_mcp_clients
+        )
+        logger.info("Deep agent ready")
+    except Exception:
+        logger.exception("Failed to create deep agent")
 
     yield
 
@@ -318,6 +328,7 @@ async def health():
         "status": "ok",
         "single_agent": _single_agent is not None,
         "multi_agent": _multi_agent is not None,
+        "deep_agent": _deep_agent is not None,
     }
 
 
@@ -417,6 +428,7 @@ def query_multi(req: QueryRequest):
 
 _MODEL_SINGLE = "strands-venice-single"
 _MODEL_MULTI = "strands-venice-multi"
+_MODEL_DEEP = "strands-venice-deep"
 
 
 @app.get("/v1/models")
@@ -437,6 +449,12 @@ async def openai_models():
                     "object": "model",
                     "created": 1700000000,
                     "owned_by": "strands-venice-agent",
+                },
+                {
+                    "id": _MODEL_DEEP,
+                    "object": "model",
+                    "created": 1700000000,
+                    "owned_by": "strands-deep-agents",
                 },
             ],
         }
@@ -476,6 +494,22 @@ def _dispatch_agent(
                 _multi_researcher.messages.clear()
         reset_budget()
         agent_result = _multi_agent(user_message)
+        result = str(agent_result)
+        try:
+            metrics_summary = agent_result.metrics.get_summary()
+        except Exception:
+            pass
+    elif model == _MODEL_DEEP:
+        if _deep_agent is None:
+            raise RuntimeError("Deep agent not initialised")
+        if chat_messages:
+            user_message = _load_conversation_history(
+                _deep_agent, chat_messages
+            )
+        else:
+            _deep_agent.messages.clear()
+        reset_budget()
+        agent_result = _deep_agent(user_message)
         result = str(agent_result)
         try:
             metrics_summary = agent_result.metrics.get_summary()

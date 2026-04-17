@@ -34,7 +34,14 @@ from strands.handlers.callback_handler import (
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 
 from config import build_model
-from prompts import PLANNER_PROMPT, RESEARCHER_PROMPT, SYSTEM_PROMPT
+from prompts import (
+    DEEP_AGENT_INSTRUCTIONS,
+    DEEP_CITATIONS_PROMPT,
+    DEEP_RESEARCHER_PROMPT,
+    PLANNER_PROMPT,
+    RESEARCHER_PROMPT,
+    SYSTEM_PROMPT,
+)
 from tools import get_all_mcp_clients
 
 logger = logging.getLogger(__name__)
@@ -395,6 +402,78 @@ def create_multi_agent(tool_list=None, mcp_clients=None):
         plugins=plugins,
     )
     return planner, researcher, mcp_clients or []
+
+
+def create_deep_agent_instance(tool_list=None, mcp_clients=None):
+    """Create a Deep Agent using the strands-deep-agents package.
+
+    The Deep Agent uses the DeepAgents pattern: a lead agent with strategic
+    planning (TODO lists), file-based context management, and sub-agent
+    orchestration.  Sub-agents are spawned ephemerally for each task and
+    run in isolation to keep the lead agent's context lean.
+
+    Architecture:
+      - **Lead Agent** — plans research, delegates, synthesizes
+      - **research_subagent** — focused web research with all MCP tools
+      - **citations_agent** — adds source references to reports
+
+    Args:
+        tool_list: Pre-built list of MCP tools.  When *None* the
+            function enters its own MCP clients (REPL use-case).
+        mcp_clients: MCP clients that were entered to produce
+            *tool_list*.  Returned as-is for the caller to manage.
+
+    Returns:
+        Tuple of (deep_agent, mcp_clients).
+    """
+    from strands_deep_agents import SubAgent, create_deep_agent
+
+    model = build_model()
+
+    owns_clients = tool_list is None
+    if owns_clients:
+        mcp_clients = get_all_mcp_clients()
+        tool_list = _enter_mcp_clients(mcp_clients)
+
+    # Research sub-agent: has all MCP search tools
+    research_subagent = SubAgent(
+        name="research_subagent",
+        description=(
+            "Specialized research agent for focused web investigations. "
+            "Searches specific questions, gathers facts, analyzes sources. "
+            "Has access to Brave Search, Firecrawl, Exa, Kagi, and "
+            "Qualitative Research tools. Writes findings to files."
+        ),
+        tools=tool_list,
+        prompt=DEEP_RESEARCHER_PROMPT,
+        model=build_model(),
+    )
+
+    # Citations sub-agent: adds source references to reports
+    citations_agent = SubAgent(
+        name="citations_agent",
+        description=(
+            "Adds proper citations and source references to research "
+            "reports. Call after research is complete to add inline "
+            "citations with URLs."
+        ),
+        prompt=DEEP_CITATIONS_PROMPT,
+        model=build_model(),
+    )
+
+    agent = create_deep_agent(
+        instructions=DEEP_AGENT_INSTRUCTIONS,
+        model=model,
+        subagents=[research_subagent, citations_agent],
+        tools=tool_list,
+        callback_handler=_build_callback_handler(),
+    )
+
+    logger.info(
+        "Deep agent ready — %d tools",
+        len(agent.tool_registry.get_all_tools_config()),
+    )
+    return agent, mcp_clients or []
 
 
 def _cleanup_mcp(mcp_clients):

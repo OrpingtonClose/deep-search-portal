@@ -29,6 +29,13 @@ modelSpecs:
     preset:
       endpoint: Heretic
       model: glm-4.7-flash-heretic
+  - name: gemma4-abliterated
+    label: Gemma 4 Abliterated
+    description: "Huihui Gemma 4 E2B abliterated v2 \u2014 uncensored multimodal model (vision + text). Self-hosted via Ollama on staging GPU."
+    group: Simple
+    preset:
+      endpoint: Ollama
+      model: huihui_ai/gemma-4-abliterated:e2b
   - name: prod-ultraplinian-fast
     label: Consortium Fast
     description: Races the fastest models from multiple providers. Quick results,
@@ -633,6 +640,25 @@ endpoints:
     - user
     - frequency_penalty
     - presence_penalty
+  - name: Ollama
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:11434/v1
+    models:
+      default:
+      - huihui_ai/gemma-4-abliterated:e2b
+      fetch: true
+    titleConvo: true
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    summarize: false
+    maxContextTokens: 128000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+    modelDisplayLabel: Ollama
+    titleMethod: completion
   - name: Heretic
     apiKey: not-needed
     baseURL: http://host.docker.internal:9950/v1

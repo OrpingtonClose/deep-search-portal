@@ -88,7 +88,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in miro-proxy heretic-proxy tier-chooser mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng strands-agent; do
+    for session in miro-proxy heretic-proxy tier-chooser ollama mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng strands-agent; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -323,6 +323,17 @@ elif ! pgrep -f "miro_proxy.py" > /dev/null; then
     screen -dmS miro-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && MIRO_PROXY_PORT=9951 python3 miro_proxy.py 2>&1 | tee /var/log/miro_proxy.log"
     echo "Miro Proxy starting..."
     wait_for_health "http://localhost:9951/health" "Miro Proxy" 15
+fi
+
+# --- Ollama (local model inference — self-hosted models) ---
+if command -v ollama > /dev/null 2>&1; then
+    if ! pgrep -f "ollama serve" > /dev/null; then
+        screen -dmS ollama bash -c "ollama serve 2>&1 | tee /var/log/ollama.log"
+        echo "Ollama server starting on port 11434..."
+    fi
+    wait_for_health "http://localhost:11434" "Ollama" 15 || true
+else
+    echo "WARNING: Ollama not installed — self-hosted models will be unavailable"
 fi
 
 # --- Strands Agent (Venice GLM-4.7 uncensored + MCP tools, single & multi agent) ---

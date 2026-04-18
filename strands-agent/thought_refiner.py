@@ -46,7 +46,9 @@ logger = logging.getLogger("thought-refiner")
 # ── Configuration ─────────────────────────────────────────────────────
 
 # The refiner model should be fast and cheap.  Venice qwen3.5-9b is ideal:
-# ~200ms latency, near-zero cost, good at summarisation.
+# near-zero cost, good at summarisation.  We disable reasoning mode
+# (venice_parameters.include_venice_system_prompt=False + reasoning.effort="none")
+# to avoid the model wasting time on chain-of-thought for a simple rewrite.
 REFINER_API_BASE = os.environ.get(
     "REFINER_API_BASE",
     os.environ.get("VENICE_API_BASE", "https://api.venice.ai/api/v1"),
@@ -128,7 +130,37 @@ def _strip_think_tags(text: str) -> str:
     return text.strip()
 
 
-def refine_sync(raw_thinking: str, timeout: float = 10.0) -> str:
+def _extract_content(data: dict) -> str:
+    """Extract text content from a chat completion response.
+
+    Venice models may return content in ``reasoning_content`` instead of
+    ``content`` when reasoning mode is active.  This helper checks both
+    fields.
+    """
+    msg = data.get("choices", [{}])[0].get("message", {})
+    # Prefer regular content; fall back to reasoning_content
+    text = msg.get("content", "") or ""
+    if not text.strip():
+        text = msg.get("reasoning_content", "") or ""
+    return text.strip()
+
+
+def _refiner_body(raw_thinking: str) -> dict:
+    """Build the JSON request body for the refiner API call."""
+    return {
+        "model": REFINER_MODEL,
+        "messages": _build_refiner_messages(raw_thinking),
+        "max_tokens": 300,
+        "temperature": 0.3,
+        "stream": False,
+        # Disable reasoning/thinking mode so the model responds directly
+        # without wasting tokens on chain-of-thought.
+        "venice_parameters": {"include_venice_system_prompt": False},
+        "reasoning": {"effort": "none"},
+    }
+
+
+def refine_sync(raw_thinking: str, timeout: float = 20.0) -> str:
     """Refine a raw thinking block synchronously.
 
     Returns the refined text, or the original text (truncated) if
@@ -159,24 +191,12 @@ def refine_sync(raw_thinking: str, timeout: float = 10.0) -> str:
                 "Authorization": f"Bearer {REFINER_API_KEY}",
                 "Content-Type": "application/json",
             },
-            json={
-                "model": REFINER_MODEL,
-                "messages": _build_refiner_messages(raw_thinking),
-                "max_tokens": 300,
-                "temperature": 0.3,
-                "stream": False,
-            },
+            json=_refiner_body(raw_thinking),
             timeout=timeout,
         )
         resp.raise_for_status()
         data = resp.json()
-        refined = (
-            data.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-            .strip()
-        )
-        refined = _strip_think_tags(refined)
+        refined = _strip_think_tags(_extract_content(data))
         if refined:
             elapsed = time.time() - start
             logger.info("Thought refined in %.1fs (%d→%d chars)", elapsed, len(raw_thinking), len(refined))
@@ -190,7 +210,7 @@ def refine_sync(raw_thinking: str, timeout: float = 10.0) -> str:
     return _truncate_middle(raw_thinking.strip(), 1000)
 
 
-async def refine_async(raw_thinking: str, timeout: float = 10.0) -> str:
+async def refine_async(raw_thinking: str, timeout: float = 20.0) -> str:
     """Refine a raw thinking block asynchronously.
 
     Same as ``refine_sync`` but uses ``httpx.AsyncClient`` for use in
@@ -222,24 +242,12 @@ async def refine_async(raw_thinking: str, timeout: float = 10.0) -> str:
                     "Authorization": f"Bearer {REFINER_API_KEY}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": REFINER_MODEL,
-                    "messages": _build_refiner_messages(raw_thinking),
-                    "max_tokens": 300,
-                    "temperature": 0.3,
-                    "stream": False,
-                },
+                json=_refiner_body(raw_thinking),
                 timeout=timeout,
             )
             resp.raise_for_status()
             data = resp.json()
-            refined = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                .strip()
-            )
-            refined = _strip_think_tags(refined)
+            refined = _strip_think_tags(_extract_content(data))
             if refined:
                 elapsed = time.time() - start
                 logger.info("Thought refined (async) in %.1fs (%d→%d chars)", elapsed, len(raw_thinking), len(refined))

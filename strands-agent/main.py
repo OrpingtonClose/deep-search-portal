@@ -51,6 +51,14 @@ try:
 except ImportError:
     _HAS_OBSERVABILITY = False
 
+# ── Thought refinement middleware ──────────────────────────────────────
+# Transforms chaotic agent reasoning into user-friendly status updates.
+try:
+    from thought_refiner import refine_async, REFINER_ENABLED
+    _HAS_REFINER = True
+except ImportError:
+    _HAS_REFINER = False
+
 logger = logging.getLogger(__name__)
 
 # ── Globals (initialised in lifespan) ────────────────────────────────
@@ -658,8 +666,9 @@ async def openai_chat_completions(body: ChatCompletionRequest):
             token_queue = queue_holder["q"]
 
             # ── Streaming presentation state ──
-            # We stream thinking, tool actions, and answer text as they
-            # arrive so the user sees the agent's full reasoning process.
+            # We buffer thinking tokens and refine them via a fast LLM
+            # before emitting, so the user sees concise status updates
+            # instead of chaotic chain-of-thought.
             #
             # Layout:
             #   <details open><summary>💭 Thinking</summary> ... </details>
@@ -667,10 +676,60 @@ async def openai_chat_completions(body: ChatCompletionRequest):
             #   🔧 **Tool:** firecrawl_scrape — `"https://..."`
             #   ---
             #   <final answer text>
-            in_thinking_block = False   # True while a <details> block is open
+            thinking_buffer: list[str] = []  # Buffer raw thinking tokens
             has_answer_text = False     # True once we've emitted answer text
             tool_count = 0             # Number of tool calls emitted
             last_event_type = None     # Track event transitions
+
+            async def _flush_thinking(is_final: bool = False):
+                """Refine and emit buffered thinking tokens.
+
+                When the refiner is available, the raw thinking is sent to
+                a fast LLM for summarisation.  The refined version is emitted
+                inside a ``<details>`` block.  If refinement fails or is
+                disabled, the raw thinking is emitted as before.
+
+                Args:
+                    is_final: True when this is the last thinking block
+                        (agent finished with only thinking, no answer text).
+                        In that case, emit as plain text since the thinking
+                        IS the answer.
+                """
+                if not thinking_buffer:
+                    return
+
+                raw_thinking = "".join(thinking_buffer)
+                thinking_buffer.clear()
+
+                # If thinking-only (no answer text follows), emit as plain
+                # text — the reasoning IS the answer.
+                if is_final:
+                    if _HAS_REFINER:
+                        refined = await refine_async(raw_thinking)
+                    else:
+                        refined = raw_thinking
+                    yield _openai_chunk(req_id, model, refined)
+                    return
+
+                # Normal case: thinking followed by tools/answer.
+                # Refine and wrap in a collapsible block.
+                if _HAS_REFINER:
+                    # Show a placeholder while refining
+                    yield _openai_chunk(
+                        req_id, model,
+                        "<details open><summary>💭 Thinking</summary>\n\n"
+                    )
+                    refined = await refine_async(raw_thinking)
+                    yield _openai_chunk(req_id, model, refined)
+                    yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
+                else:
+                    # No refiner — emit raw thinking in details block
+                    yield _openai_chunk(
+                        req_id, model,
+                        "<details open><summary>💭 Thinking</summary>\n\n"
+                    )
+                    yield _openai_chunk(req_id, model, raw_thinking)
+                    yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
 
             while True:
                 try:
@@ -683,38 +742,23 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                     continue
 
                 if item is None:
-                    # Agent finished — close any open thinking block.
-                    if in_thinking_block:
-                        yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
-                        in_thinking_block = False
+                    # Agent finished — flush any remaining thinking.
+                    # If no answer text was emitted, thinking IS the answer.
+                    async for chunk in _flush_thinking(is_final=not has_answer_text):
+                        yield chunk
                     break
 
                 event_type, data = item
 
                 if event_type == "thinking":
-                    # Open a thinking block on first thinking token.
-                    # Use <details open> so content is visible during
-                    # streaming.  If text tokens follow, the block will
-                    # be closed and the answer appears below — the user
-                    # can manually collapse the thinking.  If only
-                    # thinking tokens arrive (Venice GLM quirk where
-                    # reasoning IS the answer), the content stays visible.
-                    if not in_thinking_block:
-                        # Close any previous context before starting thinking
-                        if tool_count > 0 and not has_answer_text:
-                            yield _openai_chunk(req_id, model, "\n")
-                        yield _openai_chunk(
-                            req_id, model,
-                            "<details open><summary>💭 Thinking</summary>\n\n"
-                        )
-                        in_thinking_block = True
-                    yield _openai_chunk(req_id, model, data)
+                    # Buffer thinking tokens — they'll be refined and
+                    # emitted when the block closes (tool/text/finish).
+                    thinking_buffer.append(data)
 
                 elif event_type == "tool":
-                    # Close thinking block before showing tool call
-                    if in_thinking_block:
-                        yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
-                        in_thinking_block = False
+                    # Flush (refine + emit) buffered thinking before tool
+                    async for chunk in _flush_thinking():
+                        yield chunk
 
                     tool_count += 1
                     tool_name = data.get("tool", "unknown")
@@ -729,10 +773,9 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                     )
 
                 elif event_type == "text":
-                    # Close thinking block and add separator before answer
-                    if in_thinking_block:
-                        yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
-                        in_thinking_block = False
+                    # Flush (refine + emit) buffered thinking before answer
+                    async for chunk in _flush_thinking():
+                        yield chunk
                     if not has_answer_text and tool_count > 0:
                         yield _openai_chunk(req_id, model, "\n---\n\n")
                     has_answer_text = True
@@ -834,9 +877,14 @@ async def openai_chat_completions(body: ChatCompletionRequest):
         and answer.strip() == captured_reasoning.strip()
     )
     if captured_reasoning.strip() and not reasoning_is_answer:
+        # Refine the thinking via fast LLM if available
+        if _HAS_REFINER:
+            refined_reasoning = await refine_async(captured_reasoning)
+        else:
+            refined_reasoning = captured_reasoning
         parts.append(
             f"<details><summary>💭 Thinking</summary>\n\n"
-            f"{captured_reasoning}\n\n</details>\n\n"
+            f"{refined_reasoning}\n\n</details>\n\n"
         )
 
     # Show tool calls as visible blocks

@@ -317,6 +317,31 @@ modelSpecs:
     preset:
       endpoint: Tier Chooser
       model: tier-x-ai/grok-4.20
+  - name: strands-single-agent
+    label: Strands Single Agent
+    description: Single-agent research mode — one agent with direct access to Brave,
+      Firecrawl, Exa, Kagi, and Qualitative Research tools. Fast, focused.
+    group: Strands
+    preset:
+      endpoint: Strands Agent
+      model: strands-venice-single
+  - name: strands-multi-agent
+    label: Strands Multi Agent
+    description: Planner + Researcher multi-agent — strategic decomposition with
+      adaptive loop prevention. Good for complex multi-faceted queries.
+    group: Strands
+    preset:
+      endpoint: Strands Agent
+      model: strands-venice-multi
+  - name: strands-deep-agent
+    label: Strands Deep Agent
+    description: Deep Agents pattern — lead agent with TODO planning, parallel
+      sub-agent orchestration, file-based context, and citations. Best for
+      comprehensive research reports.
+    group: Strands
+    preset:
+      endpoint: Strands Agent
+      model: strands-venice-deep
 endpoints:
   custom:
   - name: Mistral Thinking
@@ -651,3 +676,24 @@ endpoints:
     - user
     - frequency_penalty
     - presence_penalty
+  - name: Strands Agent
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:8100/v1
+    models:
+      default:
+      - strands-venice-single
+      - strands-venice-multi
+      - strands-venice-deep
+      fetch: true
+    titleConvo: true
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    titleMethod: completion
+    summarize: false
+    maxContextTokens: 1000000
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty
+    modelDisplayLabel: Strands Agent

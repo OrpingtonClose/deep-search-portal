@@ -54,7 +54,7 @@ except ImportError:
 # ── Thought refinement middleware ──────────────────────────────────────
 # Transforms chaotic agent reasoning into user-friendly status updates.
 try:
-    from thought_refiner import refine_async, refine_sync, REFINER_ENABLED
+    from thought_refiner import refine_async, REFINER_ENABLED
     _HAS_REFINER = True
 except ImportError:
     _HAS_REFINER = False
@@ -879,7 +879,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
     if captured_reasoning.strip() and not reasoning_is_answer:
         # Refine the thinking via fast LLM if available
         if _HAS_REFINER:
-            refined_reasoning = refine_sync(captured_reasoning)
+            refined_reasoning = await refine_async(captured_reasoning)
         else:
             refined_reasoning = captured_reasoning
         parts.append(

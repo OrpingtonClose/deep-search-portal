@@ -32,7 +32,7 @@ Output ONLY valid JSON:
 }}"""
 
 
-@tool
+@tool(context=True)
 def comprehend_query(query: str, tool_context) -> str:
     """Deeply analyze a research query to map the full knowledge territory.
 

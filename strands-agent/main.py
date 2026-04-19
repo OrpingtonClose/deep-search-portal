@@ -671,7 +671,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
             # instead of chaotic chain-of-thought.
             #
             # Layout:
-            #   <details open><summary>💭 Thinking</summary> ... </details>
+            #   > 💭 **Thinking** — refined summary
             #   🔧 **Tool:** brave_web_search — `"query text..."`
             #   🔧 **Tool:** firecrawl_scrape — `"https://..."`
             #   ---
@@ -686,8 +686,8 @@ async def openai_chat_completions(body: ChatCompletionRequest):
 
                 When the refiner is available, the raw thinking is sent to
                 a fast LLM for summarisation.  The refined version is emitted
-                inside a ``<details>`` block.  If refinement fails or is
-                disabled, the raw thinking is emitted as before.
+                inside a blockquote.  If refinement fails or is disabled,
+                the raw thinking is emitted as before.
 
                 Args:
                     is_final: True when this is the last thinking block
@@ -717,19 +717,29 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                     # Show a placeholder while refining
                     yield _openai_chunk(
                         req_id, model,
-                        "<details open><summary>💭 Thinking</summary>\n\n"
+                        "> 💭 **Thinking**\n>\n> "
                     )
                     refined = await refine_async(raw_thinking)
-                    yield _openai_chunk(req_id, model, refined)
-                    yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
-                else:
-                    # No refiner — emit raw thinking in details block
+                    # Indent each line of the refined text as a blockquote
                     yield _openai_chunk(
                         req_id, model,
-                        "<details open><summary>💭 Thinking</summary>\n\n"
+                        refined.replace("\n", "\n> ")
                     )
-                    yield _openai_chunk(req_id, model, raw_thinking)
-                    yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
+                    yield _openai_chunk(req_id, model, "\n\n")
+                else:
+                    # No refiner — emit raw thinking in blockquote
+                    truncated = raw_thinking[:1000]
+                    if len(raw_thinking) > 1000:
+                        truncated += "…"
+                    yield _openai_chunk(
+                        req_id, model,
+                        "> 💭 **Thinking**\n>\n> "
+                    )
+                    yield _openai_chunk(
+                        req_id, model,
+                        truncated.replace("\n", "\n> ")
+                    )
+                    yield _openai_chunk(req_id, model, "\n\n")
 
             while True:
                 try:
@@ -794,10 +804,16 @@ async def openai_chat_completions(body: ChatCompletionRequest):
 
             # Append inline activity log at end of response
             elapsed = round(time.time() - start_time, 2)
+            # When the refiner is active, thinking has already been refined
+            # and emitted inline — don't duplicate raw reasoning in the log.
+            reasoning_for_log = (
+                "" if _HAS_REFINER
+                else result_holder.get("reasoning_text", "")
+            )
             inline_log = _format_inline_log(
                 result_holder["tool_events"], elapsed,
                 query=user_message, model=model,
-                reasoning=result_holder.get("reasoning_text", ""),
+                reasoning=reasoning_for_log,
                 metrics=result_holder.get("metrics"),
             )
             yield _openai_chunk(req_id, model, inline_log)
@@ -859,10 +875,13 @@ async def openai_chat_completions(body: ChatCompletionRequest):
         )
 
     elapsed = round(time.time() - start_time, 2)
+    # When the refiner is active, thinking is refined inline — don't
+    # duplicate raw reasoning in the activity log.
+    reasoning_for_log = "" if _HAS_REFINER else captured_reasoning
     inline_log = _format_inline_log(
         captured_tool_events, elapsed,
         query=user_message, model=model,
-        reasoning=captured_reasoning,
+        reasoning=reasoning_for_log,
         metrics=metrics,
     )
 
@@ -882,10 +901,8 @@ async def openai_chat_completions(body: ChatCompletionRequest):
             refined_reasoning = await refine_async(captured_reasoning)
         else:
             refined_reasoning = captured_reasoning
-        parts.append(
-            f"<details><summary>💭 Thinking</summary>\n\n"
-            f"{refined_reasoning}\n\n</details>\n\n"
-        )
+        quoted = refined_reasoning.replace("\n", "\n> ")
+        parts.append(f"> 💭 **Thinking**\n>\n> {quoted}\n\n")
 
     # Show tool calls as visible blocks
     if captured_tool_events:

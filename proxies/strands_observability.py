@@ -249,8 +249,8 @@ def format_inline_log(
     log_content = "\n".join(log_lines)
 
     parts.append(
-        f"\n\n<details>\n<summary>📄 agent-activity-log.txt ({len(tool_events)} tools, {elapsed:.1f}s)</summary>\n\n"
-        f"```\n{log_content}\n```\n\n</details>"
+        f"\n\n---\n📄 **agent-activity-log.txt** ({len(tool_events)} tools, {elapsed:.1f}s)\n\n"
+        f"```yaml\n{log_content}\n```"
     )
 
     return "".join(parts)

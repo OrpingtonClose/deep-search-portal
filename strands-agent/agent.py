@@ -33,6 +33,7 @@ from strands.handlers.callback_handler import (
 )
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 
+from advisor import consult_advisor, reset_advisor
 from config import build_model
 from prompts import (
     DEEP_AGENT_INSTRUCTIONS,
@@ -77,6 +78,7 @@ def reset_budget() -> None:
     _seen_tool_use_ids = set()
     if _adaptive_plugin is not None:
         _adaptive_plugin.reset()
+    reset_advisor()
 
 
 def budget_callback(**kwargs) -> None:
@@ -310,7 +312,7 @@ def create_single_agent(tool_list=None, mcp_clients=None):
     agent = Agent(
         model=model,
         system_prompt=SYSTEM_PROMPT,
-        tools=tool_list,
+        tools=[*tool_list, consult_advisor],
         conversation_manager=conversation_manager,
         callback_handler=_build_callback_handler(),
     )
@@ -396,6 +398,7 @@ def create_multi_agent(tool_list=None, mcp_clients=None):
                     "scrape, or data retrieval task to this tool."
                 ),
             ),
+            consult_advisor,
         ],
         conversation_manager=conversation_manager,
         callback_handler=_build_callback_handler(),

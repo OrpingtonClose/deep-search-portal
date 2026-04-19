@@ -88,7 +88,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in miro-proxy heretic-proxy tier-chooser mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng strands-agent; do
+    for session in deepagents-proxy miro-proxy heretic-proxy tier-chooser mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng strands-agent; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -339,6 +339,16 @@ elif ! pgrep -f "uvicorn.*main:app.*${STRANDS_AGENT_PORT}" > /dev/null 2>&1; the
         echo "WARNING: scripts/start_strands_agent.sh not found — skipping Strands Agent"
     fi
     wait_for_health "http://localhost:${STRANDS_AGENT_PORT}/health" "Strands Agent" 120 || true
+fi
+
+# --- Deep Agents Proxy (LangGraph deepagents SDK + Venice AI) ---
+DEEPAGENTS_PORT="${DEEPAGENTS_PORT:-8200}"
+if [ -z "${VENICE_API_KEY:-}" ]; then
+    echo "WARNING: Skipping Deep Agents Proxy — VENICE_API_KEY not set"
+elif ! pgrep -f "deepagents_proxy.py" > /dev/null 2>&1; then
+    screen -dmS deepagents-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && DEEPAGENTS_PORT=${DEEPAGENTS_PORT} python3 deepagents_proxy.py 2>&1 | tee /var/log/deepagents_proxy.log"
+    echo "Deep Agents Proxy starting on port ${DEEPAGENTS_PORT}..."
+    wait_for_health "http://localhost:${DEEPAGENTS_PORT}/health" "Deep Agents Proxy" 60 || true
 fi
 
 # --- Self-hosted GPU VM health check (optional) ---

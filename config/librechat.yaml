@@ -25,6 +25,14 @@ modelSpecs:
         endpoint: "Heretic"
         model: "glm-4.7-flash-heretic"
 
+    - name: "deepagents-research"
+      label: "Deep Agents Research"
+      description: "LangGraph deep research agent with planning, sub-agent orchestration, and file-based context management. Powered by Venice AI GLM-4.7 Heretic (uncensored)."
+      group: "Simple"
+      preset:
+        endpoint: "Deep Agents"
+        model: "deepagents-research"
+
     - name: "tier-race-full-throttle"
       label: "Tier Race (Full Throttle)"
       description: "Races 9 flagship models (Opus, Gemini Pro, GPT-5.4 High, Grok 4.20, DeepSeek R1, Kimi, GLM, Qwen Max, Mistral). Maximum intelligence."
@@ -293,6 +301,25 @@ endpoints:
       titleMethod: "completion"
       summarize: false
       maxContextTokens: 128000
+      dropParams:
+        - "stop"
+        - "user"
+        - "frequency_penalty"
+        - "presence_penalty"
+
+    - name: "Deep Agents"
+      apiKey: "not-needed"
+      baseURL: "http://host.docker.internal:8200/v1"
+      models:
+        default:
+          - "deepagents-research"
+        fetch: true
+      titleConvo: true
+      titleModel: "mistral-large-thinking"
+      titleEndpoint: "Mistral Thinking"
+      titleMethod: "completion"
+      summarize: false
+      maxContextTokens: 1000000
       dropParams:
         - "stop"
         - "user"

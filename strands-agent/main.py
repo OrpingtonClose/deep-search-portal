@@ -714,32 +714,21 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                 # Normal case: thinking followed by tools/answer.
                 # Refine and wrap in a collapsible block.
                 if _HAS_REFINER:
-                    # Show a placeholder while refining
-                    yield _openai_chunk(
-                        req_id, model,
-                        "> 💭 **Thinking**\n>\n> "
-                    )
                     refined = await refine_async(raw_thinking)
-                    # Indent each line of the refined text as a blockquote
+                    # Emit as italic status text — unobtrusive but informative
                     yield _openai_chunk(
                         req_id, model,
-                        refined.replace("\n", "\n> ")
+                        f"*💭 {refined}*\n\n"
                     )
-                    yield _openai_chunk(req_id, model, "\n\n")
                 else:
-                    # No refiner — emit raw thinking in blockquote
-                    truncated = raw_thinking[:1000]
-                    if len(raw_thinking) > 1000:
+                    # No refiner — emit truncated raw thinking
+                    truncated = raw_thinking[:500]
+                    if len(raw_thinking) > 500:
                         truncated += "…"
                     yield _openai_chunk(
                         req_id, model,
-                        "> 💭 **Thinking**\n>\n> "
+                        f"*💭 {truncated}*\n\n"
                     )
-                    yield _openai_chunk(
-                        req_id, model,
-                        truncated.replace("\n", "\n> ")
-                    )
-                    yield _openai_chunk(req_id, model, "\n\n")
 
             while True:
                 try:
@@ -779,7 +768,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                         input_preview += "…"
                     yield _openai_chunk(
                         req_id, model,
-                        f"> 🔧 **{tool_name}** — `{input_preview}`\n>\n"
+                        f"🔧 *Using {tool_name}*\n\n"
                     )
 
                 elif event_type == "text":
@@ -787,7 +776,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                     async for chunk in _flush_thinking():
                         yield chunk
                     if not has_answer_text and tool_count > 0:
-                        yield _openai_chunk(req_id, model, "\n---\n\n")
+                        yield _openai_chunk(req_id, model, "\n---\n\n**Answer:**\n\n")
                     has_answer_text = True
                     yield _openai_chunk(req_id, model, data)
 
@@ -900,19 +889,17 @@ async def openai_chat_completions(body: ChatCompletionRequest):
         if _HAS_REFINER:
             refined_reasoning = await refine_async(captured_reasoning)
         else:
-            refined_reasoning = captured_reasoning
-        quoted = refined_reasoning.replace("\n", "\n> ")
-        parts.append(f"> 💭 **Thinking**\n>\n> {quoted}\n\n")
+            refined_reasoning = captured_reasoning[:500]
+            if len(captured_reasoning) > 500:
+                refined_reasoning += "…"
+        parts.append(f"*💭 {refined_reasoning}*\n\n")
 
-    # Show tool calls as visible blocks
+    # Show tool calls as unobtrusive italic lines
     if captured_tool_events:
         for ev in captured_tool_events:
             tool_name = ev.get("tool", "unknown")
-            tool_input = str(ev.get("input", ""))[:120].replace("\n", " ")
-            if len(str(ev.get("input", ""))) > 120:
-                tool_input += "…"
-            parts.append(f"> 🔧 **{tool_name}** — `{tool_input}`\n>\n")
-        parts.append("\n---\n\n")
+            parts.append(f"🔧 *Using {tool_name}*\n\n")
+        parts.append("\n---\n\n**Answer:**\n\n")
 
     parts.append(answer)
     parts.append(inline_log)

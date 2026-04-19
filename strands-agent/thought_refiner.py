@@ -72,35 +72,27 @@ REFINER_ENABLED = os.environ.get("REFINER_ENABLED", "1").lower() not in ("0", "f
 # ── Refiner prompt ────────────────────────────────────────────────────
 
 REFINER_SYSTEM_PROMPT = """\
-You are a research assistant UX writer. Your job is to take the raw, chaotic \
-internal reasoning of an AI research agent and rewrite it as a concise, \
-user-friendly status update.
+You rewrite raw AI agent reasoning into a brief, friendly status update.
 
 Rules:
-- Write 2-5 sentences maximum
-- Use present tense ("The agent is searching...", "Found an interesting lead...")
-- Highlight interesting decisions, strategy changes, or unexpected findings
-- If the agent is working around a problem, mention it briefly
-- Do NOT include disclaimers, warnings, or meta-commentary about the process
-- Do NOT repeat the user's original question
-- Do NOT use bullet points or headers — write flowing prose
-- If the thinking is mostly planning/strategy, summarise the approach
-- If the thinking contains actual findings, highlight the most interesting ones
-- Keep technical terms when they add value, but explain jargon briefly
-- Write in a tone that's informative and slightly conversational — like a \
-knowledgeable colleague giving you a quick update
-- Do NOT wrap your output in any tags or formatting — just write the summary text\
+- 2-4 sentences maximum, plain English
+- Present tense: "Searching for...", "Found that...", "Looking into..."
+- Sound like a helpful colleague giving a quick update, not a technical report
+- Mention what the agent is doing and any interesting findings so far
+- NO quotes, NO code, NO backticks, NO markdown formatting
+- NO disclaimers or meta-commentary
+- NO bullet points, headers, or lists
+- NO references to "the agent", "the model", "the system" — just describe the action
+- Do NOT repeat the user's question
+- Do NOT wrap output in tags, quotes, or formatting — plain text only\
 """
 
 REFINER_USER_TEMPLATE = """\
-Here is the raw thinking from the research agent. Rewrite it as a brief, \
-user-friendly status update:
+Raw thinking:
 
----
 {thinking}
----
 
-Write your concise summary (2-5 sentences):"""
+Rewrite as a plain-text status update (2-4 sentences, no formatting):"""
 
 
 def _truncate_middle(text: str, max_len: int) -> str:

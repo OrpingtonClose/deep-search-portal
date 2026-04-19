@@ -792,7 +792,10 @@ async def chat_completions(request: Request):
     # requests — we want those to take the JSON passthrough path.
     stream = bool(body.get("stream", False))
     model_id = body.get("model", MODEL_ID) or MODEL_ID
-    req_id = f"deepagents-{uuid.uuid4().hex[:8]}"
+    # 16 hex chars (64 bits) of entropy: the turn_id doubles as the capability
+    # token for the /files/{turn_id}/... download endpoint, so it needs to be
+    # unguessable for the life of the TTL (7 days by default).
+    req_id = f"deepagents-{uuid.uuid4().hex[:16]}"
     tracker.start(req_id, model=model_id, stream=stream)
 
     log.info(

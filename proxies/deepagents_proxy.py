@@ -25,15 +25,17 @@ Runs as a FastAPI app under uvicorn in a screen session (default port 8200).
 """
 
 import asyncio
+import base64
 import json
 import os
+import shutil
 import time
 import traceback
 import uuid
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 
-from fastapi import Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -74,9 +76,26 @@ LISTEN_PORT = env_int("DEEPAGENTS_PORT", 8200, minimum=1)
 # Model ID we advertise to LibreChat via /v1/models.
 MODEL_ID = "deepagents-research"
 
+# --- File downloads: persist agent-written files + expose public URLs ---
+# The deepagents SDK's filesystem tools (write_file / edit_file) write into
+# an in-memory LangGraph StateBackend — by default those files are discarded
+# when the turn ends and the user sees path references like ``report.md`` in
+# the narrative with nothing to click. We persist every file in the final
+# state to disk under ``FILES_DIR/{turn_id}/`` and append a "Generated files"
+# markdown section with public URLs to the assistant message, so the user can
+# actually download what the agent produced.
+FILES_DIR = os.getenv("DEEPAGENTS_FILES_DIR", os.path.join(LOG_DIR, "files"))
+PUBLIC_BASE_URL = os.getenv("DEEPAGENTS_PUBLIC_BASE_URL", "").rstrip("/")
+FILES_TTL_DAYS = env_int("DEEPAGENTS_FILES_TTL_DAYS", 7, minimum=1)
+os.makedirs(FILES_DIR, exist_ok=True)
+
 log.info(
     f"Config: venice_base={VENICE_API_BASE}, model={DEEPAGENTS_MODEL}, "
     f"port={LISTEN_PORT}, model_id={MODEL_ID}"
+)
+log.info(
+    f"Files: dir={FILES_DIR}, public_base={PUBLIC_BASE_URL or '(unset)'}, "
+    f"ttl={FILES_TTL_DAYS}d"
 )
 
 tracker = RequestTracker()
@@ -198,6 +217,181 @@ AGENT = _build_agent()
 
 
 # ============================================================================
+# File persistence: write agent's virtual FS out to disk + format for the user
+# ============================================================================
+
+def _sanitize_subpath(raw: str) -> str:
+    """Turn a virtual FS path (e.g. ``/notes/draft.md``) into a safe relative
+    path for use under ``FILES_DIR/{turn_id}/``.
+
+    Rejects empty paths, paths with ``..`` segments, and anything that would
+    resolve outside the turn directory.
+    """
+    p = (raw or "").strip().replace("\\", "/").lstrip("/")
+    if not p:
+        raise ValueError("empty path")
+    parts = [seg for seg in p.split("/") if seg]
+    if any(seg in ("", ".", "..") for seg in parts):
+        raise ValueError(f"unsafe path segments in {raw!r}")
+    return "/".join(parts)
+
+
+def _file_data_to_bytes(file_data: Any) -> bytes:
+    """Extract file content as bytes from a deepagents ``FileData`` dict.
+
+    Handles both the v1 format (``content: list[str]`` — lines split on ``\\n``,
+    no ``encoding`` field) and the v2 format (``content: str`` + ``encoding``
+    field, where binary files are base64-encoded).
+    """
+    if isinstance(file_data, (bytes, bytearray)):
+        return bytes(file_data)
+    if isinstance(file_data, str):
+        return file_data.encode("utf-8", errors="replace")
+    if not isinstance(file_data, dict):
+        return str(file_data).encode("utf-8", errors="replace")
+
+    content = file_data.get("content")
+    encoding = (file_data.get("encoding") or "utf-8").lower()
+
+    if isinstance(content, list):
+        # v1 format: list[str], one entry per line
+        return "\n".join(str(c) for c in content).encode("utf-8", errors="replace")
+    if isinstance(content, (bytes, bytearray)):
+        return bytes(content)
+    if isinstance(content, str):
+        if encoding in ("base64", "binary"):
+            try:
+                return base64.b64decode(content)
+            except Exception:
+                pass
+        return content.encode("utf-8", errors="replace")
+    return b""
+
+
+def _persist_files(req_id: str, files: dict) -> list[dict]:
+    """Write every entry in the agent's ``files`` state dict to disk under
+    ``{FILES_DIR}/{req_id}/``.
+
+    Returns a list of ``{"path", "size", "url"}`` dicts — one per file that
+    was successfully persisted. ``url`` points at ``PUBLIC_BASE_URL`` if set,
+    otherwise a relative ``/files/...`` path served by this proxy.
+    """
+    if not isinstance(files, dict) or not files:
+        return []
+
+    turn_dir = os.path.join(FILES_DIR, req_id)
+    try:
+        os.makedirs(turn_dir, exist_ok=True)
+    except OSError as exc:
+        log.warning(f"[{req_id}] Could not create files dir {turn_dir}: {exc}")
+        return []
+    turn_abs = os.path.realpath(turn_dir)
+
+    out: list[dict] = []
+    for raw_path, file_data in files.items():
+        # Skip sentinel entries the SDK uses to signal deletion
+        if file_data is None:
+            continue
+        try:
+            subpath = _sanitize_subpath(str(raw_path))
+        except ValueError as exc:
+            log.warning(f"[{req_id}] Skipping unsafe file path {raw_path!r}: {exc}")
+            continue
+        target_abs = os.path.realpath(os.path.join(turn_dir, subpath))
+        if target_abs != turn_abs and not target_abs.startswith(turn_abs + os.sep):
+            log.warning(f"[{req_id}] Path escape blocked for {raw_path!r}")
+            continue
+        try:
+            os.makedirs(os.path.dirname(target_abs), exist_ok=True)
+            content_bytes = _file_data_to_bytes(file_data)
+            with open(target_abs, "wb") as f:
+                f.write(content_bytes)
+        except OSError as exc:
+            log.warning(f"[{req_id}] Failed to write {target_abs}: {exc}")
+            continue
+
+        if PUBLIC_BASE_URL:
+            url = f"{PUBLIC_BASE_URL}/{req_id}/{subpath}"
+        else:
+            # Relative URL served by this proxy's own /files route. Useful
+            # for local testing; in production LibreChat the PUBLIC_BASE_URL
+            # env var should be set to a tunnel-reachable HTTPS URL.
+            url = f"/files/{req_id}/{subpath}"
+        out.append({"path": raw_path, "size": len(content_bytes), "url": url})
+
+    if out:
+        log.info(f"[{req_id}] Persisted {len(out)} file(s) to {turn_dir}")
+    return out
+
+
+def _human_size(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+def _format_files_section(persisted: list[dict]) -> str:
+    """Render a collapsible "Generated files" markdown block listing each
+    persisted file as a clickable download link.
+    """
+    if not persisted:
+        return ""
+    lines = [
+        "",
+        "",
+        "---",
+        "",
+        f"**Generated files ({len(persisted)})**",
+        "",
+    ]
+    for entry in persisted:
+        p = entry["path"]
+        sz = _human_size(entry["size"])
+        url = entry["url"]
+        lines.append(f"- [`{p}`]({url}) — {sz}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _sweep_old_turn_dirs() -> None:
+    """Best-effort cleanup of turn directories older than ``FILES_TTL_DAYS``.
+
+    Runs once at startup. Not a background task — keeps the proxy simple.
+    """
+    if not os.path.isdir(FILES_DIR):
+        return
+    cutoff = time.time() - (FILES_TTL_DAYS * 86400)
+    removed = 0
+    try:
+        for name in os.listdir(FILES_DIR):
+            p = os.path.join(FILES_DIR, name)
+            if not os.path.isdir(p):
+                continue
+            try:
+                mtime = os.path.getmtime(p)
+            except OSError:
+                continue
+            if mtime < cutoff:
+                try:
+                    shutil.rmtree(p)
+                    removed += 1
+                except OSError as exc:
+                    log.warning(f"Sweep: failed to remove {p}: {exc}")
+        if removed:
+            log.info(
+                f"Sweep: removed {removed} turn dir(s) older than "
+                f"{FILES_TTL_DAYS} days from {FILES_DIR}"
+            )
+    except OSError as exc:
+        log.warning(f"Sweep failed: {exc}")
+
+
+_sweep_old_turn_dirs()
+
+
+# ============================================================================
 # ChatML → LangChain message conversion
 # ============================================================================
 
@@ -307,6 +501,7 @@ async def _stream_agent(
 
     try:
         any_content_emitted = False
+        final_state: Optional[dict] = None
         async for event in AGENT.astream_events(
             {"messages": langchain_messages},
             version="v2",
@@ -316,6 +511,19 @@ async def _stream_agent(
             metadata = event.get("metadata", {}) or {}
             node = metadata.get("langgraph_node", "")
             data = event.get("data", {}) or {}
+
+            # The root graph's terminal ``on_chain_end`` event carries the
+            # full final state — including the virtual filesystem we want to
+            # surface to the user. Keep the last-seen candidate; whichever
+            # fires last at the graph root will be the one we use.
+            if kind == "on_chain_end":
+                out = data.get("output")
+                if (
+                    isinstance(out, dict)
+                    and "messages" in out
+                    and "files" in out
+                ):
+                    final_state = out
 
             if kind == "on_chat_model_stream":
                 chunk_msg = data.get("chunk")
@@ -380,6 +588,19 @@ async def _stream_agent(
                 content="_The agent finished without producing a final answer._"
             )
 
+        # Persist any files the agent wrote to its virtual FS and append a
+        # "Generated files" section with download URLs so the user can
+        # actually retrieve what the agent produced.
+        if final_state is not None:
+            try:
+                files_dict = final_state.get("files") or {}
+                persisted = _persist_files(req_id, files_dict)
+                section = _format_files_section(persisted)
+                if section:
+                    yield _chunk(content=section)
+            except Exception as exc:
+                log.warning(f"[{req_id}] File persistence failed: {exc}")
+
         yield _chunk(finish_reason="stop")
         yield "data: [DONE]\n\n"
 
@@ -421,6 +642,20 @@ async def _invoke_agent_json(
     try:
         result = await AGENT.ainvoke({"messages": langchain_messages})
         final_text = _final_text_from_state(result)
+
+        # Persist the agent's virtual filesystem and append a "Generated files"
+        # section with download URLs to the final assistant message.
+        try:
+            files_dict = (
+                result.get("files") if isinstance(result, dict) else None
+            ) or {}
+            persisted = _persist_files(req_id, files_dict)
+            section = _format_files_section(persisted)
+            if section:
+                final_text = (final_text or "").rstrip() + section
+        except Exception as exc:
+            log.warning(f"[{req_id}] File persistence failed: {exc}")
+
         elapsed = time.monotonic() - start_time
         log.info(
             f"[{req_id}] Agent invoke complete in {elapsed:.1f}s "
@@ -482,6 +717,39 @@ register_standard_routes(
         "model_id": MODEL_ID,
     },
 )
+
+
+@app.get("/files/{turn_id}/{subpath:path}")
+async def get_file(turn_id: str, subpath: str):
+    """Serve a file persisted from the agent's virtual filesystem.
+
+    Path is ``/files/{turn_id}/{virtual-path}`` where ``turn_id`` is the
+    request ID of the agent turn that produced the file and ``virtual-path``
+    mirrors the path the agent wrote (e.g. ``notes/draft.md``).
+
+    The response is served with ``Content-Disposition: attachment`` via
+    FastAPI's ``FileResponse`` — browsers will download or preview depending
+    on content type. No auth on this endpoint: staging exposes it via a
+    single Cloudflare tunnel and the ``turn_id`` acts as an unguessable
+    capability (uuid4-derived, 16 hex chars).
+    """
+    if not turn_id or "/" in turn_id or ".." in turn_id or turn_id.startswith("."):
+        raise HTTPException(status_code=400, detail="invalid turn id")
+    try:
+        safe_subpath = _sanitize_subpath(subpath)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid path")
+
+    turn_abs = os.path.realpath(os.path.join(FILES_DIR, turn_id))
+    target_abs = os.path.realpath(os.path.join(turn_abs, safe_subpath))
+    # Guard against both symlink and string-concat path escapes
+    if target_abs != turn_abs and not target_abs.startswith(turn_abs + os.sep):
+        raise HTTPException(status_code=400, detail="path escape")
+    if not os.path.isfile(target_abs):
+        raise HTTPException(status_code=404, detail="file not found")
+
+    filename = os.path.basename(target_abs)
+    return FileResponse(target_abs, filename=filename)
 
 
 @app.get("/v1/models")

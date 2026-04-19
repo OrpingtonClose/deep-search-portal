@@ -563,6 +563,18 @@ def _run_agent(
             stream_capture.deactivate()
 
 
+def _sanitize_for_italic(text: str) -> str:
+    """Collapse newlines/whitespace so text can be wrapped in *...* italic markdown.
+
+    Markdown emphasis spans cannot cross blank lines — if the enclosed text
+    contains ``\\n\\n``, the ``*`` markers won't render as italic and users
+    will see raw asterisks.  This helper replaces all newlines with spaces
+    and collapses consecutive whitespace into a single space.
+    """
+    import re
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _openai_chunk(req_id: str, model: str, content: str, finish: bool = False) -> str:
     """Format a single SSE chunk in OpenAI streaming format."""
     chunk = {
@@ -716,18 +728,20 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                 if _HAS_REFINER:
                     refined = await refine_async(raw_thinking)
                     # Emit as italic status text — unobtrusive but informative
+                    safe = _sanitize_for_italic(refined)
                     yield _openai_chunk(
                         req_id, model,
-                        f"*💭 {refined}*\n\n"
+                        f"*💭 {safe}*\n\n"
                     )
                 else:
                     # No refiner — emit truncated raw thinking
                     truncated = raw_thinking[:500]
                     if len(raw_thinking) > 500:
                         truncated += "…"
+                    safe = _sanitize_for_italic(truncated)
                     yield _openai_chunk(
                         req_id, model,
-                        f"*💭 {truncated}*\n\n"
+                        f"*💭 {safe}*\n\n"
                     )
 
             while True:
@@ -889,7 +903,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
             refined_reasoning = captured_reasoning[:500]
             if len(captured_reasoning) > 500:
                 refined_reasoning += "…"
-        parts.append(f"*💭 {refined_reasoning}*\n\n")
+        parts.append(f"*💭 {_sanitize_for_italic(refined_reasoning)}*\n\n")
 
     # Show tool calls as unobtrusive italic lines
     if captured_tool_events:

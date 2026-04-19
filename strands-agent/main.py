@@ -568,10 +568,13 @@ def _sanitize_for_italic(text: str) -> str:
 
     Markdown emphasis spans cannot cross blank lines — if the enclosed text
     contains ``\\n\\n``, the ``*`` markers won't render as italic and users
-    will see raw asterisks.  This helper replaces all newlines with spaces
-    and collapses consecutive whitespace into a single space.
+    will see raw asterisks.  Literal ``*`` characters inside the text also
+    break the surrounding italic markers.  This helper removes ``*``,
+    replaces all newlines with spaces, and collapses consecutive whitespace
+    into a single space.
     """
     import re
+    text = text.replace("*", "")
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -716,11 +719,10 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                 # If thinking-only (no answer text follows), emit as plain
                 # text — the reasoning IS the answer.
                 if is_final:
-                    if _HAS_REFINER:
-                        refined = await refine_async(raw_thinking)
-                    else:
-                        refined = raw_thinking
-                    yield _openai_chunk(req_id, model, refined)
+                    # Thinking IS the answer — emit full text unmodified.
+                    # Do NOT refine or truncate: the user needs the complete
+                    # response, not a summary or 500-char clip.
+                    yield _openai_chunk(req_id, model, raw_thinking)
                     return
 
                 # Normal case: thinking followed by tools/answer.

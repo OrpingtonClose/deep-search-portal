@@ -183,12 +183,13 @@ def format_inline_log(
         unique_tools.discard("")
         # Build a friendly summary
         time_str = f"{elapsed:.0f}s" if elapsed >= 1 else "<1s"
-        if n_tools == 0:
+        n_sources = len(unique_tools)
+        if n_sources == 0:
             footer = f"*Completed in {time_str}*"
-        elif n_tools == 1:
+        elif n_sources == 1:
             footer = f"*Researched using 1 source in {time_str}*"
         else:
-            footer = f"*Researched using {n_tools} sources in {time_str}*"
+            footer = f"*Researched using {n_sources} sources in {time_str}*"
         parts.append(f"\n\n---\n{footer}\n")
 
     return "".join(parts)

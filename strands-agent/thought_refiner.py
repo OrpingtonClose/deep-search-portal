@@ -166,14 +166,14 @@ def refine_sync(raw_thinking: str, timeout: float = 20.0) -> str:
         Refined, user-friendly summary of the thinking.
     """
     if not REFINER_ENABLED:
-        return raw_thinking
+        return _truncate_middle(raw_thinking.strip(), 500)
 
     if len(raw_thinking.strip()) < MIN_THINKING_LENGTH:
         return raw_thinking
 
     if not REFINER_API_KEY:
         logger.warning("Refiner API key not set — skipping refinement")
-        return raw_thinking
+        return _truncate_middle(raw_thinking.strip(), 500)
 
     start = time.time()
     try:
@@ -216,14 +216,14 @@ async def refine_async(raw_thinking: str, timeout: float = 20.0) -> str:
         Refined, user-friendly summary of the thinking.
     """
     if not REFINER_ENABLED:
-        return raw_thinking
+        return _truncate_middle(raw_thinking.strip(), 500)
 
     if len(raw_thinking.strip()) < MIN_THINKING_LENGTH:
         return raw_thinking
 
     if not REFINER_API_KEY:
         logger.warning("Refiner API key not set — skipping refinement")
-        return raw_thinking
+        return _truncate_middle(raw_thinking.strip(), 500)
 
     start = time.time()
     try:

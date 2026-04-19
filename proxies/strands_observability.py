@@ -176,17 +176,14 @@ def format_inline_log(
         )
 
     # ── Minimal footer — just time and source count ──
-    n_tools = len(tool_events)
-    if n_tools > 0 or elapsed > 1.0:
-        # Count unique tool names to show "sources" rather than raw call count
-        unique_tools = {ev.get("tool", "") for ev in tool_events}
-        unique_tools.discard("")
-        # Build a friendly summary
+    # Only show footer when tools were actually used (research happened).
+    # Simple Q&A with no tools doesn't need a footer.
+    unique_tools = {ev.get("tool", "") for ev in tool_events}
+    unique_tools.discard("")
+    n_sources = len(unique_tools)
+    if n_sources > 0:
         time_str = f"{elapsed:.0f}s" if elapsed >= 1 else "<1s"
-        n_sources = len(unique_tools)
-        if n_sources == 0:
-            footer = f"*Completed in {time_str}*"
-        elif n_sources == 1:
+        if n_sources == 1:
             footer = f"*Researched using 1 source in {time_str}*"
         else:
             footer = f"*Researched using {n_sources} sources in {time_str}*"

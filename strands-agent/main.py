@@ -97,10 +97,18 @@ def _format_inline_log(tool_events: list[dict], elapsed: float, query: str = "",
             tool_events, elapsed,
             query=query, model=model, reasoning=reasoning, metrics=metrics,
         )
-    # Minimal fallback: just a tool count summary
-    tool_names = [e.get("tool", "?") for e in tool_events]
-    summary = ", ".join(tool_names) if tool_names else "(no tools)"
-    return f"\n\n---\n*{len(tool_events)} tool calls in {elapsed:.1f}s: {summary}*"
+    # Minimal fallback: user-friendly one-liner
+    unique_tools = {e.get("tool", "") for e in tool_events}
+    unique_tools.discard("")
+    n_sources = len(unique_tools)
+    if n_sources == 0:
+        if elapsed > 1.0:
+            return f"\n\n---\n*Completed in {elapsed:.0f}s*\n"
+        return ""
+    time_str = f"{elapsed:.0f}s" if elapsed >= 1 else "<1s"
+    if n_sources == 1:
+        return f"\n\n---\n*Researched using 1 source in {time_str}*\n"
+    return f"\n\n---\n*Researched using {n_sources} sources in {time_str}*\n"
 
 
 def _store_log(req_id: str, entry: dict) -> None:
@@ -563,6 +571,56 @@ def _run_agent(
             stream_capture.deactivate()
 
 
+def _tool_label(tool_name: str, tool_input: str) -> str:
+    """Build a short, human-friendly label for a tool call.
+
+    Instead of ``Using task``, produce something like ``Researching Tor
+    protocols`` by extracting the first meaningful phrase from the tool
+    input.  Keeps the label under ~60 chars so it stays on one line.
+    """
+    import re
+    # Map well-known tools to friendly verbs
+    _VERB_MAP = {
+        "task": "Researching",
+        "write_todos": "Planning next steps",
+        "brave_web_search": "Searching",
+        "exa_search": "Searching",
+        "duckduckgo_search": "Searching",
+        "firecrawl_scrape": "Reading",
+        "read_url": "Reading",
+        "http_request": "Fetching",
+    }
+    verb = _VERB_MAP.get(tool_name)
+    if verb:
+        # Extract a brief subject from the tool input
+        # tool_input is str(dict) like "{'description': 'Research Tor ...'}"
+        # Try to pull the first quoted value or first sentence fragment
+        subject = ""
+        # Try dict-style 'key': 'value' — grab first string value
+        m = re.search(r"'(?:description|query|url|topic|search_query)':\s*'([^']{3,})'", tool_input)
+        if not m:
+            m = re.search(r'"(?:description|query|url|topic|search_query)":\s*"([^"]{3,})"', tool_input)
+        if m:
+            subject = m.group(1).strip()
+        else:
+            # Fallback: grab first chunk of alphanumeric text
+            cleaned = re.sub(r"[{}'\"\[\]]", " ", tool_input)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if len(cleaned) > 5:
+                subject = cleaned
+
+        if subject:
+            # Truncate to keep it brief
+            if len(subject) > 50:
+                subject = subject[:47] + "..."
+            safe = _sanitize_for_italic(subject)
+            return f"{verb} {safe}"
+
+    # Fallback: just capitalise the tool name
+    display = tool_name.replace("_", " ").capitalize()
+    return display
+
+
 def _sanitize_for_italic(text: str) -> str:
     """Collapse newlines/whitespace so text can be wrapped in *...* italic markdown.
 
@@ -728,12 +786,14 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                 # Normal case: thinking followed by tools/answer.
                 # Refine and wrap in a collapsible block.
                 if _HAS_REFINER:
+                    # Emit prefix immediately to keep SSE alive while
+                    # the refiner API call completes (up to 20s).
+                    yield _openai_chunk(req_id, model, "*💭 ")
                     refined = await refine_async(raw_thinking)
-                    # Emit as italic status text — unobtrusive but informative
                     safe = _sanitize_for_italic(refined)
                     yield _openai_chunk(
                         req_id, model,
-                        f"*💭 {safe}*\n\n"
+                        f"{safe}*\n\n"
                     )
                 else:
                     # No refiner — emit truncated raw thinking
@@ -778,13 +838,10 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                     tool_count += 1
                     tool_name = data.get("tool", "unknown")
                     tool_input = data.get("input", "")
-                    # Extract a short preview of the tool input
-                    input_preview = tool_input[:120].replace("\n", " ")
-                    if len(tool_input) > 120:
-                        input_preview += "…"
+                    label = _tool_label(tool_name, tool_input)
                     yield _openai_chunk(
                         req_id, model,
-                        f"🔧 *Using {tool_name}*\n\n"
+                        f"🔧 *{label}*\n\n"
                     )
 
                 elif event_type == "text":
@@ -910,8 +967,8 @@ async def openai_chat_completions(body: ChatCompletionRequest):
     # Show tool calls as unobtrusive italic lines
     if captured_tool_events:
         for ev in captured_tool_events:
-            tool_name = ev.get("tool", "unknown")
-            parts.append(f"🔧 *Using {tool_name}*\n\n")
+            label = _tool_label(ev.get("tool", "unknown"), ev.get("input", ""))
+            parts.append(f"🔧 *{label}*\n\n")
         parts.append("\n---\n\n**Answer:**\n\n")
 
     parts.append(answer)

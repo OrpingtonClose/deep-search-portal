@@ -517,7 +517,12 @@ async def chat_completions(request: Request):
         )
 
     messages = body.get("messages", []) or []
-    stream = bool(body.get("stream", True))
+    # Default to False to match the rest of the proxy fleet and the
+    # documented `is_utility_request(...) and not body.get("stream", False)`
+    # contract from shared.py. LibreChat always sets `stream` explicitly for
+    # real chat turns, and omits it (or sets False) for title / tag utility
+    # requests — we want those to take the JSON passthrough path.
+    stream = bool(body.get("stream", False))
     model_id = body.get("model", MODEL_ID) or MODEL_ID
     req_id = f"deepagents-{uuid.uuid4().hex[:8]}"
     tracker.start(req_id, model=model_id, stream=stream)

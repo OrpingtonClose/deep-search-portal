@@ -136,6 +136,7 @@ class StreamCapture:
         self._lock = threading.Lock()
         self.tool_events: list[dict] = []
         self._seen_tool_ids: set[str] = set()
+        self._tool_use_refs: dict[str, dict] = {}  # tid → live current_tool_use ref
         self.all_text: list[str] = []
         self.response_text: list[str] = []
         self.reasoning_text: list[str] = []
@@ -147,6 +148,7 @@ class StreamCapture:
             self._queue = q
             self.tool_events.clear()
             self._seen_tool_ids.clear()
+            self._tool_use_refs.clear()
             self.all_text.clear()
             self.response_text.clear()
             self.reasoning_text.clear()
@@ -200,17 +202,35 @@ class StreamCapture:
             )
         if tool_use and tool_use.get("name"):
             tid = tool_use.get("toolUseId", "")
-            if tid and tid not in self._seen_tool_ids:
-                self._seen_tool_ids.add(tid)
-                event = {
-                    "tool": tool_use["name"],
-                    "input": str(tool_use.get("input", {}))[:500],
-                    "time": time.time(),
-                }
-                self.tool_events.append(event)
-                with self._lock:
-                    if self._queue is not None:
-                        self._queue.put(("tool", event))
+            if tid:
+                if tid not in self._seen_tool_ids:
+                    # First time seeing this tool — emit immediately for fast
+                    # UI display, but store the live reference so we can read
+                    # the populated input later.
+                    self._seen_tool_ids.add(tid)
+                    self._tool_use_refs[tid] = tool_use
+                    event = {
+                        "tool": tool_use["name"],
+                        "input": str(tool_use.get("input", {}))[:500],
+                        "time": time.time(),
+                        "_tool_use_ref": tool_use,  # live ref for deferred input
+                    }
+                    self.tool_events.append(event)
+                    with self._lock:
+                        if self._queue is not None:
+                            self._queue.put(("tool", event))
+                elif tid in self._tool_use_refs:
+                    # Subsequent callback for the same tool — update the stored
+                    # event's input from the live reference (input accumulates
+                    # during contentBlockDelta streaming).
+                    ref = self._tool_use_refs[tid]
+                    raw_input = ref.get("input", "")
+                    if raw_input and raw_input != "{}":
+                        # Find the matching event and update its input
+                        for ev in self.tool_events:
+                            if ev.get("_tool_use_ref") is ref:
+                                ev["input"] = str(raw_input)[:500]
+                                break
 
 
 # Global stream-capture instance shared by all agents

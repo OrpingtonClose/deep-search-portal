@@ -615,10 +615,11 @@ def _tool_label(tool_name: str, tool_input: str) -> str:
                 subject = subject[:47] + "..."
             safe = _sanitize_for_italic(subject)
             return f"{verb} {safe}"
+        return verb
 
     # Fallback: just capitalise the tool name
     display = tool_name.replace("_", " ").capitalize()
-    return display
+    return _sanitize_for_italic(display)
 
 
 def _sanitize_for_italic(text: str) -> str:

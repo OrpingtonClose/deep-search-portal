@@ -807,7 +807,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
             # When the refiner is active, thinking has already been refined
             # and emitted inline — don't duplicate raw reasoning in the log.
             reasoning_for_log = (
-                "" if _HAS_REFINER
+                "" if (_HAS_REFINER and REFINER_ENABLED)
                 else result_holder.get("reasoning_text", "")
             )
             inline_log = _format_inline_log(
@@ -877,7 +877,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
     elapsed = round(time.time() - start_time, 2)
     # When the refiner is active, thinking is refined inline — don't
     # duplicate raw reasoning in the activity log.
-    reasoning_for_log = "" if _HAS_REFINER else captured_reasoning
+    reasoning_for_log = "" if (_HAS_REFINER and REFINER_ENABLED) else captured_reasoning
     inline_log = _format_inline_log(
         captured_tool_events, elapsed,
         query=user_message, model=model,

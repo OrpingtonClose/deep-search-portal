@@ -563,6 +563,21 @@ def _run_agent(
             stream_capture.deactivate()
 
 
+def _sanitize_for_italic(text: str) -> str:
+    """Collapse newlines/whitespace so text can be wrapped in *...* italic markdown.
+
+    Markdown emphasis spans cannot cross blank lines — if the enclosed text
+    contains ``\\n\\n``, the ``*`` markers won't render as italic and users
+    will see raw asterisks.  Literal ``*`` characters inside the text also
+    break the surrounding italic markers.  This helper removes ``*``,
+    replaces all newlines with spaces, and collapses consecutive whitespace
+    into a single space.
+    """
+    import re
+    text = text.replace("*", "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _openai_chunk(req_id: str, model: str, content: str, finish: bool = False) -> str:
     """Format a single SSE chunk in OpenAI streaming format."""
     chunk = {
@@ -671,7 +686,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
             # instead of chaotic chain-of-thought.
             #
             # Layout:
-            #   <details open><summary>💭 Thinking</summary> ... </details>
+            #   > 💭 **Thinking** — refined summary
             #   🔧 **Tool:** brave_web_search — `"query text..."`
             #   🔧 **Tool:** firecrawl_scrape — `"https://..."`
             #   ---
@@ -686,8 +701,8 @@ async def openai_chat_completions(body: ChatCompletionRequest):
 
                 When the refiner is available, the raw thinking is sent to
                 a fast LLM for summarisation.  The refined version is emitted
-                inside a ``<details>`` block.  If refinement fails or is
-                disabled, the raw thinking is emitted as before.
+                inside a blockquote.  If refinement fails or is disabled,
+                the raw thinking is emitted as before.
 
                 Args:
                     is_final: True when this is the last thinking block
@@ -704,32 +719,32 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                 # If thinking-only (no answer text follows), emit as plain
                 # text — the reasoning IS the answer.
                 if is_final:
-                    if _HAS_REFINER:
-                        refined = await refine_async(raw_thinking)
-                    else:
-                        refined = raw_thinking
-                    yield _openai_chunk(req_id, model, refined)
+                    # Thinking IS the answer — emit full text unmodified.
+                    # Do NOT refine or truncate: the user needs the complete
+                    # response, not a summary or 500-char clip.
+                    yield _openai_chunk(req_id, model, raw_thinking)
                     return
 
                 # Normal case: thinking followed by tools/answer.
                 # Refine and wrap in a collapsible block.
                 if _HAS_REFINER:
-                    # Show a placeholder while refining
-                    yield _openai_chunk(
-                        req_id, model,
-                        "<details open><summary>💭 Thinking</summary>\n\n"
-                    )
                     refined = await refine_async(raw_thinking)
-                    yield _openai_chunk(req_id, model, refined)
-                    yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
-                else:
-                    # No refiner — emit raw thinking in details block
+                    # Emit as italic status text — unobtrusive but informative
+                    safe = _sanitize_for_italic(refined)
                     yield _openai_chunk(
                         req_id, model,
-                        "<details open><summary>💭 Thinking</summary>\n\n"
+                        f"*💭 {safe}*\n\n"
                     )
-                    yield _openai_chunk(req_id, model, raw_thinking)
-                    yield _openai_chunk(req_id, model, "\n\n</details>\n\n")
+                else:
+                    # No refiner — emit truncated raw thinking
+                    truncated = raw_thinking[:500]
+                    if len(raw_thinking) > 500:
+                        truncated += "…"
+                    safe = _sanitize_for_italic(truncated)
+                    yield _openai_chunk(
+                        req_id, model,
+                        f"*💭 {safe}*\n\n"
+                    )
 
             while True:
                 try:
@@ -769,7 +784,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                         input_preview += "…"
                     yield _openai_chunk(
                         req_id, model,
-                        f"> 🔧 **{tool_name}** — `{input_preview}`\n>\n"
+                        f"🔧 *Using {tool_name}*\n\n"
                     )
 
                 elif event_type == "text":
@@ -777,7 +792,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                     async for chunk in _flush_thinking():
                         yield chunk
                     if not has_answer_text and tool_count > 0:
-                        yield _openai_chunk(req_id, model, "\n---\n\n")
+                        yield _openai_chunk(req_id, model, "\n---\n\n**Answer:**\n\n")
                     has_answer_text = True
                     yield _openai_chunk(req_id, model, data)
 
@@ -794,10 +809,13 @@ async def openai_chat_completions(body: ChatCompletionRequest):
 
             # Append inline activity log at end of response
             elapsed = round(time.time() - start_time, 2)
+            # Thinking is always emitted inline (refined or raw) via
+            # _flush_thinking — never duplicate it in the footer.
+            reasoning_for_log = ""
             inline_log = _format_inline_log(
                 result_holder["tool_events"], elapsed,
                 query=user_message, model=model,
-                reasoning=result_holder.get("reasoning_text", ""),
+                reasoning=reasoning_for_log,
                 metrics=result_holder.get("metrics"),
             )
             yield _openai_chunk(req_id, model, inline_log)
@@ -859,10 +877,13 @@ async def openai_chat_completions(body: ChatCompletionRequest):
         )
 
     elapsed = round(time.time() - start_time, 2)
+    # Thinking is always shown inline (refined or truncated) — never
+    # duplicate it in the footer.
+    reasoning_for_log = ""
     inline_log = _format_inline_log(
         captured_tool_events, elapsed,
         query=user_message, model=model,
-        reasoning=captured_reasoning,
+        reasoning=reasoning_for_log,
         metrics=metrics,
     )
 
@@ -881,21 +902,17 @@ async def openai_chat_completions(body: ChatCompletionRequest):
         if _HAS_REFINER:
             refined_reasoning = await refine_async(captured_reasoning)
         else:
-            refined_reasoning = captured_reasoning
-        parts.append(
-            f"<details><summary>💭 Thinking</summary>\n\n"
-            f"{refined_reasoning}\n\n</details>\n\n"
-        )
+            refined_reasoning = captured_reasoning[:500]
+            if len(captured_reasoning) > 500:
+                refined_reasoning += "…"
+        parts.append(f"*💭 {_sanitize_for_italic(refined_reasoning)}*\n\n")
 
-    # Show tool calls as visible blocks
+    # Show tool calls as unobtrusive italic lines
     if captured_tool_events:
         for ev in captured_tool_events:
             tool_name = ev.get("tool", "unknown")
-            tool_input = str(ev.get("input", ""))[:120].replace("\n", " ")
-            if len(str(ev.get("input", ""))) > 120:
-                tool_input += "…"
-            parts.append(f"> 🔧 **{tool_name}** — `{tool_input}`\n>\n")
-        parts.append("\n---\n\n")
+            parts.append(f"🔧 *Using {tool_name}*\n\n")
+        parts.append("\n---\n\n**Answer:**\n\n")
 
     parts.append(answer)
     parts.append(inline_log)

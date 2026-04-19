@@ -160,14 +160,12 @@ def format_inline_log(
     reasoning: str = "",
     metrics: dict | None = None,
 ) -> str:
-    """Format a detailed activity log as markdown sections.
+    """Format a minimal, user-friendly research summary footer.
 
-    Renders:
-    1. **Thinking** — the model's full reasoning chain (inline, not collapsible)
-    2. **Activity Log** — tool execution timeline + metrics (collapsible ``<details>``)
-
-    The output is designed to be appended to the agent's response text in
-    LibreChat (or any markdown-capable chat UI).
+    Renders a single-line italic footer showing time taken and number of
+    sources consulted.  All developer-facing metrics (tokens, cycles,
+    cache stats, tool timelines) are omitted — they are still written to
+    the JSONL metrics log for debugging.
     """
     parts: list[str] = []
 
@@ -177,81 +175,22 @@ def format_inline_log(
             f"\n\n---\n**💭 Thinking**\n\n{reasoning.strip()}"
         )
 
-    # ── Activity log section ──
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    log_lines = [
-        "=== Strands Agent Activity Log ===",
-        f"Timestamp : {ts}",
-        f"Model     : {model or 'unknown'}",
-        f"Elapsed   : {elapsed:.1f}s",
-        f"Tool calls: {len(tool_events)}",
-        f"Query     : {query[:200] if query else 'N/A'}",
-    ]
-
-    # ── Metrics from AgentResult ──
-    if metrics:
-        log_lines.append("")
-        log_lines.append("--- Performance Metrics ---")
-        usage = metrics.get("accumulated_usage") or {}
-        if usage:
-            log_lines.append(f"  Input tokens : {usage.get('inputTokens', 'N/A')}")
-            log_lines.append(f"  Output tokens: {usage.get('outputTokens', 'N/A')}")
-            log_lines.append(f"  Total tokens : {usage.get('totalTokens', 'N/A')}")
-            if usage.get("cacheReadInputTokens"):
-                log_lines.append(f"  Cache read   : {usage['cacheReadInputTokens']}")
-            if usage.get("cacheWriteInputTokens"):
-                log_lines.append(f"  Cache write  : {usage['cacheWriteInputTokens']}")
-        latency = metrics.get("accumulated_metrics") or {}
-        if latency.get("latencyMs"):
-            log_lines.append(f"  Model latency: {latency['latencyMs']}ms")
-        cycles = metrics.get("total_cycles")
-        if cycles is not None:
-            log_lines.append(f"  Agent cycles : {cycles}")
-        duration = metrics.get("total_duration")
-        if duration is not None:
-            log_lines.append(f"  Total duration: {duration:.2f}s")
-
-        # Tool-level metrics from AgentResult
-        tool_usage = metrics.get("tool_usage") or {}
-        if tool_usage:
-            log_lines.append("")
-            log_lines.append("--- Tool Metrics ---")
-            for tname, tstats in tool_usage.items():
-                calls = tstats.get("total_calls", "?")
-                success = tstats.get("successful_calls", "?")
-                errors = tstats.get("errors", "?")
-                avg_time = tstats.get("average_execution_time") or 0
-                log_lines.append(
-                    f"  {tname}: {calls} calls, {success} ok, {errors} err, avg {avg_time:.2f}s"
-                )
-
-    log_lines.append("")
-    log_lines.append("--- Tool Execution Timeline ---")
-
-    if not tool_events:
-        log_lines.append("  (no tool calls)")
-    else:
-        start_time = tool_events[0].get("time") if tool_events else None
-        for i, ev in enumerate(tool_events, 1):
-            tool_name = ev.get("tool", "unknown")
-            tool_input = ev.get("input", "")
-            t = ev.get("time")
-            offset = f"+{t - start_time:.1f}s" if (start_time is not None and t is not None) else ""
-            log_lines.append(f"  [{i}] {offset:>8s}  {tool_name}")
-            if tool_input and tool_input != "{}":
-                for line in tool_input[:300].split("\n"):
-                    log_lines.append(f"              {line}")
-                if len(tool_input) > 300:
-                    log_lines.append("              ... (truncated)")
-
-    log_lines.append("")
-    log_lines.append("=== End of Log ===")
-    log_content = "\n".join(log_lines)
-
-    parts.append(
-        f"\n\n<details>\n<summary>📄 agent-activity-log.txt ({len(tool_events)} tools, {elapsed:.1f}s)</summary>\n\n"
-        f"```\n{log_content}\n```\n\n</details>"
-    )
+    # ── Minimal footer — just time and source count ──
+    n_tools = len(tool_events)
+    if n_tools > 0 or elapsed > 1.0:
+        # Count unique tool names to show "sources" rather than raw call count
+        unique_tools = {ev.get("tool", "") for ev in tool_events}
+        unique_tools.discard("")
+        # Build a friendly summary
+        time_str = f"{elapsed:.0f}s" if elapsed >= 1 else "<1s"
+        n_sources = len(unique_tools)
+        if n_sources == 0:
+            footer = f"*Completed in {time_str}*"
+        elif n_sources == 1:
+            footer = f"*Researched using 1 source in {time_str}*"
+        else:
+            footer = f"*Researched using {n_sources} sources in {time_str}*"
+        parts.append(f"\n\n---\n{footer}\n")
 
     return "".join(parts)
 

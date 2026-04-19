@@ -33,6 +33,7 @@ import time
 import traceback
 import uuid
 from typing import Any, AsyncGenerator, Optional
+from urllib.parse import quote as _urlquote
 
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -310,13 +311,19 @@ def _persist_files(req_id: str, files: dict) -> list[dict]:
             log.warning(f"[{req_id}] Failed to write {target_abs}: {exc}")
             continue
 
+        # Percent-encode each path segment so filenames with spaces or URL-
+        # special characters (``research notes.md``, ``analysis (v2).md``,
+        # ``plan #1.md``) produce valid links. ``safe=""`` keeps ``/`` encoded
+        # too — but we encode segment-by-segment and rejoin so the path
+        # separators remain unencoded.
+        url_subpath = "/".join(_urlquote(seg, safe="") for seg in subpath.split("/"))
         if PUBLIC_BASE_URL:
-            url = f"{PUBLIC_BASE_URL}/{req_id}/{subpath}"
+            url = f"{PUBLIC_BASE_URL}/{req_id}/{url_subpath}"
         else:
             # Relative URL served by this proxy's own /files route. Useful
             # for local testing; in production LibreChat the PUBLIC_BASE_URL
             # env var should be set to a tunnel-reachable HTTPS URL.
-            url = f"/files/{req_id}/{subpath}"
+            url = f"/files/{req_id}/{url_subpath}"
         out.append({"path": raw_path, "size": len(content_bytes), "url": url})
 
     if out:
@@ -350,7 +357,10 @@ def _format_files_section(persisted: list[dict]) -> str:
         p = entry["path"]
         sz = _human_size(entry["size"])
         url = entry["url"]
-        lines.append(f"- [`{p}`]({url}) — {sz}")
+        # Escape backticks + ``]`` in the display label so filenames that
+        # contain them don't prematurely close the inline-code or link.
+        label = str(p).replace("`", "\u02cb").replace("]", "\\]")
+        lines.append(f"- [`{label}`]({url}) \u2014 {sz}")
     lines.append("")
     return "\n".join(lines)
 

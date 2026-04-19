@@ -12,6 +12,9 @@ langchain-openai>=0.1.0
 langchain-core>=0.2.0
 langchain-community>=0.2.0
 langgraph>=0.2.0
+# deepagents SDK — LangGraph-based deep research agent with planning,
+# virtual filesystem, and sub-agent delegation. Used by deepagents_proxy.
+deepagents>=0.5.2
 
 # --- New Framework Dependencies (MCP-based architecture) ---
 litellm[proxy]>=1.40.0

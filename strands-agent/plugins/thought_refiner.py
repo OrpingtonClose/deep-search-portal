@@ -67,7 +67,7 @@ Raw thinking:
 
 {thinking}
 
-Rewrite as a plain-text status update (2-4 sentences, no formatting):"""
+Rewrite as a plain-text status update (2-5 sentences, no formatting):"""
 
 
 def _truncate_middle(text: str, max_len: int) -> str:

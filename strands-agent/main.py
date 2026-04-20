@@ -35,7 +35,7 @@ from conversation import (
     extract_user_message,
     load_conversation_history,
 )
-from plugins.tool_display import format_footer, sanitize_for_italic, tool_label
+from plugins.tool_display import format_footer, tool_label
 from streaming import generate_sse
 
 load_dotenv()
@@ -651,13 +651,13 @@ async def openai_chat_completions(body: ChatCompletionRequest):
             refined_reasoning = captured_reasoning[:500]
             if len(captured_reasoning) > 500:
                 refined_reasoning += "…"
-        parts.append(f"*💭 {sanitize_for_italic(refined_reasoning)}*\n\n")
+        parts.append(f"<details>\n<summary>💭 Thinking</summary>\n\n{refined_reasoning}\n\n</details>\n\n")
 
     if captured_tool_events:
         for ev in captured_tool_events:
             label = tool_label(ev.get("tool", "unknown"), ev.get("input", ""))
             parts.append(f"🔧 *{label}*\n\n")
-        parts.append("\n---\n\n**Answer:**\n\n")
+        parts.append("\n---\n\n")
 
     parts.append(answer)
     parts.append(inline_log)

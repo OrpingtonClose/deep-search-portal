@@ -4,7 +4,7 @@
 """Integration evals that hit the live Strands Agent API.
 
 These tests verify end-to-end behavior of the deployed agent including
-thinking block refinement, tool labels, answer separator, footer
+thinking block refinement (collapsible details), tool labels, footer
 formatting, conversation continuity, and error handling.
 
 Requires a running Strands Agent at the URL specified by
@@ -41,7 +41,7 @@ class ParsedSSEResponse:
     full_text: str = ""
     thinking_blocks: list[str] = field(default_factory=list)
     tool_labels: list[str] = field(default_factory=list)
-    has_answer_separator: bool = False
+    has_details_thinking: bool = False
     footer_text: str = ""
     raw_lines: list[str] = field(default_factory=list)
     elapsed: float = 0.0
@@ -95,16 +95,17 @@ def parse_sse_stream(raw: str) -> ParsedSSEResponse:
 
     result.full_text = "".join(text_parts)
 
-    # Extract thinking blocks: *💭 ...* patterns
-    thinking_pattern = re.compile(r"\*💭\s+(.+?)\*", re.DOTALL)
-    result.thinking_blocks = thinking_pattern.findall(result.full_text)
+    # Extract thinking blocks from <details><summary>💭 Thinking</summary>...</details>
+    details_pattern = re.compile(
+        r"<details>\s*<summary>💭 Thinking</summary>\s*(.+?)\s*</details>",
+        re.DOTALL,
+    )
+    result.thinking_blocks = details_pattern.findall(result.full_text)
+    result.has_details_thinking = bool(result.thinking_blocks)
 
     # Extract tool labels: 🔧 *label* patterns
     tool_pattern = re.compile(r"🔧\s+\*(.+?)\*")
     result.tool_labels = tool_pattern.findall(result.full_text)
-
-    # Check for answer separator
-    result.has_answer_separator = "**Answer:**" in result.full_text
 
     # Extract footer: *Researched using N sources in Xs* or *Completed in Xs*
     footer_pattern = re.compile(
@@ -284,14 +285,20 @@ class TestStreamingSingleAgent:
                 f"Generic tool label found: '{label}'"
             )
 
-    def test_has_answer_separator(self, sse_response: ParsedSSEResponse) -> None:
-        """T1.4: **Answer:** separator present when tools were used."""
-        if sse_response.tool_labels:
-            assert sse_response.has_answer_separator, (
-                "Tools were used but no **Answer:** separator found. "
-                f"Text around expected position: "
-                f"{sse_response.full_text[len(sse_response.full_text)//2:][:200]}"
-            )
+    def test_thinking_in_collapsible_details(
+        self, sse_response: ParsedSSEResponse
+    ) -> None:
+        """T1.4: Thinking blocks are wrapped in <details> collapsible elements."""
+        assert sse_response.has_details_thinking, (
+            "No <details> thinking block found. "
+            f"Text preview: {sse_response.full_text[:500]}"
+        )
+
+    def test_no_answer_separator(self, sse_response: ParsedSSEResponse) -> None:
+        """T1.4b: No **Answer:** separator (removed in favor of clean flow)."""
+        assert "**Answer:**" not in sse_response.full_text, (
+            "**Answer:** separator should not be present"
+        )
 
     def test_has_clean_footer(self, sse_response: ParsedSSEResponse) -> None:
         """T1.5: Footer is a clean one-liner *Researched using N sources in Xs*."""
@@ -317,9 +324,8 @@ class TestStreamingSingleAgent:
 
     def test_no_escaped_html(self, sse_response: ParsedSSEResponse) -> None:
         """T1.7: No escaped HTML artifacts in the response."""
-        assert "<details>" not in sse_response.full_text
         assert "&lt;details&gt;" not in sse_response.full_text
-        assert "<summary>" not in sse_response.full_text
+        assert "&lt;summary&gt;" not in sse_response.full_text
 
 
 # ---------------------------------------------------------------------------
@@ -347,9 +353,10 @@ class TestNonStreamingSingleAgent:
         assert len(content) > 10, f"Response too short: {content}"
 
     def test_response_has_thinking(self, nonstream_response: dict[str, Any]) -> None:
-        """T2.2: Response contains 💭 thinking block."""
+        """T2.2: Response contains 💭 thinking in <details> block."""
         content = nonstream_response["choices"][0]["message"]["content"]
-        assert "💭" in content, f"No thinking block in non-streaming response"
+        assert "💭" in content, "No thinking block in non-streaming response"
+        assert "<details>" in content, "Thinking not in collapsible <details> element"
 
     def test_response_has_tool_labels(
         self, nonstream_response: dict[str, Any]
@@ -422,14 +429,13 @@ class TestZeroToolQuery:
                 "(unexpected but not a formatting bug)"
             )
 
-    def test_no_answer_separator_without_tools(
+    def test_no_answer_separator(
         self, zero_tool_response: ParsedSSEResponse
     ) -> None:
-        """T4.2: No Answer separator when no tools used."""
-        if not zero_tool_response.tool_labels:
-            assert not zero_tool_response.has_answer_separator, (
-                "Answer separator present without tool usage"
-            )
+        """T4.2: No **Answer:** separator anywhere (removed)."""
+        assert "**Answer:**" not in zero_tool_response.full_text, (
+            "**Answer:** separator should not be present"
+        )
 
     def test_footer_suppressed_or_minimal(
         self, zero_tool_response: ParsedSSEResponse
@@ -531,12 +537,15 @@ class TestFormattingConsistency:
         ]
         return _stream_request(client, "strands-venice-single", messages)
 
-    def test_thinking_blocks_are_italic(
+    def test_thinking_blocks_in_details(
         self, research_response: ParsedSSEResponse
     ) -> None:
-        """Thinking blocks use *💭 text* italic format."""
-        assert "*💭" in research_response.full_text, (
-            "Thinking blocks not using italic *💭 ...* format"
+        """Thinking blocks use <details><summary>💭 Thinking</summary> format."""
+        assert "<details>" in research_response.full_text, (
+            "Thinking blocks not using collapsible <details> format"
+        )
+        assert "💭 Thinking</summary>" in research_response.full_text, (
+            "Thinking <summary> missing 💭 Thinking label"
         )
 
     def test_tool_labels_are_italic(
@@ -574,8 +583,8 @@ class TestFormattingConsistency:
             "Actually, wait",
             "Hmm, I should",
         ]
-        # Extract text after the last thinking block
-        answer_start = research_response.full_text.rfind("*\n\n")
+        # Extract text after the last </details> block
+        answer_start = research_response.full_text.rfind("</details>")
         if answer_start > 0:
             answer_text = research_response.full_text[answer_start:]
             for indicator in raw_indicators:

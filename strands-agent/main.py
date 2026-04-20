@@ -322,74 +322,78 @@ async def run_evals(req: EvalRequest = EvalRequest()):
         cmd.extend(["-k", req.filter])
 
     # JSON output via temporary file
+    import os as _os
+
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
         json_path = f.name
     cmd.extend(["--json-report", f"--json-report-file={json_path}"])
-
-    # Fallback: if json-report plugin not installed, just capture stdout
     cmd.append("evals/")
 
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            cwd="/home/ubuntu/repos/deep-search-portal/strands-agent",
-        ),
-    )
-
-    # Try to parse JSON report
-    report = None
     try:
-        with open(json_path) as f:
-            report = _json.load(f)
-    except Exception:
-        pass
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                cwd="/home/ubuntu/repos/deep-search-portal/strands-agent",
+            ),
+        )
+
+        # Parse JSON report while the file still exists
+        report = None
+        try:
+            with open(json_path) as f:
+                report = _json.load(f)
+        except Exception:
+            pass
+
+        if report:
+            tests = report.get("tests", [])
+            summary = report.get("summary", {})
+            return {
+                "status": "passed" if summary.get("failed", 0) == 0 else "failed",
+                "summary": {
+                    "total": summary.get("total", 0),
+                    "passed": summary.get("passed", 0),
+                    "failed": summary.get("failed", 0),
+                    "skipped": summary.get("skipped", 0),
+                    "duration": round(summary.get("duration", 0), 2),
+                },
+                "tests": [
+                    {
+                        "name": t.get("nodeid", ""),
+                        "outcome": t.get("outcome", ""),
+                        "duration": round(t.get("call", {}).get("duration", 0), 3),
+                        "message": (
+                            t.get("call", {}).get("crash", {}).get("message", "")
+                            if t.get("outcome") == "failed"
+                            else ""
+                        ),
+                    }
+                    for t in tests
+                ],
+            }
+
+        # Fallback: return raw output if JSON report unavailable
+        return {
+            "status": "passed" if result.returncode == 0 else "failed",
+            "summary": {"returncode": result.returncode},
+            "stdout": result.stdout[-5000:] if result.stdout else "",
+            "stderr": result.stderr[-2000:] if result.stderr else "",
+        }
+
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "summary": {"error": "eval run timed out after 300s"}}
+    except Exception as exc:
+        return {"status": "error", "summary": {"error": str(exc)}}
     finally:
-        import os as _os
         try:
             _os.unlink(json_path)
         except Exception:
             pass
-
-    # Build structured response
-    if report:
-        tests = report.get("tests", [])
-        summary = report.get("summary", {})
-        return {
-            "status": "passed" if summary.get("failed", 0) == 0 else "failed",
-            "summary": {
-                "total": summary.get("total", 0),
-                "passed": summary.get("passed", 0),
-                "failed": summary.get("failed", 0),
-                "skipped": summary.get("skipped", 0),
-                "duration": round(summary.get("duration", 0), 2),
-            },
-            "tests": [
-                {
-                    "name": t.get("nodeid", ""),
-                    "outcome": t.get("outcome", ""),
-                    "duration": round(t.get("call", {}).get("duration", 0), 3),
-                    "message": (
-                        t.get("call", {}).get("crash", {}).get("message", "")
-                        if t.get("outcome") == "failed"
-                        else ""
-                    ),
-                }
-                for t in tests
-            ],
-        }
-
-    # Fallback: return raw output
-    return {
-        "status": "passed" if result.returncode == 0 else "failed",
-        "summary": {"returncode": result.returncode},
-        "stdout": result.stdout[-5000:] if result.stdout else "",
-        "stderr": result.stderr[-2000:] if result.stderr else "",
-    }
 
 
 @app.post("/query", response_model=QueryResponse)

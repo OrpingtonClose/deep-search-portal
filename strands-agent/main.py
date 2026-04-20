@@ -557,33 +557,41 @@ def _dispatch_agent(
             raise RuntimeError("RAG agent not initialised")
 
         # --- RAG: retrieve context from Knowledge Engine ---
-        # knowledge_client functions are async; _dispatch_agent runs in a
-        # sync thread (under _agent_lock).  Spin up a short-lived event
-        # loop to run the two async calls back-to-back.
-        rag_context = ""
-        try:
-            import knowledge_client
+        # _dispatch_agent runs in a sync thread under _agent_lock, so we
+        # call the Knowledge Engine with a per-request sync httpx.Client.
+        # This avoids the cross-event-loop issues caused by reusing the
+        # module-level async singleton in ``knowledge_client`` across
+        # ephemeral loops.
+        import os
+        import httpx
 
-            loop = asyncio.new_event_loop()
-            try:
-                search_result = loop.run_until_complete(
-                    knowledge_client.search(
-                        namespace="research",
-                        query=user_message,
-                        mode="hybrid",
-                        limit=10,
-                        cross_namespace=True,
-                    )
+        rag_context = ""
+        ke_url = os.getenv("KNOWLEDGE_ENGINE_URL", "http://localhost:9850")
+        try:
+            with httpx.Client(base_url=ke_url, timeout=300.0) as ke:
+                sr = ke.post(
+                    "/v1/search",
+                    json={
+                        "namespace": "research",
+                        "query": user_message,
+                        "mode": "hybrid",
+                        "limit": 10,
+                        "cross_namespace": True,
+                    },
                 )
-                conditions = loop.run_until_complete(
-                    knowledge_client.search_conditions(
-                        query=user_message,
-                        namespace="research",
-                        limit=10,
-                    )
+                sr.raise_for_status()
+                search_result = sr.json()
+
+                cr = ke.post(
+                    "/v1/research/conditions/search",
+                    json={
+                        "namespace": "research",
+                        "query": user_message,
+                        "limit": 10,
+                    },
                 )
-            finally:
-                loop.close()
+                cr.raise_for_status()
+                conditions = cr.json()
 
             parts: list[str] = []
             results = search_result.get("results", []) if isinstance(search_result, dict) else []
@@ -617,16 +625,19 @@ def _dispatch_agent(
             rag_context = "(Knowledge Engine unavailable \u2014 proceeding without prior knowledge)"
 
         # Inject RAG context into the system prompt for this turn only.
+        # The try/finally wraps every step that touches the agent so the
+        # original system_prompt is always restored, even if conversation
+        # loading or budget reset raise.
         from prompts import RAG_SYSTEM_PROMPT
         original_prompt = _rag_agent.system_prompt
         _rag_agent.system_prompt = RAG_SYSTEM_PROMPT.replace("{context}", rag_context)
 
-        if chat_messages:
-            user_message = _load_conversation_history(_rag_agent, chat_messages)
-        else:
-            _rag_agent.messages.clear()
-        reset_budget()
         try:
+            if chat_messages:
+                user_message = _load_conversation_history(_rag_agent, chat_messages)
+            else:
+                _rag_agent.messages.clear()
+            reset_budget()
             agent_result = _rag_agent(user_message)
             result = str(agent_result)
             try:

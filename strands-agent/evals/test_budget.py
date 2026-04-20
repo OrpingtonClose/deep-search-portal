@@ -78,10 +78,10 @@ class TestBudgetEnforcement:
                 assert not event.cancel_tool
 
 
-class TestBudgetInvocationReset:
-    """Verify auto-reset on BeforeInvocationEvent."""
+class TestBudgetExplicitReset:
+    """Verify explicit reset() clears state (no auto-reset hook)."""
 
-    def test_auto_resets_on_invocation(self) -> None:
+    def test_explicit_reset(self) -> None:
         plugin = BudgetPlugin(max_tool_calls=100)
 
         # Simulate some tool calls
@@ -93,8 +93,7 @@ class TestBudgetInvocationReset:
 
         assert plugin.tool_call_count == 3
 
-        # Simulate new invocation
-        inv_event = MagicMock()
-        plugin.on_invocation_start(inv_event)
+        # Explicit reset (called by reset_plugins() in main.py)
+        plugin.reset()
 
         assert plugin.tool_call_count == 0

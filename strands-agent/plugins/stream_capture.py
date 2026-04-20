@@ -22,7 +22,6 @@ from typing import Any
 
 from strands.hooks.events import (
     AfterToolCallEvent,
-    BeforeInvocationEvent,
     BeforeToolCallEvent,
 )
 from strands.plugins import Plugin, hook
@@ -127,16 +126,6 @@ class StreamCapturePlugin(Plugin):
                     self._tool_use_refs[tid] = current
                 self.tool_events.append(ev)
                 q.put(("tool", ev))
-
-    @hook
-    def on_invocation_start(self, event: BeforeInvocationEvent) -> None:
-        """Reset capture state at the start of each invocation."""
-        self.tool_events.clear()
-        self._seen_tool_ids.clear()
-        self._tool_use_refs.clear()
-        self.all_text.clear()
-        self.response_text.clear()
-        self.reasoning_text.clear()
 
     @hook
     def on_before_tool(self, event: BeforeToolCallEvent) -> None:

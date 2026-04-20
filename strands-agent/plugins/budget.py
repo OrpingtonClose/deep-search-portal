@@ -14,7 +14,7 @@ import logging
 import os
 import time
 
-from strands.hooks.events import BeforeInvocationEvent, BeforeToolCallEvent
+from strands.hooks.events import BeforeToolCallEvent
 from strands.plugins import Plugin, hook
 
 logger = logging.getLogger(__name__)
@@ -30,9 +30,11 @@ class BudgetPlugin(Plugin):
     When the budget is exceeded the tool call is cancelled with a descriptive
     message so the model can wrap up gracefully.
 
-    The plugin resets automatically at the start of each invocation via
-    ``BeforeInvocationEvent``, so no external ``reset_budget()`` call is
-    needed.
+    The plugin is reset explicitly via ``reset()`` before each HTTP request
+    in ``main.py``.  No auto-reset hook is used because the singleton
+    instance is shared across planner and researcher agents in multi-agent
+    mode — an auto-reset on ``BeforeInvocationEvent`` would zero the counter
+    when a sub-agent is invoked mid-request.
     """
 
     name: str = "budget"
@@ -60,11 +62,6 @@ class BudgetPlugin(Plugin):
         self._tool_call_count = 0
         self._seen_tool_ids = set()
         self._start_time = time.time()
-
-    @hook
-    def on_invocation_start(self, event: BeforeInvocationEvent) -> None:
-        """Auto-reset budget at the start of each agent invocation."""
-        self.reset()
 
     @hook
     def on_before_tool_call(self, event: BeforeToolCallEvent) -> None:

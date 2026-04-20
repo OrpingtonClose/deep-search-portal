@@ -74,7 +74,7 @@ def assert_refined_prose(refined: str, min_sentences: int = 2, max_sentences: in
     assert "```" not in refined, "contains code block"
     assert "**" not in refined, "contains bold markdown"
     assert "`" not in refined, "contains inline code"
-    assert "- " not in refined.split("\n")[0][:3] if "\n" in refined else True, "starts with bullet"
+    assert "- " not in refined.split("\n")[0][:3], "starts with bullet"
 
     # No meta-commentary
     meta_phrases = ["the agent", "the model", "the system", "the AI", "I will"]

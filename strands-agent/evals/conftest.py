@@ -33,6 +33,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="Run only evals in this category (e.g. tool_use, budget, display)",
     )
+    parser.addoption(
+        "--agent-url",
+        action="store",
+        default="http://localhost:8100",
+        help="Base URL of the live Strands Agent API for integration evals",
+    )
 
 
 def pytest_collection_modifyitems(

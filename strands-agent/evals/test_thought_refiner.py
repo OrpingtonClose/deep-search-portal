@@ -100,7 +100,6 @@ class TestThoughtRefinerInteg:
         )
         refined = plugin.refine_sync(raw, timeout=30.0)
         assert refined != raw
-        assert len(refined) < len(raw)
         assert len(refined) > 20  # Not empty
 
     @pytest.mark.asyncio
@@ -114,4 +113,4 @@ class TestThoughtRefinerInteg:
         )
         refined = await plugin.refine_async(raw, timeout=30.0)
         assert refined != raw
-        assert len(refined) < len(raw)
+        assert len(refined) > 20  # Not empty

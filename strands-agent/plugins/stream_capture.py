@@ -126,6 +126,22 @@ class StreamCapturePlugin(Plugin):
                     self._tool_use_refs[tid] = current
                 self.tool_events.append(ev)
                 q.put(("tool", ev))
+        else:
+            # Update tool input from subsequent contentBlockDelta callbacks.
+            # At contentBlockStart the input is typically empty; it arrives
+            # incrementally via later callbacks.  Read accumulated input from
+            # the live _tool_use_ref and update the stored event so that the
+            # non-streaming path (which strips _tool_use_ref) has full input
+            # for tool labels and activity logs.
+            if current and isinstance(current, dict):
+                tid = current.get("toolUseId", "")
+                if tid and tid in self._tool_use_refs:
+                    raw_input = current.get("input", "")
+                    if raw_input and str(raw_input) not in ("", "{}"):
+                        for ev in self.tool_events:
+                            if ev.get("_tool_use_ref") is current:
+                                ev["input"] = str(raw_input)[:500]
+                                break
 
     @hook
     def on_before_tool(self, event: BeforeToolCallEvent) -> None:

@@ -121,6 +121,74 @@ class TestToolCapture:
         assert len(plugin.tool_events) == 1
 
 
+class TestToolInputUpdate:
+    """Verify tool input is updated from subsequent contentBlockDelta callbacks."""
+
+    def test_updates_tool_input_from_live_ref(self) -> None:
+        """Non-streaming path needs accumulated input in the tool event dict.
+
+        At contentBlockStart the input is typically empty.  Subsequent
+        callbacks carry the live current_tool_use dict whose input field
+        is populated incrementally.  The plugin must copy it back into the
+        stored tool_events so that the non-streaming path (which strips
+        _tool_use_ref) still has full tool input for labels and logs.
+        """
+        plugin = StreamCapturePlugin()
+        plugin.activate()
+
+        # First callback: contentBlockStart with empty input
+        live_ref = {"toolUseId": "tool-42", "name": "brave_web_search", "input": ""}
+        plugin.callback_handler(
+            event={
+                "contentBlockStart": {
+                    "start": {
+                        "toolUse": {
+                            "name": "brave_web_search",
+                            "toolUseId": "tool-42",
+                            "input": "",
+                        }
+                    }
+                }
+            },
+            current_tool_use=live_ref,
+        )
+        assert plugin.tool_events[0]["input"] == ""
+
+        # Subsequent callback: contentBlockDelta populates live_ref input
+        live_ref["input"] = '{"query": "mesh networking protocols"}'
+        plugin.callback_handler(
+            event={},
+            current_tool_use=live_ref,
+        )
+        assert plugin.tool_events[0]["input"] == '{"query": "mesh networking protocols"}'
+        plugin.deactivate()
+
+    def test_truncates_long_tool_input(self) -> None:
+        plugin = StreamCapturePlugin()
+        plugin.activate()
+
+        live_ref = {"toolUseId": "tool-99", "name": "firecrawl_scrape", "input": ""}
+        plugin.callback_handler(
+            event={
+                "contentBlockStart": {
+                    "start": {
+                        "toolUse": {
+                            "name": "firecrawl_scrape",
+                            "toolUseId": "tool-99",
+                            "input": "",
+                        }
+                    }
+                }
+            },
+            current_tool_use=live_ref,
+        )
+
+        live_ref["input"] = "x" * 1000
+        plugin.callback_handler(event={}, current_tool_use=live_ref)
+        assert len(plugin.tool_events[0]["input"]) == 500
+        plugin.deactivate()
+
+
 class TestThreadSafety:
     """Verify thread-safe access to the queue."""
 

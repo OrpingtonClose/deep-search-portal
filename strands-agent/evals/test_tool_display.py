@@ -9,10 +9,7 @@ produce user-friendly output without requiring a live agent or API keys.
 
 from __future__ import annotations
 
-import pytest
-
 from plugins.tool_display import format_footer, sanitize_for_italic, tool_label
-
 
 # ---------------------------------------------------------------------------
 # Tool label generation

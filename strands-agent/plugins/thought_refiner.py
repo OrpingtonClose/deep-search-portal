@@ -20,7 +20,6 @@ import re
 import time
 
 import httpx
-
 from strands.plugins import Plugin
 
 logger = logging.getLogger("thought-refiner")

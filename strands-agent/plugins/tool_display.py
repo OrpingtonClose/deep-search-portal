@@ -16,7 +16,6 @@ from typing import Any
 
 from strands.plugins import Plugin
 
-
 # ── Verb map for well-known tools ─────────────────────────────────────
 
 _VERB_MAP: dict[str, str] = {

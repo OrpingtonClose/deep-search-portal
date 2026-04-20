@@ -14,7 +14,6 @@ import pytest
 
 from plugins.thought_refiner import ThoughtRefinerPlugin
 
-
 # ---------------------------------------------------------------------------
 # Unit tests (no API key required)
 # ---------------------------------------------------------------------------

@@ -29,11 +29,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+import log_viewer
 from conversation import (
     ChatMessage,
     extract_user_message,
     load_conversation_history,
 )
+from plugins.tool_display import format_footer, sanitize_for_italic, tool_label
 from streaming import generate_sse
 
 load_dotenv()
@@ -54,12 +56,6 @@ try:
     _HAS_OBSERVABILITY = True
 except ImportError:
     _HAS_OBSERVABILITY = False
-
-# ── SDK-native plugins ────────────────────────────────────────────────
-# Plugins are instantiated in agent.py and imported here for use in the
-# SSE streaming handler and response formatting.
-import log_viewer
-from plugins.tool_display import format_footer, sanitize_for_italic, tool_label
 
 logger = logging.getLogger(__name__)
 
@@ -610,7 +606,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
             _stream_capture.activate()
             try:
                 answer, metrics = _dispatch_agent(model, user_message, chat_messages=chat_messages)
-            except Exception as exc:
+            except Exception:
                 logger.exception("Agent error in /v1/chat/completions [%s]", req_id)
                 raise
             finally:

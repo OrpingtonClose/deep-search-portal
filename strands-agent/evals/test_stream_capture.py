@@ -12,8 +12,6 @@ from __future__ import annotations
 import queue
 import threading
 
-import pytest
-
 from plugins.stream_capture import StreamCapturePlugin
 
 
@@ -68,7 +66,7 @@ class TestTokenCapture:
 
     def test_captures_both_text_and_reasoning(self) -> None:
         plugin = StreamCapturePlugin()
-        q = plugin.activate()
+        plugin.activate()
         plugin.callback_handler(reasoningText="thinking")
         plugin.callback_handler(data="answer")
         plugin.deactivate()
@@ -83,7 +81,7 @@ class TestToolCapture:
 
     def test_captures_tool_from_content_block_start(self) -> None:
         plugin = StreamCapturePlugin()
-        q = plugin.activate()
+        plugin.activate()
         plugin.callback_handler(
             event={
                 "contentBlockStart": {
@@ -104,7 +102,7 @@ class TestToolCapture:
 
     def test_deduplicates_tool_by_id(self) -> None:
         plugin = StreamCapturePlugin()
-        q = plugin.activate()
+        plugin.activate()
         tool_use = {
             "name": "brave_web_search",
             "toolUseId": "tool-1",
@@ -194,7 +192,7 @@ class TestThreadSafety:
 
     def test_concurrent_writes(self) -> None:
         plugin = StreamCapturePlugin()
-        q = plugin.activate()
+        plugin.activate()
         errors = []
 
         def writer(n: int) -> None:

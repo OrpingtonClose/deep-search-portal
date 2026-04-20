@@ -26,10 +26,21 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["main", "agent", "config", "tools", "prompts", "thought_refiner"]
+py-modules = ["main", "agent", "config", "tools", "prompts", "conversation", "streaming", "log_viewer"]
 
 [tool.setuptools.packages.find]
 include = ["plugins*", "evals*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"evals/**" = ["E501"]
+"log_viewer.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["evals"]

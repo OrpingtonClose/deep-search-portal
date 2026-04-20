@@ -615,10 +615,11 @@ def _tool_label(tool_name: str, tool_input: str) -> str:
                 subject = subject[:47] + "..."
             safe = _sanitize_for_italic(subject)
             return f"{verb} {safe}"
+        return verb
 
     # Fallback: just capitalise the tool name
     display = tool_name.replace("_", " ").capitalize()
-    return display
+    return _sanitize_for_italic(display)
 
 
 def _sanitize_for_italic(text: str) -> str:
@@ -723,8 +724,12 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                     logger.exception("Agent error in streaming [%s]", req_id)
                     result_holder["error"] = str(exc)
                 finally:
-                    # Snapshot captured data while still under lock
-                    result_holder["tool_events"] = list(stream_capture.tool_events)
+                    # Snapshot captured data while still under lock.
+                    # Strip internal _tool_use_ref before exposing events.
+                    result_holder["tool_events"] = [
+                        {k: v for k, v in ev.items() if k != "_tool_use_ref"}
+                        for ev in stream_capture.tool_events
+                    ]
                     result_holder["streamed_text"] = "".join(stream_capture.response_text)
                     result_holder["reasoning_text"] = "".join(stream_capture.reasoning_text)
                     stream_capture.deactivate()
@@ -837,7 +842,18 @@ async def openai_chat_completions(body: ChatCompletionRequest):
 
                     tool_count += 1
                     tool_name = data.get("tool", "unknown")
+                    # Prefer the live reference input (populated during
+                    # contentBlockDelta streaming) over the snapshot taken
+                    # at contentBlockStart (which is often empty).
+                    # Small delay lets the SDK thread stream the tool input
+                    # JSON via contentBlockDelta before we read it.
                     tool_input = data.get("input", "")
+                    ref = data.get("_tool_use_ref")
+                    if ref and isinstance(ref, dict):
+                        await asyncio.sleep(0.15)
+                        live_input = ref.get("input", "")
+                        if live_input and str(live_input) not in ("", "{}"):
+                            tool_input = str(live_input)[:500]
                     label = _tool_label(tool_name, tool_input)
                     yield _openai_chunk(
                         req_id, model,
@@ -916,8 +932,12 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                 logger.exception("Agent error in /v1/chat/completions [%s]", req_id)
                 raise
             finally:
-                # Snapshot captured data while still under lock
-                captured_tool_events = list(stream_capture.tool_events)
+                # Snapshot captured data while still under lock.
+                # Strip internal _tool_use_ref before exposing events.
+                captured_tool_events = [
+                    {k: v for k, v in ev.items() if k != "_tool_use_ref"}
+                    for ev in stream_capture.tool_events
+                ]
                 captured_all_text = "".join(stream_capture.response_text)
                 captured_reasoning = "".join(stream_capture.reasoning_text)
                 stream_capture.deactivate()

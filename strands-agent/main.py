@@ -17,10 +17,7 @@ Exposes the Strands agent as an HTTP API with:
 from __future__ import annotations
 
 import asyncio
-import html
-import json
 import logging
-import queue
 import threading
 import time
 import uuid
@@ -29,8 +26,17 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+
+import log_viewer
+from conversation import (
+    ChatMessage,
+    extract_user_message,
+    load_conversation_history,
+)
+from plugins.tool_display import format_footer, sanitize_for_italic, tool_label
+from streaming import generate_sse
 
 load_dotenv()
 
@@ -51,14 +57,6 @@ try:
 except ImportError:
     _HAS_OBSERVABILITY = False
 
-# ── Thought refinement middleware ──────────────────────────────────────
-# Transforms chaotic agent reasoning into user-friendly status updates.
-try:
-    from thought_refiner import refine_async, REFINER_ENABLED
-    _HAS_REFINER = True
-except ImportError:
-    _HAS_REFINER = False
-
 logger = logging.getLogger(__name__)
 
 # ── Globals (initialised in lifespan) ────────────────────────────────
@@ -69,6 +67,11 @@ _deep_agent = None
 _mcp_clients: list = []
 _multi_researcher = None
 _agent_lock = threading.Lock()
+
+# Lazy-loaded plugin references (set in lifespan from agent module)
+_stream_capture = None
+_thought_refiner = None
+_budget_plugin = None
 
 
 # ── Observability wrappers ────────────────────────────────────────────
@@ -97,18 +100,8 @@ def _format_inline_log(tool_events: list[dict], elapsed: float, query: str = "",
             tool_events, elapsed,
             query=query, model=model, reasoning=reasoning, metrics=metrics,
         )
-    # Minimal fallback: user-friendly one-liner
-    unique_tools = {e.get("tool", "") for e in tool_events}
-    unique_tools.discard("")
-    n_sources = len(unique_tools)
-    if n_sources == 0:
-        if elapsed > 1.0:
-            return f"\n\n---\n*Completed in {elapsed:.0f}s*\n"
-        return ""
-    time_str = f"{elapsed:.0f}s" if elapsed >= 1 else "<1s"
-    if n_sources == 1:
-        return f"\n\n---\n*Researched using 1 source in {time_str}*\n"
-    return f"\n\n---\n*Researched using {n_sources} sources in {time_str}*\n"
+    # Fallback: use ToolDisplayPlugin's footer formatter
+    return format_footer(tool_events, elapsed)
 
 
 def _store_log(req_id: str, entry: dict) -> None:
@@ -143,15 +136,24 @@ def _extract_usage(metrics_summary: dict | None) -> dict[str, int]:
 async def lifespan(app: FastAPI):
     """Startup: create agents. Shutdown: close MCP connections."""
     global _single_agent, _multi_agent, _deep_agent, _multi_researcher, _mcp_clients
+    global _stream_capture, _thought_refiner, _budget_plugin
 
     from agent import (
         _enter_mcp_clients,
         _setup_otel,
+        budget_plugin,
         create_deep_agent_instance,
         create_multi_agent,
         create_single_agent,
+        stream_capture,
+        thought_refiner,
     )
     from tools import get_all_mcp_clients
+
+    # Store plugin references for use in request handlers
+    _stream_capture = stream_capture
+    _thought_refiner = thought_refiner
+    _budget_plugin = budget_plugin
 
     logging.basicConfig(
         level=logging.INFO,
@@ -215,9 +217,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Strands Venice Agent API",
     description="Venice uncensored research agent — Strands Agents SDK",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
+# Wire up extracted log viewer router
+log_viewer.configure(_get_log)
+app.include_router(log_viewer.router)
 
 
 # ── Request / Response models ────────────────────────────────────────
@@ -234,104 +239,12 @@ class QueryResponse(BaseModel):
     elapsed_seconds: float
 
 
-class ChatMessage(BaseModel):
-    role: str
-    content: str | list = ""
-
-
 class ChatCompletionRequest(BaseModel):
     model: str = "strands-venice-single"
     messages: list[ChatMessage] = []
     stream: bool = False
 
     model_config = {"extra": "allow"}
-
-
-# ── Helper: extract user message from ChatML messages ────────────────
-
-
-def _extract_user_message(messages: list[ChatMessage]) -> str:
-    for msg in reversed(messages):
-        if msg.role == "user":
-            content = msg.content
-            if isinstance(content, list):
-                return " ".join(
-                    part.get("text", "")
-                    for part in content
-                    if isinstance(part, dict) and part.get("type") == "text"
-                )
-            return str(content)
-    return ""
-
-
-def _chatml_to_strands(messages: list[ChatMessage]) -> list[dict]:
-    """Convert LibreChat ChatML messages to Strands Converse format.
-
-    LibreChat sends the full conversation history on each request.  We
-    convert user/assistant turns into the Strands internal format so the
-    agent has full conversational context.
-
-    Strands format:  ``{"role": "user"|"assistant", "content": [{"text": "..."}]}``
-    """
-    result = []
-    for msg in messages:
-        if msg.role not in ("user", "assistant"):
-            continue
-        content = msg.content
-        if isinstance(content, list):
-            text = " ".join(
-                part.get("text", "")
-                for part in content
-                if isinstance(part, dict) and part.get("type") == "text"
-            )
-        else:
-            text = str(content) if content else ""
-        if text.strip():
-            result.append({"role": msg.role, "content": [{"text": text}]})
-    return result
-
-
-def _load_conversation_history(
-    agent, messages: list[ChatMessage], researcher=None
-) -> str:
-    """Load conversation history into the agent and return the latest user message.
-
-    Converts all previous turns from the ChatML request into Strands
-    format and injects them into ``agent.messages``.  The latest user
-    message is extracted and returned (it will be passed to ``agent()``
-    which adds it to messages internally).
-
-    For multi-agent, the researcher's messages are always cleared (it
-    starts fresh for each delegation from the planner).
-    """
-    strands_messages = _chatml_to_strands(messages)
-
-    # The last message should be the new user query — exclude it from
-    # history since agent() will add it.
-    if strands_messages and strands_messages[-1]["role"] == "user":
-        history = strands_messages[:-1]
-        user_message = strands_messages[-1]["content"][0]["text"]
-    else:
-        # Last strands message is not a user message (unusual — e.g.
-        # trailing assistant message).  Find the last user message by
-        # index and slice: history = everything before it.  Messages
-        # after it (assistant responses) are omitted since the agent
-        # will re-process the user message via agent().
-        user_message = _extract_user_message(messages)
-        last_user_idx = None
-        for i in range(len(strands_messages) - 1, -1, -1):
-            if strands_messages[i]["role"] == "user" and strands_messages[i]["content"][0]["text"] == user_message:
-                last_user_idx = i
-                break
-        history = strands_messages[:last_user_idx] if last_user_idx is not None else strands_messages
-
-    agent.messages.clear()
-    agent.messages.extend(history)
-
-    if researcher is not None:
-        researcher.messages.clear()
-
-    return user_message
 
 
 # ── Endpoints ────────────────────────────────────────────────────────
@@ -377,10 +290,10 @@ def query_single(req: QueryRequest):
     start = time.time()
     req_id = f"query-{uuid.uuid4().hex[:12]}"
     with _agent_lock:
-        from agent import reset_budget
+        from agent import reset_plugins
 
         _single_agent.messages.clear()
-        reset_budget()
+        reset_plugins()
         try:
             response = _single_agent(req.query)
             metrics = None
@@ -412,12 +325,12 @@ def query_multi(req: QueryRequest):
     start = time.time()
     req_id = f"query-{uuid.uuid4().hex[:12]}"
     with _agent_lock:
-        from agent import reset_budget
+        from agent import reset_plugins
 
         _multi_agent.messages.clear()
         if _multi_researcher is not None:
             _multi_researcher.messages.clear()
-        reset_budget()
+        reset_plugins()
         try:
             response = _multi_agent(req.query)
             metrics = None
@@ -493,7 +406,7 @@ def _dispatch_agent(
     content (e.g. it ended on a tool call), falls back to the captured
     streamed text via ``stream_capture.response_text``.
     """
-    from agent import reset_budget, stream_capture
+    from agent import reset_plugins
 
     metrics_summary = None
 
@@ -501,14 +414,14 @@ def _dispatch_agent(
         if _multi_agent is None:
             raise RuntimeError("Multi agent not initialised")
         if chat_messages:
-            user_message = _load_conversation_history(
+            user_message = load_conversation_history(
                 _multi_agent, chat_messages, researcher=_multi_researcher
             )
         else:
             _multi_agent.messages.clear()
             if _multi_researcher is not None:
                 _multi_researcher.messages.clear()
-        reset_budget()
+        reset_plugins()
         agent_result = _multi_agent(user_message)
         result = str(agent_result)
         try:
@@ -519,12 +432,12 @@ def _dispatch_agent(
         if _deep_agent is None:
             raise RuntimeError("Deep agent not initialised")
         if chat_messages:
-            user_message = _load_conversation_history(
+            user_message = load_conversation_history(
                 _deep_agent, chat_messages
             )
         else:
             _deep_agent.messages.clear()
-        reset_budget()
+        reset_plugins()
         agent_result = _deep_agent(user_message)
         result = str(agent_result)
         try:
@@ -533,12 +446,12 @@ def _dispatch_agent(
             pass
     elif _single_agent is not None:
         if chat_messages:
-            user_message = _load_conversation_history(
+            user_message = load_conversation_history(
                 _single_agent, chat_messages
             )
         else:
             _single_agent.messages.clear()
-        reset_budget()
+        reset_plugins()
         agent_result = _single_agent(user_message)
         result = str(agent_result)
         try:
@@ -550,8 +463,8 @@ def _dispatch_agent(
 
     # Fallback: if the agent result has no text, use captured text.
     # Venice GLM with reasoning:high may send answer as reasoningText only.
-    if not result.strip() and (stream_capture.response_text or stream_capture.reasoning_text):
-        result = "".join(stream_capture.response_text) or "".join(stream_capture.reasoning_text)
+    if not result.strip() and _stream_capture and (_stream_capture.response_text or _stream_capture.reasoning_text):
+        result = "".join(_stream_capture.response_text) or "".join(_stream_capture.reasoning_text)
     return result, metrics_summary
 
 
@@ -561,98 +474,12 @@ def _run_agent(
     chat_messages: list[ChatMessage] | None = None,
 ) -> tuple[str, dict | None]:
     """Dispatch to the correct agent under lock (convenience wrapper)."""
-    from agent import stream_capture
-
     with _agent_lock:
-        stream_capture.activate()
+        _stream_capture.activate()
         try:
             return _dispatch_agent(model, user_message, chat_messages=chat_messages)
         finally:
-            stream_capture.deactivate()
-
-
-def _tool_label(tool_name: str, tool_input: str) -> str:
-    """Build a short, human-friendly label for a tool call.
-
-    Instead of ``Using task``, produce something like ``Researching Tor
-    protocols`` by extracting the first meaningful phrase from the tool
-    input.  Keeps the label under ~60 chars so it stays on one line.
-    """
-    import re
-    # Map well-known tools to friendly verbs
-    _VERB_MAP = {
-        "task": "Researching",
-        "write_todos": "Planning next steps",
-        "brave_web_search": "Searching",
-        "exa_search": "Searching",
-        "duckduckgo_search": "Searching",
-        "firecrawl_scrape": "Reading",
-        "read_url": "Reading",
-        "http_request": "Fetching",
-    }
-    verb = _VERB_MAP.get(tool_name)
-    if verb:
-        # Extract a brief subject from the tool input
-        # tool_input is str(dict) like "{'description': 'Research Tor ...'}"
-        # Try to pull the first quoted value or first sentence fragment
-        subject = ""
-        # Try dict-style 'key': 'value' — grab first string value
-        m = re.search(r"'(?:description|query|url|topic|search_query)':\s*'([^']{3,})'", tool_input)
-        if not m:
-            m = re.search(r'"(?:description|query|url|topic|search_query)":\s*"([^"]{3,})"', tool_input)
-        if m:
-            subject = m.group(1).strip()
-        else:
-            # Fallback: grab first chunk of alphanumeric text
-            cleaned = re.sub(r"[{}'\"\[\]]", " ", tool_input)
-            cleaned = re.sub(r"\s+", " ", cleaned).strip()
-            if len(cleaned) > 5:
-                subject = cleaned
-
-        if subject:
-            # Truncate to keep it brief
-            if len(subject) > 50:
-                subject = subject[:47] + "..."
-            safe = _sanitize_for_italic(subject)
-            return f"{verb} {safe}"
-        return verb
-
-    # Fallback: just capitalise the tool name
-    display = tool_name.replace("_", " ").capitalize()
-    return _sanitize_for_italic(display)
-
-
-def _sanitize_for_italic(text: str) -> str:
-    """Collapse newlines/whitespace so text can be wrapped in *...* italic markdown.
-
-    Markdown emphasis spans cannot cross blank lines — if the enclosed text
-    contains ``\\n\\n``, the ``*`` markers won't render as italic and users
-    will see raw asterisks.  Literal ``*`` characters inside the text also
-    break the surrounding italic markers.  This helper removes ``*``,
-    replaces all newlines with spaces, and collapses consecutive whitespace
-    into a single space.
-    """
-    import re
-    text = text.replace("*", "")
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _openai_chunk(req_id: str, model: str, content: str, finish: bool = False) -> str:
-    """Format a single SSE chunk in OpenAI streaming format."""
-    chunk = {
-        "id": req_id,
-        "object": "chat.completion.chunk",
-        "created": int(time.time()),
-        "model": model,
-        "choices": [
-            {
-                "index": 0,
-                "delta": {} if finish else {"content": content},
-                "finish_reason": "stop" if finish else None,
-            }
-        ],
-    }
-    return f"data: {json.dumps(chunk)}\n\n"
+            _stream_capture.deactivate()
 
 
 @app.post("/v1/chat/completions")
@@ -667,14 +494,12 @@ async def openai_chat_completions(body: ChatCompletionRequest):
     and searches. A per-request activity log is stored and accessible
     at ``GET /logs/{request_id}``.
     """
-    from agent import stream_capture
-
     model = body.model
     stream = body.stream
     req_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     start_time = time.time()
 
-    user_message = _extract_user_message(body.messages)
+    user_message = extract_user_message(body.messages)
     if not user_message:
         return JSONResponse(
             status_code=400,
@@ -713,7 +538,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
 
         def _agent_thread():
             with _agent_lock:
-                token_q = stream_capture.activate()
+                token_q = _stream_capture.activate()
                 queue_holder["q"] = token_q
                 queue_ready.set()
                 try:
@@ -724,179 +549,36 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                     logger.exception("Agent error in streaming [%s]", req_id)
                     result_holder["error"] = str(exc)
                 finally:
-                    # Snapshot captured data while still under lock.
-                    # Strip internal _tool_use_ref before exposing events.
                     result_holder["tool_events"] = [
                         {k: v for k, v in ev.items() if k != "_tool_use_ref"}
-                        for ev in stream_capture.tool_events
+                        for ev in _stream_capture.tool_events
                     ]
-                    result_holder["streamed_text"] = "".join(stream_capture.response_text)
-                    result_holder["reasoning_text"] = "".join(stream_capture.reasoning_text)
-                    stream_capture.deactivate()
+                    result_holder["streamed_text"] = "".join(_stream_capture.response_text)
+                    result_holder["reasoning_text"] = "".join(_stream_capture.reasoning_text)
+                    _stream_capture.deactivate()
 
         thread = threading.Thread(target=_agent_thread, daemon=True)
         thread.start()
 
-        async def _generate_sse():
+        async def _sse_wrapper():
             loop = asyncio.get_event_loop()
-            # Wait until agent thread has acquired the lock and created the queue
             await loop.run_in_executor(None, queue_ready.wait)
             token_queue = queue_holder["q"]
 
-            # ── Streaming presentation state ──
-            # We buffer thinking tokens and refine them via a fast LLM
-            # before emitting, so the user sees concise status updates
-            # instead of chaotic chain-of-thought.
-            #
-            # Layout:
-            #   > 💭 **Thinking** — refined summary
-            #   🔧 **Tool:** brave_web_search — `"query text..."`
-            #   🔧 **Tool:** firecrawl_scrape — `"https://..."`
-            #   ---
-            #   <final answer text>
-            thinking_buffer: list[str] = []  # Buffer raw thinking tokens
-            has_answer_text = False     # True once we've emitted answer text
-            tool_count = 0             # Number of tool calls emitted
-            last_event_type = None     # Track event transitions
+            async for chunk in generate_sse(
+                req_id=req_id,
+                model=model,
+                token_queue=token_queue,
+                thought_refiner=_thought_refiner,
+                result_holder=result_holder,
+                start_time=start_time,
+                format_inline_log=_format_inline_log,
+                user_message=user_message,
+            ):
+                yield chunk
 
-            async def _flush_thinking(is_final: bool = False):
-                """Refine and emit buffered thinking tokens.
-
-                When the refiner is available, the raw thinking is sent to
-                a fast LLM for summarisation.  The refined version is emitted
-                inside a blockquote.  If refinement fails or is disabled,
-                the raw thinking is emitted as before.
-
-                Args:
-                    is_final: True when this is the last thinking block
-                        (agent finished with only thinking, no answer text).
-                        In that case, emit as plain text since the thinking
-                        IS the answer.
-                """
-                if not thinking_buffer:
-                    return
-
-                raw_thinking = "".join(thinking_buffer)
-                thinking_buffer.clear()
-
-                # If thinking-only (no answer text follows), emit as plain
-                # text — the reasoning IS the answer.
-                if is_final:
-                    # Thinking IS the answer — emit full text unmodified.
-                    # Do NOT refine or truncate: the user needs the complete
-                    # response, not a summary or 500-char clip.
-                    yield _openai_chunk(req_id, model, raw_thinking)
-                    return
-
-                # Normal case: thinking followed by tools/answer.
-                # Refine and wrap in a collapsible block.
-                if _HAS_REFINER:
-                    # Emit prefix immediately to keep SSE alive while
-                    # the refiner API call completes (up to 20s).
-                    yield _openai_chunk(req_id, model, "*💭 ")
-                    refined = await refine_async(raw_thinking)
-                    safe = _sanitize_for_italic(refined)
-                    yield _openai_chunk(
-                        req_id, model,
-                        f"{safe}*\n\n"
-                    )
-                else:
-                    # No refiner — emit truncated raw thinking
-                    truncated = raw_thinking[:500]
-                    if len(raw_thinking) > 500:
-                        truncated += "…"
-                    safe = _sanitize_for_italic(truncated)
-                    yield _openai_chunk(
-                        req_id, model,
-                        f"*💭 {safe}*\n\n"
-                    )
-
-            while True:
-                try:
-                    item = await loop.run_in_executor(
-                        None, lambda: token_queue.get(timeout=5)
-                    )
-                except queue.Empty:
-                    # Keep connection alive during long tool executions
-                    yield ": heartbeat\n\n"
-                    continue
-
-                if item is None:
-                    # Agent finished — flush any remaining thinking.
-                    # If no answer text was emitted, thinking IS the answer.
-                    async for chunk in _flush_thinking(is_final=not has_answer_text):
-                        yield chunk
-                    break
-
-                event_type, data = item
-
-                if event_type == "thinking":
-                    # Buffer thinking tokens — they'll be refined and
-                    # emitted when the block closes (tool/text/finish).
-                    thinking_buffer.append(data)
-
-                elif event_type == "tool":
-                    # Flush (refine + emit) buffered thinking before tool
-                    async for chunk in _flush_thinking():
-                        yield chunk
-
-                    tool_count += 1
-                    tool_name = data.get("tool", "unknown")
-                    # Prefer the live reference input (populated during
-                    # contentBlockDelta streaming) over the snapshot taken
-                    # at contentBlockStart (which is often empty).
-                    # Small delay lets the SDK thread stream the tool input
-                    # JSON via contentBlockDelta before we read it.
-                    tool_input = data.get("input", "")
-                    ref = data.get("_tool_use_ref")
-                    if ref and isinstance(ref, dict):
-                        await asyncio.sleep(0.15)
-                        live_input = ref.get("input", "")
-                        if live_input and str(live_input) not in ("", "{}"):
-                            tool_input = str(live_input)[:500]
-                    label = _tool_label(tool_name, tool_input)
-                    yield _openai_chunk(
-                        req_id, model,
-                        f"🔧 *{label}*\n\n"
-                    )
-
-                elif event_type == "text":
-                    # Flush (refine + emit) buffered thinking before answer
-                    async for chunk in _flush_thinking():
-                        yield chunk
-                    if not has_answer_text and tool_count > 0:
-                        yield _openai_chunk(req_id, model, "\n---\n\n**Answer:**\n\n")
-                    has_answer_text = True
-                    yield _openai_chunk(req_id, model, data)
-
-                last_event_type = event_type
-
-            # If agent errored and produced no streamed text, send error.
-            # Check both response_text and reasoning_text since Venice GLM
-            # may send the answer entirely as reasoning tokens.
-            has_streamed = result_holder["streamed_text"] or result_holder.get("reasoning_text", "")
-            if result_holder["error"] and not has_streamed:
-                yield _openai_chunk(
-                    req_id, model, f"\n\nError: {result_holder['error']}"
-                )
-
-            # Append inline activity log at end of response
+            # Store activity log and metrics after streaming completes
             elapsed = round(time.time() - start_time, 2)
-            # Thinking is always emitted inline (refined or raw) via
-            # _flush_thinking — never duplicate it in the footer.
-            reasoning_for_log = ""
-            inline_log = _format_inline_log(
-                result_holder["tool_events"], elapsed,
-                query=user_message, model=model,
-                reasoning=reasoning_for_log,
-                metrics=result_holder.get("metrics"),
-            )
-            yield _openai_chunk(req_id, model, inline_log)
-
-            yield _openai_chunk(req_id, model, "", finish=True)
-            yield "data: [DONE]\n\n"
-
-            # Store activity log (reads from snapshot, not live capture)
             _store_log(
                 req_id,
                 {
@@ -906,41 +588,35 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                     "error": result_holder.get("error"),
                     "tool_events": result_holder["tool_events"],
                     "streamed_text": result_holder["streamed_text"],
-                    "elapsed": round(time.time() - start_time, 2),
+                    "elapsed": elapsed,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 },
             )
-
-            # Write metrics to JSONL log file
             _write_metrics_jsonl(
                 req_id, model, user_message, elapsed,
                 result_holder.get("metrics"),
                 result_holder["tool_events"],
             )
 
-        return StreamingResponse(_generate_sse(), media_type="text/event-stream")
+        return StreamingResponse(_sse_wrapper(), media_type="text/event-stream")
 
     # ── Non-streaming mode ───────────────────────────────────────
-    # Offload to a thread so the asyncio event loop stays responsive
-    # for health checks, SSE heartbeats, and new request acceptance.
     def _sync_non_streaming():
         with _agent_lock:
-            stream_capture.activate()
+            _stream_capture.activate()
             try:
                 answer, metrics = _dispatch_agent(model, user_message, chat_messages=chat_messages)
-            except Exception as exc:
+            except Exception:
                 logger.exception("Agent error in /v1/chat/completions [%s]", req_id)
                 raise
             finally:
-                # Snapshot captured data while still under lock.
-                # Strip internal _tool_use_ref before exposing events.
                 captured_tool_events = [
                     {k: v for k, v in ev.items() if k != "_tool_use_ref"}
-                    for ev in stream_capture.tool_events
+                    for ev in _stream_capture.tool_events
                 ]
-                captured_all_text = "".join(stream_capture.response_text)
-                captured_reasoning = "".join(stream_capture.reasoning_text)
-                stream_capture.deactivate()
+                captured_all_text = "".join(_stream_capture.response_text)
+                captured_reasoning = "".join(_stream_capture.reasoning_text)
+                _stream_capture.deactivate()
         return answer, metrics, captured_tool_events, captured_all_text, captured_reasoning
 
     try:
@@ -954,8 +630,6 @@ async def openai_chat_completions(body: ChatCompletionRequest):
         )
 
     elapsed = round(time.time() - start_time, 2)
-    # Thinking is always shown inline (refined or truncated) — never
-    # duplicate it in the footer.
     reasoning_for_log = ""
     inline_log = _format_inline_log(
         captured_tool_events, elapsed,
@@ -964,30 +638,24 @@ async def openai_chat_completions(body: ChatCompletionRequest):
         metrics=metrics,
     )
 
-    # Build a pleasant output with thinking, tool actions, and answer.
+    # Build formatted response with thinking, tools, and answer
     parts: list[str] = []
-
-    # Wrap reasoning in a collapsible block if present AND distinct from answer.
-    # When Venice GLM sends only reasoning tokens, _dispatch_agent promotes
-    # reasoning to the answer text — in that case don't duplicate it.
     reasoning_is_answer = (
         captured_reasoning.strip()
         and answer.strip() == captured_reasoning.strip()
     )
     if captured_reasoning.strip() and not reasoning_is_answer:
-        # Refine the thinking via fast LLM if available
-        if _HAS_REFINER:
-            refined_reasoning = await refine_async(captured_reasoning)
+        if _thought_refiner and _thought_refiner.is_available:
+            refined_reasoning = await _thought_refiner.refine_async(captured_reasoning)
         else:
             refined_reasoning = captured_reasoning[:500]
             if len(captured_reasoning) > 500:
                 refined_reasoning += "…"
-        parts.append(f"*💭 {_sanitize_for_italic(refined_reasoning)}*\n\n")
+        parts.append(f"*💭 {sanitize_for_italic(refined_reasoning)}*\n\n")
 
-    # Show tool calls as unobtrusive italic lines
     if captured_tool_events:
         for ev in captured_tool_events:
-            label = _tool_label(ev.get("tool", "unknown"), ev.get("input", ""))
+            label = tool_label(ev.get("tool", "unknown"), ev.get("input", ""))
             parts.append(f"🔧 *{label}*\n\n")
         parts.append("\n---\n\n**Answer:**\n\n")
 
@@ -1004,18 +672,12 @@ async def openai_chat_completions(body: ChatCompletionRequest):
             "error": None,
             "tool_events": captured_tool_events,
             "streamed_text": captured_all_text,
-            "elapsed": round(time.time() - start_time, 2),
+            "elapsed": elapsed,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
+    _write_metrics_jsonl(req_id, model, user_message, elapsed, metrics, captured_tool_events)
 
-    # Write metrics to JSONL log file
-    _write_metrics_jsonl(
-        req_id, model, user_message, elapsed,
-        metrics, captured_tool_events,
-    )
-
-    # Extract token usage from metrics if available
     usage_data = _extract_usage(metrics)
 
     return JSONResponse(
@@ -1034,86 +696,3 @@ async def openai_chat_completions(body: ChatCompletionRequest):
             "usage": usage_data,
         }
     )
-
-
-# ── Public activity log endpoint ─────────────────────────────────────
-
-
-@app.get("/logs/{request_id}", response_class=HTMLResponse)
-async def get_request_log_page(request_id: str):
-    """Human-readable HTML page showing what the agent did during a request."""
-    entry = _get_log(request_id)
-    if entry is None:
-        raise HTTPException(status_code=404, detail="Log not found")
-
-    # Build tool events table
-    tool_rows = ""
-    for i, ev in enumerate(entry.get("tool_events", []), 1):
-        t = datetime.fromtimestamp(ev["time"], tz=timezone.utc).strftime("%H:%M:%S")
-        tool_rows += (
-            f"<tr><td>{i}</td><td><code>{html.escape(ev['tool'])}</code></td>"
-            f"<td><pre>{html.escape(ev.get('input', ''))}</pre></td>"
-            f"<td>{t}</td></tr>\n"
-        )
-
-    if not tool_rows:
-        tool_rows = '<tr><td colspan="4">No tool calls recorded</td></tr>'
-
-    escaped_query = html.escape(entry.get("query", ""))
-    escaped_response = html.escape(entry.get("response", "") or "")
-    escaped_streamed = html.escape(entry.get("streamed_text", "") or "")
-    error_block = ""
-    if entry.get("error"):
-        error_block = (
-            f'<div style="background:#fee;padding:12px;border-radius:6px;">'
-            f"<strong>Error:</strong> {html.escape(entry['error'])}</div>"
-        )
-
-    page = f"""\
-<!DOCTYPE html>
-<html><head>
-<meta charset="utf-8">
-<title>Agent Log — {html.escape(request_id)}</title>
-<style>
-  body {{ font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; background: #0d1117; color: #c9d1d9; }}
-  h1 {{ color: #58a6ff; font-size: 1.4em; }}
-  h2 {{ color: #8b949e; font-size: 1.1em; margin-top: 28px; }}
-  table {{ border-collapse: collapse; width: 100%; }}
-  th, td {{ border: 1px solid #30363d; padding: 8px 12px; text-align: left; }}
-  th {{ background: #161b22; color: #8b949e; }}
-  tr:nth-child(even) {{ background: #161b22; }}
-  pre {{ white-space: pre-wrap; word-break: break-word; margin: 0; font-size: 0.85em; }}
-  code {{ color: #79c0ff; }}
-  .meta {{ color: #8b949e; font-size: 0.9em; }}
-  .response {{ background: #161b22; padding: 16px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; line-height: 1.6; }}
-  .thinking {{ background: #1c2128; padding: 16px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; line-height: 1.5; color: #8b949e; font-size: 0.9em; max-height: 600px; overflow-y: auto; }}
-</style>
-</head><body>
-<h1>Agent Activity Log</h1>
-<p class="meta">
-  <strong>Request:</strong> <code>{html.escape(request_id)}</code><br>
-  <strong>Model:</strong> <code>{html.escape(entry.get('model', ''))}</code><br>
-  <strong>Time:</strong> {html.escape(entry.get('timestamp', ''))}<br>
-  <strong>Elapsed:</strong> {entry.get('elapsed', 0)}s
-</p>
-{error_block}
-<h2>Query</h2>
-<div class="response">{escaped_query}</div>
-
-<h2>Tool Calls ({len(entry.get('tool_events', []))})</h2>
-<table>
-<tr><th>#</th><th>Tool</th><th>Input</th><th>Time</th></tr>
-{tool_rows}
-</table>
-
-<h2>Agent Thinking (streamed tokens)</h2>
-<details>
-<summary>Click to expand ({len(entry.get('streamed_text', ''))} chars)</summary>
-<div class="thinking">{escaped_streamed}</div>
-</details>
-
-<h2>Final Response</h2>
-<div class="response">{escaped_response}</div>
-</body></html>"""
-
-    return HTMLResponse(page)

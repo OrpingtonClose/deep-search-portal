@@ -196,14 +196,15 @@ class TestAgentMultiTurn:
         agent, collector = _build_agent()
 
         # Turn 1: establish context
-        result1 = agent("My name is Alice and I work at CERN.")
+        result1 = agent("My name is Alice and I work at CERN. Please remember both of these facts.")
         assert result1.stop_reason == "end_turn"
 
         # Turn 2: reference previous context
-        result2 = agent("What is my name and where do I work?")
+        result2 = agent("Repeat back to me: what is my name and where do I work?")
         text = str(result2).lower()
-        assert "alice" in text
-        assert "cern" in text
+        assert "alice" in text, f"model forgot name 'Alice': {text[:200]}"
+        # CERN may appear as "cern" or "CERN" — model should recall it
+        assert "cern" in text, f"model forgot workplace 'CERN': {text[:200]}"
         assert collector.total_invocations == 2
 
     def test_multi_turn_with_tools(self, venice_api_key: str) -> None:

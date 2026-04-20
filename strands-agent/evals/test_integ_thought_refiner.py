@@ -16,6 +16,7 @@ Usage::
 from __future__ import annotations
 
 import re
+import time
 
 import pytest
 
@@ -104,6 +105,7 @@ class TestRefinerProseQuality:
     def test_research_thinking_refined(self, venice_api_key: str) -> None:
         refiner = ThoughtRefinerPlugin(enabled=True)
         refined = refiner.refine_sync(RAW_THINKING_RESEARCH)
+        time.sleep(1)  # avoid Venice rate limits
 
         assert_refined_prose(refined)
         # Should preserve interesting specifics from the raw thinking
@@ -117,12 +119,14 @@ class TestRefinerProseQuality:
     def test_simple_thinking_refined(self, venice_api_key: str) -> None:
         refiner = ThoughtRefinerPlugin(enabled=True)
         refined = refiner.refine_sync(RAW_THINKING_SIMPLE)
+        time.sleep(1)
 
         assert_refined_prose(refined, min_sentences=1, max_sentences=4)
 
     def test_multi_tool_thinking_refined(self, venice_api_key: str) -> None:
         refiner = ThoughtRefinerPlugin(enabled=True)
         refined = refiner.refine_sync(RAW_THINKING_MULTI_TOOL)
+        time.sleep(1)
 
         assert_refined_prose(refined)
         lower = refined.lower()
@@ -138,6 +142,7 @@ class TestRefinerAsyncQuality:
 
     @pytest.mark.asyncio
     async def test_async_matches_sync_quality(self, venice_api_key: str) -> None:
+        time.sleep(2)  # extra delay before async call to avoid 429
         refiner = ThoughtRefinerPlugin(enabled=True)
         refined = await refiner.refine_async(RAW_THINKING_RESEARCH)
 

@@ -77,6 +77,12 @@ def parse_sse_stream(raw: str) -> ParsedSSEResponse:
         except json.JSONDecodeError:
             continue
 
+        # Detect error payloads in the SSE stream
+        if "error" in chunk:
+            err = chunk["error"]
+            result.error = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+            continue
+
         result.chunks.append(chunk)
         content = ""
         choices = chunk.get("choices", [])

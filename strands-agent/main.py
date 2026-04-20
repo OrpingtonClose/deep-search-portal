@@ -547,10 +547,10 @@ def _dispatch_agent(
 
         try:
             if chat_messages:
-                user_message = _load_conversation_history(_rag_agent, chat_messages)
+                user_message = load_conversation_history(_rag_agent, chat_messages)
             else:
                 _rag_agent.messages.clear()
-            reset_budget()
+            reset_plugins()
             agent_result = _rag_agent(user_message)
             result = str(agent_result)
             try:

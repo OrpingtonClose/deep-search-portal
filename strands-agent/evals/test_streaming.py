@@ -50,7 +50,6 @@ class TestBuildNonStreamingResponse:
             answer="42",
             captured_tool_events=[],
             captured_reasoning="",
-            thought_refiner=None,
             inline_log="",
         )
         assert result == "42"
@@ -63,7 +62,6 @@ class TestBuildNonStreamingResponse:
             answer="result",
             captured_tool_events=events,
             captured_reasoning="",
-            thought_refiner=None,
             inline_log="",
         )
         assert "🔧" in result
@@ -75,7 +73,6 @@ class TestBuildNonStreamingResponse:
             answer="final answer",
             captured_tool_events=[],
             captured_reasoning="I need to think about this carefully",
-            thought_refiner=None,
             inline_log="",
         )
         assert "💭" in result
@@ -86,7 +83,6 @@ class TestBuildNonStreamingResponse:
             answer="the answer",
             captured_tool_events=[],
             captured_reasoning="the answer",
-            thought_refiner=None,
             inline_log="",
         )
         assert "💭" not in result
@@ -97,17 +93,26 @@ class TestBuildNonStreamingResponse:
             answer="done",
             captured_tool_events=[],
             captured_reasoning=long_reasoning,
-            thought_refiner=None,
             inline_log="",
         )
         assert "…" in result
+
+    def test_refined_reasoning_used_when_provided(self) -> None:
+        result = build_non_streaming_response(
+            answer="final answer",
+            captured_tool_events=[],
+            captured_reasoning="raw chain of thought that is very long and messy",
+            inline_log="",
+            refined_reasoning="Agent is analyzing the problem",
+        )
+        assert "Agent is analyzing the problem" in result
+        assert "raw chain of thought" not in result
 
     def test_inline_log_appended(self) -> None:
         result = build_non_streaming_response(
             answer="answer",
             captured_tool_events=[],
             captured_reasoning="",
-            thought_refiner=None,
             inline_log="\n*Researched using 3 sources in 12s*",
         )
         assert "*Researched using 3 sources in 12s*" in result
@@ -118,7 +123,6 @@ class TestBuildNonStreamingResponse:
             answer="The answer is 42.",
             captured_tool_events=events,
             captured_reasoning="Let me think about this.",
-            thought_refiner=None,
             inline_log="\n*footer*",
         )
         # Ordering: thinking → tools → answer separator → answer → footer

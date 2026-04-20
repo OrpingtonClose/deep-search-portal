@@ -199,8 +199,8 @@ def build_non_streaming_response(
     answer: str,
     captured_tool_events: list[dict[str, Any]],
     captured_reasoning: str,
-    thought_refiner: ThoughtRefinerPlugin | None,
     inline_log: str,
+    refined_reasoning: str | None = None,
 ) -> str:
     """Build formatted non-streaming response with thinking, tools, and answer.
 
@@ -208,8 +208,11 @@ def build_non_streaming_response(
         answer: The agent's final answer text.
         captured_tool_events: List of captured tool event dicts.
         captured_reasoning: Raw reasoning text from the agent.
-        thought_refiner: Plugin for refining thinking (or None).
         inline_log: Pre-formatted activity log footer.
+        refined_reasoning: Pre-refined reasoning from the thought refiner.
+            If provided, this is used instead of truncating the raw reasoning.
+            The caller should ``await refine_async()`` before calling this
+            function and pass the result here.
 
     Returns:
         Formatted response string.
@@ -222,12 +225,8 @@ def build_non_streaming_response(
         and answer.strip() == captured_reasoning.strip()
     )
     if captured_reasoning.strip() and not reasoning_is_answer:
-        if thought_refiner and thought_refiner.is_available:
-            # Note: this is sync context — caller should await refine_async
-            # before calling this function and pass the refined text.
-            refined = captured_reasoning[:500]
-            if len(captured_reasoning) > 500:
-                refined += "…"
+        if refined_reasoning:
+            refined = refined_reasoning
         else:
             refined = captured_reasoning[:500]
             if len(captured_reasoning) > 500:

@@ -123,9 +123,10 @@ def agent_url(request: pytest.FixtureRequest) -> str:
 
 
 @pytest.fixture(scope="session")
-def client(agent_url: str) -> httpx.Client:
+def client(agent_url: str):
     """Shared httpx client for all tests."""
-    return httpx.Client(base_url=agent_url, timeout=600)
+    with httpx.Client(base_url=agent_url, timeout=600) as c:
+        yield c
 
 
 def _stream_request(

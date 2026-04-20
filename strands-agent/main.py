@@ -51,13 +51,10 @@ try:
 except ImportError:
     _HAS_OBSERVABILITY = False
 
-# ── Thought refinement middleware ──────────────────────────────────────
-# Transforms chaotic agent reasoning into user-friendly status updates.
-try:
-    from thought_refiner import refine_async, REFINER_ENABLED
-    _HAS_REFINER = True
-except ImportError:
-    _HAS_REFINER = False
+# ── SDK-native plugins ────────────────────────────────────────────────
+# Plugins are instantiated in agent.py and imported here for use in the
+# SSE streaming handler and response formatting.
+from plugins.tool_display import tool_label, sanitize_for_italic, format_footer
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +66,11 @@ _deep_agent = None
 _mcp_clients: list = []
 _multi_researcher = None
 _agent_lock = threading.Lock()
+
+# Lazy-loaded plugin references (set in lifespan from agent module)
+_stream_capture = None
+_thought_refiner = None
+_budget_plugin = None
 
 
 # ── Observability wrappers ────────────────────────────────────────────
@@ -97,18 +99,8 @@ def _format_inline_log(tool_events: list[dict], elapsed: float, query: str = "",
             tool_events, elapsed,
             query=query, model=model, reasoning=reasoning, metrics=metrics,
         )
-    # Minimal fallback: user-friendly one-liner
-    unique_tools = {e.get("tool", "") for e in tool_events}
-    unique_tools.discard("")
-    n_sources = len(unique_tools)
-    if n_sources == 0:
-        if elapsed > 1.0:
-            return f"\n\n---\n*Completed in {elapsed:.0f}s*\n"
-        return ""
-    time_str = f"{elapsed:.0f}s" if elapsed >= 1 else "<1s"
-    if n_sources == 1:
-        return f"\n\n---\n*Researched using 1 source in {time_str}*\n"
-    return f"\n\n---\n*Researched using {n_sources} sources in {time_str}*\n"
+    # Fallback: use ToolDisplayPlugin's footer formatter
+    return format_footer(tool_events, elapsed)
 
 
 def _store_log(req_id: str, entry: dict) -> None:
@@ -143,15 +135,24 @@ def _extract_usage(metrics_summary: dict | None) -> dict[str, int]:
 async def lifespan(app: FastAPI):
     """Startup: create agents. Shutdown: close MCP connections."""
     global _single_agent, _multi_agent, _deep_agent, _multi_researcher, _mcp_clients
+    global _stream_capture, _thought_refiner, _budget_plugin
 
     from agent import (
         _enter_mcp_clients,
         _setup_otel,
+        budget_plugin,
         create_deep_agent_instance,
         create_multi_agent,
         create_single_agent,
+        stream_capture,
+        thought_refiner,
     )
     from tools import get_all_mcp_clients
+
+    # Store plugin references for use in request handlers
+    _stream_capture = stream_capture
+    _thought_refiner = thought_refiner
+    _budget_plugin = budget_plugin
 
     logging.basicConfig(
         level=logging.INFO,
@@ -377,10 +378,10 @@ def query_single(req: QueryRequest):
     start = time.time()
     req_id = f"query-{uuid.uuid4().hex[:12]}"
     with _agent_lock:
-        from agent import reset_budget
+        from agent import reset_plugins
 
         _single_agent.messages.clear()
-        reset_budget()
+        reset_plugins()
         try:
             response = _single_agent(req.query)
             metrics = None
@@ -412,12 +413,12 @@ def query_multi(req: QueryRequest):
     start = time.time()
     req_id = f"query-{uuid.uuid4().hex[:12]}"
     with _agent_lock:
-        from agent import reset_budget
+        from agent import reset_plugins
 
         _multi_agent.messages.clear()
         if _multi_researcher is not None:
             _multi_researcher.messages.clear()
-        reset_budget()
+        reset_plugins()
         try:
             response = _multi_agent(req.query)
             metrics = None
@@ -493,7 +494,7 @@ def _dispatch_agent(
     content (e.g. it ended on a tool call), falls back to the captured
     streamed text via ``stream_capture.response_text``.
     """
-    from agent import reset_budget, stream_capture
+    from agent import reset_plugins
 
     metrics_summary = None
 
@@ -508,7 +509,7 @@ def _dispatch_agent(
             _multi_agent.messages.clear()
             if _multi_researcher is not None:
                 _multi_researcher.messages.clear()
-        reset_budget()
+        reset_plugins()
         agent_result = _multi_agent(user_message)
         result = str(agent_result)
         try:
@@ -524,7 +525,7 @@ def _dispatch_agent(
             )
         else:
             _deep_agent.messages.clear()
-        reset_budget()
+        reset_plugins()
         agent_result = _deep_agent(user_message)
         result = str(agent_result)
         try:
@@ -538,7 +539,7 @@ def _dispatch_agent(
             )
         else:
             _single_agent.messages.clear()
-        reset_budget()
+        reset_plugins()
         agent_result = _single_agent(user_message)
         result = str(agent_result)
         try:
@@ -550,8 +551,8 @@ def _dispatch_agent(
 
     # Fallback: if the agent result has no text, use captured text.
     # Venice GLM with reasoning:high may send answer as reasoningText only.
-    if not result.strip() and (stream_capture.response_text or stream_capture.reasoning_text):
-        result = "".join(stream_capture.response_text) or "".join(stream_capture.reasoning_text)
+    if not result.strip() and _stream_capture and (_stream_capture.response_text or _stream_capture.reasoning_text):
+        result = "".join(_stream_capture.response_text) or "".join(_stream_capture.reasoning_text)
     return result, metrics_summary
 
 
@@ -561,80 +562,21 @@ def _run_agent(
     chat_messages: list[ChatMessage] | None = None,
 ) -> tuple[str, dict | None]:
     """Dispatch to the correct agent under lock (convenience wrapper)."""
-    from agent import stream_capture
-
     with _agent_lock:
-        stream_capture.activate()
+        _stream_capture.activate()
         try:
             return _dispatch_agent(model, user_message, chat_messages=chat_messages)
         finally:
-            stream_capture.deactivate()
+            _stream_capture.deactivate()
 
 
-def _tool_label(tool_name: str, tool_input: str) -> str:
-    """Build a short, human-friendly label for a tool call.
-
-    Instead of ``Using task``, produce something like ``Researching Tor
-    protocols`` by extracting the first meaningful phrase from the tool
-    input.  Keeps the label under ~60 chars so it stays on one line.
-    """
-    import re
-    # Map well-known tools to friendly verbs
-    _VERB_MAP = {
-        "task": "Researching",
-        "write_todos": "Planning next steps",
-        "brave_web_search": "Searching",
-        "exa_search": "Searching",
-        "duckduckgo_search": "Searching",
-        "firecrawl_scrape": "Reading",
-        "read_url": "Reading",
-        "http_request": "Fetching",
-    }
-    verb = _VERB_MAP.get(tool_name)
-    if verb:
-        # Extract a brief subject from the tool input
-        # tool_input is str(dict) like "{'description': 'Research Tor ...'}"
-        # Try to pull the first quoted value or first sentence fragment
-        subject = ""
-        # Try dict-style 'key': 'value' — grab first string value
-        m = re.search(r"'(?:description|query|url|topic|search_query)':\s*'([^']{3,})'", tool_input)
-        if not m:
-            m = re.search(r'"(?:description|query|url|topic|search_query)":\s*"([^"]{3,})"', tool_input)
-        if m:
-            subject = m.group(1).strip()
-        else:
-            # Fallback: grab first chunk of alphanumeric text
-            cleaned = re.sub(r"[{}'\"\[\]]", " ", tool_input)
-            cleaned = re.sub(r"\s+", " ", cleaned).strip()
-            if len(cleaned) > 5:
-                subject = cleaned
-
-        if subject:
-            # Truncate to keep it brief
-            if len(subject) > 50:
-                subject = subject[:47] + "..."
-            safe = _sanitize_for_italic(subject)
-            return f"{verb} {safe}"
-        return verb
-
-    # Fallback: just capitalise the tool name
-    display = tool_name.replace("_", " ").capitalize()
-    return _sanitize_for_italic(display)
-
-
-def _sanitize_for_italic(text: str) -> str:
-    """Collapse newlines/whitespace so text can be wrapped in *...* italic markdown.
-
-    Markdown emphasis spans cannot cross blank lines — if the enclosed text
-    contains ``\\n\\n``, the ``*`` markers won't render as italic and users
-    will see raw asterisks.  Literal ``*`` characters inside the text also
-    break the surrounding italic markers.  This helper removes ``*``,
-    replaces all newlines with spaces, and collapses consecutive whitespace
-    into a single space.
-    """
-    import re
-    text = text.replace("*", "")
-    return re.sub(r"\s+", " ", text).strip()
+# _tool_label and _sanitize_for_italic have been moved to
+# plugins/tool_display.py.  The module-level functions tool_label()
+# and sanitize_for_italic() are imported at the top of this file.
+# Legacy _tool_label() calls in the streaming handler below now use
+# the imported tool_label() directly.
+_tool_label = tool_label
+_sanitize_for_italic = sanitize_for_italic
 
 
 def _openai_chunk(req_id: str, model: str, content: str, finish: bool = False) -> str:
@@ -667,8 +609,6 @@ async def openai_chat_completions(body: ChatCompletionRequest):
     and searches. A per-request activity log is stored and accessible
     at ``GET /logs/{request_id}``.
     """
-    from agent import stream_capture
-
     model = body.model
     stream = body.stream
     req_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
@@ -713,7 +653,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
 
         def _agent_thread():
             with _agent_lock:
-                token_q = stream_capture.activate()
+                token_q = _stream_capture.activate()
                 queue_holder["q"] = token_q
                 queue_ready.set()
                 try:
@@ -728,11 +668,11 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                     # Strip internal _tool_use_ref before exposing events.
                     result_holder["tool_events"] = [
                         {k: v for k, v in ev.items() if k != "_tool_use_ref"}
-                        for ev in stream_capture.tool_events
+                        for ev in _stream_capture.tool_events
                     ]
-                    result_holder["streamed_text"] = "".join(stream_capture.response_text)
-                    result_holder["reasoning_text"] = "".join(stream_capture.reasoning_text)
-                    stream_capture.deactivate()
+                    result_holder["streamed_text"] = "".join(_stream_capture.response_text)
+                    result_holder["reasoning_text"] = "".join(_stream_capture.reasoning_text)
+                    _stream_capture.deactivate()
 
         thread = threading.Thread(target=_agent_thread, daemon=True)
         thread.start()
@@ -790,12 +730,12 @@ async def openai_chat_completions(body: ChatCompletionRequest):
 
                 # Normal case: thinking followed by tools/answer.
                 # Refine and wrap in a collapsible block.
-                if _HAS_REFINER:
+                if _thought_refiner and _thought_refiner.is_available:
                     # Emit prefix immediately to keep SSE alive while
                     # the refiner API call completes (up to 20s).
                     yield _openai_chunk(req_id, model, "*💭 ")
-                    refined = await refine_async(raw_thinking)
-                    safe = _sanitize_for_italic(refined)
+                    refined = await _thought_refiner.refine_async(raw_thinking)
+                    safe = sanitize_for_italic(refined)
                     yield _openai_chunk(
                         req_id, model,
                         f"{safe}*\n\n"
@@ -925,7 +865,7 @@ async def openai_chat_completions(body: ChatCompletionRequest):
     # for health checks, SSE heartbeats, and new request acceptance.
     def _sync_non_streaming():
         with _agent_lock:
-            stream_capture.activate()
+            _stream_capture.activate()
             try:
                 answer, metrics = _dispatch_agent(model, user_message, chat_messages=chat_messages)
             except Exception as exc:
@@ -936,11 +876,11 @@ async def openai_chat_completions(body: ChatCompletionRequest):
                 # Strip internal _tool_use_ref before exposing events.
                 captured_tool_events = [
                     {k: v for k, v in ev.items() if k != "_tool_use_ref"}
-                    for ev in stream_capture.tool_events
+                    for ev in _stream_capture.tool_events
                 ]
-                captured_all_text = "".join(stream_capture.response_text)
-                captured_reasoning = "".join(stream_capture.reasoning_text)
-                stream_capture.deactivate()
+                captured_all_text = "".join(_stream_capture.response_text)
+                captured_reasoning = "".join(_stream_capture.reasoning_text)
+                _stream_capture.deactivate()
         return answer, metrics, captured_tool_events, captured_all_text, captured_reasoning
 
     try:
@@ -976,8 +916,8 @@ async def openai_chat_completions(body: ChatCompletionRequest):
     )
     if captured_reasoning.strip() and not reasoning_is_answer:
         # Refine the thinking via fast LLM if available
-        if _HAS_REFINER:
-            refined_reasoning = await refine_async(captured_reasoning)
+        if _thought_refiner and _thought_refiner.is_available:
+            refined_reasoning = await _thought_refiner.refine_async(captured_reasoning)
         else:
             refined_reasoning = captured_reasoning[:500]
             if len(captured_reasoning) > 500:

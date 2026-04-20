@@ -19,6 +19,7 @@ dependencies = [
 test = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+    "pytest-json-report>=1.5",
 ]
 
 [build-system]

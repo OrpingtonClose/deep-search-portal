@@ -78,6 +78,26 @@ class StreamCapturePlugin(Plugin):
                 self._queue.put(None)
             self._queue = None
 
+    def _update_tool_input(self, current: Any) -> None:
+        """Update tool input from a live current_tool_use reference.
+
+        At contentBlockStart the input is typically empty; it arrives
+        incrementally via later callbacks.  Read accumulated input from
+        the live reference and update the stored event so that the
+        non-streaming path has full input for tool labels and activity logs.
+        """
+        if not current or not isinstance(current, dict):
+            return
+        tid = current.get("toolUseId", "")
+        if not tid or tid not in self._tool_use_refs:
+            return
+        raw_input = current.get("input", "")
+        if raw_input and str(raw_input) not in ("", "{}"):
+            for ev in self.tool_events:
+                if ev.get("_tool_use_ref") is current:
+                    ev["input"] = str(raw_input)[:500]
+                    break
+
     def callback_handler(self, **kwargs: Any) -> None:
         """Raw callback for per-token streaming into the SSE queue.
 
@@ -93,28 +113,35 @@ class StreamCapturePlugin(Plugin):
         reasoning = kwargs.get("reasoningText", "")
         data = kwargs.get("data", "")
 
-        if reasoning:
+        if reasoning and isinstance(reasoning, str):
             self.reasoning_text.append(reasoning)
             self.all_text.append(reasoning)
             q.put(("thinking", reasoning))
 
-        if data:
+        if data and isinstance(data, str):
             self.response_text.append(data)
             self.all_text.append(data)
             q.put(("text", data))
 
-        # Detect new tool use from contentBlockStart
-        tool_use = (
-            kwargs.get("event", {})
-            .get("contentBlockStart", {})
-            .get("start", {})
-            .get("toolUse")
-        )
+        # Detect new tool use — try current_tool_use first (primary),
+        # fall back to contentBlockStart event (secondary).  This matches
+        # the old StreamCapture.__call__ detection order.
         current = kwargs.get("current_tool_use")
+        tool_use = None
+        if current and isinstance(current, dict) and current.get("name"):
+            tool_use = current
+        if not tool_use or not tool_use.get("name"):
+            tool_use = (
+                kwargs.get("event", {})
+                .get("contentBlockStart", {})
+                .get("start", {})
+                .get("toolUse")
+            )
 
         if tool_use and tool_use.get("name"):
             tid = tool_use.get("toolUseId", "")
             if tid and tid not in self._seen_tool_ids:
+                # New tool — register it
                 self._seen_tool_ids.add(tid)
                 ev: dict[str, Any] = {
                     "tool": tool_use["name"],
@@ -126,22 +153,13 @@ class StreamCapturePlugin(Plugin):
                     self._tool_use_refs[tid] = current
                 self.tool_events.append(ev)
                 q.put(("tool", ev))
+            elif tid and tid in self._tool_use_refs:
+                # Known tool — update input from live reference
+                self._update_tool_input(current)
         else:
-            # Update tool input from subsequent contentBlockDelta callbacks.
-            # At contentBlockStart the input is typically empty; it arrives
-            # incrementally via later callbacks.  Read accumulated input from
-            # the live _tool_use_ref and update the stored event so that the
-            # non-streaming path (which strips _tool_use_ref) has full input
-            # for tool labels and activity logs.
-            if current and isinstance(current, dict):
-                tid = current.get("toolUseId", "")
-                if tid and tid in self._tool_use_refs:
-                    raw_input = current.get("input", "")
-                    if raw_input and str(raw_input) not in ("", "{}"):
-                        for ev in self.tool_events:
-                            if ev.get("_tool_use_ref") is current:
-                                ev["input"] = str(raw_input)[:500]
-                                break
+            # No tool_use detected — still try to update input from
+            # the live current_tool_use reference (contentBlockDelta path).
+            self._update_tool_input(current)
 
     @hook
     def on_before_tool(self, event: BeforeToolCallEvent) -> None:

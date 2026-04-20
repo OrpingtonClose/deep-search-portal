@@ -39,6 +39,7 @@ from prompts import (
     DEEP_CITATIONS_PROMPT,
     DEEP_RESEARCHER_PROMPT,
     PLANNER_PROMPT,
+    RAG_SYSTEM_PROMPT,
     RESEARCHER_PROMPT,
     SYSTEM_PROMPT,
 )
@@ -310,6 +311,35 @@ def create_single_agent(tool_list=None, mcp_clients=None):
     agent = Agent(
         model=model,
         system_prompt=SYSTEM_PROMPT,
+        tools=tool_list,
+        conversation_manager=conversation_manager,
+        callback_handler=_build_callback_handler(),
+    )
+    return agent, mcp_clients or []
+
+
+def create_rag_agent(tool_list=None, mcp_clients=None):
+    """Create a single-agent setup with the RAG system prompt.
+
+    Identical to :func:`create_single_agent` but uses
+    :data:`RAG_SYSTEM_PROMPT`.  The RAG system prompt contains a
+    ``{context}`` placeholder that is replaced at dispatch time with
+    results retrieved from the Knowledge Engine.
+    """
+    model = build_model()
+    owns_clients = tool_list is None
+    if owns_clients:
+        mcp_clients = get_all_mcp_clients()
+        tool_list = _enter_mcp_clients(mcp_clients)
+
+    conversation_manager = SlidingWindowConversationManager(
+        window_size=20,
+        should_truncate_results=True,
+    )
+
+    agent = Agent(
+        model=model,
+        system_prompt=RAG_SYSTEM_PROMPT,
         tools=tool_list,
         conversation_manager=conversation_manager,
         callback_handler=_build_callback_handler(),

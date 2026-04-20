@@ -350,6 +350,15 @@ modelSpecs:
     preset:
       endpoint: Strands Agent
       model: strands-venice-deep
+  - name: strands-rag-agent
+    label: Strands RAG Agent
+    description: Single agent with Knowledge Engine RAG — retrieves prior research
+      findings and ingested documents before searching. Combines graph-based knowledge
+      retrieval with live web search tools.
+    group: Strands
+    preset:
+      endpoint: Strands Agent
+      model: strands-venice-rag
 endpoints:
   custom:
   - name: Mistral Thinking
@@ -710,6 +719,7 @@ endpoints:
       - strands-venice-single
       - strands-venice-multi
       - strands-venice-deep
+      - strands-venice-rag
       fetch: true
     titleConvo: true
     titleModel: mistral-large-thinking

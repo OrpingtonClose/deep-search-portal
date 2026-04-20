@@ -66,6 +66,7 @@ logger = logging.getLogger(__name__)
 _single_agent = None
 _multi_agent = None
 _deep_agent = None
+_rag_agent = None
 _mcp_clients: list = []
 _multi_researcher = None
 _agent_lock = threading.Lock()
@@ -142,13 +143,14 @@ def _extract_usage(metrics_summary: dict | None) -> dict[str, int]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: create agents. Shutdown: close MCP connections."""
-    global _single_agent, _multi_agent, _deep_agent, _multi_researcher, _mcp_clients
+    global _single_agent, _multi_agent, _deep_agent, _rag_agent, _multi_researcher, _mcp_clients
 
     from agent import (
         _enter_mcp_clients,
         _setup_otel,
         create_deep_agent_instance,
         create_multi_agent,
+        create_rag_agent,
         create_single_agent,
     )
     from tools import get_all_mcp_clients
@@ -202,6 +204,17 @@ async def lifespan(app: FastAPI):
         logger.info("Deep agent ready")
     except Exception:
         logger.exception("Failed to create deep agent")
+
+    try:
+        _rag_agent, _ = create_rag_agent(
+            tool_list=tool_list, mcp_clients=_mcp_clients
+        )
+        logger.info(
+            "RAG agent ready \u2014 %d tools",
+            len(_rag_agent.tool_registry.get_all_tools_config()),
+        )
+    except Exception:
+        logger.exception("Failed to create RAG agent")
 
     yield
 
@@ -345,6 +358,7 @@ async def health():
         "single_agent": _single_agent is not None,
         "multi_agent": _multi_agent is not None,
         "deep_agent": _deep_agent is not None,
+        "rag_agent": _rag_agent is not None,
     }
 
 
@@ -445,6 +459,7 @@ def query_multi(req: QueryRequest):
 _MODEL_SINGLE = "strands-venice-single"
 _MODEL_MULTI = "strands-venice-multi"
 _MODEL_DEEP = "strands-venice-deep"
+_MODEL_RAG = "strands-venice-rag"
 
 
 @app.get("/v1/models")
@@ -471,6 +486,12 @@ async def openai_models():
                     "object": "model",
                     "created": 1700000000,
                     "owned_by": "strands-deep-agents",
+                },
+                {
+                    "id": _MODEL_RAG,
+                    "object": "model",
+                    "created": 1700000000,
+                    "owned_by": "strands-venice-agent",
                 },
             ],
         }
@@ -531,6 +552,89 @@ def _dispatch_agent(
             metrics_summary = agent_result.metrics.get_summary()
         except Exception:
             pass
+    elif model == _MODEL_RAG:
+        if _rag_agent is None:
+            raise RuntimeError("RAG agent not initialised")
+
+        # --- RAG: retrieve context from Knowledge Engine ---
+        # knowledge_client functions are async; _dispatch_agent runs in a
+        # sync thread (under _agent_lock).  Spin up a short-lived event
+        # loop to run the two async calls back-to-back.
+        rag_context = ""
+        try:
+            import knowledge_client
+
+            loop = asyncio.new_event_loop()
+            try:
+                search_result = loop.run_until_complete(
+                    knowledge_client.search(
+                        namespace="research",
+                        query=user_message,
+                        mode="hybrid",
+                        limit=10,
+                        cross_namespace=True,
+                    )
+                )
+                conditions = loop.run_until_complete(
+                    knowledge_client.search_conditions(
+                        query=user_message,
+                        namespace="research",
+                        limit=10,
+                    )
+                )
+            finally:
+                loop.close()
+
+            parts: list[str] = []
+            results = search_result.get("results", []) if isinstance(search_result, dict) else []
+            if results:
+                parts.append("### Knowledge Graph Results")
+                for r in results:
+                    name = r.get("name", "")
+                    content = r.get("content", "")
+                    node_type = r.get("node_type", "")
+                    if name:
+                        parts.append(f"- **[{node_type}]** {name}: {content}")
+                    else:
+                        parts.append(f"- **[{node_type}]** {content}")
+
+            if conditions:
+                parts.append("\n### Prior Research Findings")
+                for c in conditions:
+                    fact = c.get("fact", "")
+                    source = c.get("source_url", "")
+                    confidence = c.get("confidence", 0)
+                    line = f"- {fact}"
+                    if source:
+                        line += f" (source: {source})"
+                    if confidence:
+                        line += f" [confidence: {confidence}]"
+                    parts.append(line)
+
+            rag_context = "\n".join(parts) if parts else "(No relevant prior knowledge found)"
+        except Exception as e:
+            logger.warning("RAG retrieval failed: %s", e)
+            rag_context = "(Knowledge Engine unavailable \u2014 proceeding without prior knowledge)"
+
+        # Inject RAG context into the system prompt for this turn only.
+        from prompts import RAG_SYSTEM_PROMPT
+        original_prompt = _rag_agent.system_prompt
+        _rag_agent.system_prompt = RAG_SYSTEM_PROMPT.replace("{context}", rag_context)
+
+        if chat_messages:
+            user_message = _load_conversation_history(_rag_agent, chat_messages)
+        else:
+            _rag_agent.messages.clear()
+        reset_budget()
+        try:
+            agent_result = _rag_agent(user_message)
+            result = str(agent_result)
+            try:
+                metrics_summary = agent_result.metrics.get_summary()
+            except Exception:
+                pass
+        finally:
+            _rag_agent.system_prompt = original_prompt
     elif _single_agent is not None:
         if chat_messages:
             user_message = _load_conversation_history(

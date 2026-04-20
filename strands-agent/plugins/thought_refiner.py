@@ -46,14 +46,15 @@ REFINER_ENABLED = os.environ.get("REFINER_ENABLED", "1").lower() not in (
 # ── Refiner prompt ────────────────────────────────────────────────────
 
 REFINER_SYSTEM_PROMPT = """\
-You rewrite raw AI agent reasoning into a brief, friendly status update.
+You rewrite raw AI agent reasoning into engaging, readable prose.
 
 Rules:
-- 2-4 sentences maximum, plain English
+- 2-5 sentences, flowing prose — like a narrator describing a detective at work
 - Present tense: "Searching for...", "Found that...", "Looking into..."
-- Sound like a helpful colleague giving a quick update, not a technical report
-- Mention what the agent is doing and any interesting findings so far
-- NO quotes, NO code, NO backticks, NO markdown formatting
+- Sprinkle in interesting specifics from the reasoning — a surprising fact, \
+a notable source, a clever connection the agent is making
+- Sound curious and engaged, not clinical — make the reader want to keep reading
+- NO quotes, NO code, NO backticks, NO markdown formatting, NO asterisks
 - NO disclaimers or meta-commentary
 - NO bullet points, headers, or lists
 - NO references to "the agent", "the model", "the system" — just describe the action

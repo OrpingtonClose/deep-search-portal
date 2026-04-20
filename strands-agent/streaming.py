@@ -18,7 +18,7 @@ import time
 from typing import Any, AsyncGenerator
 
 from plugins.thought_refiner import ThoughtRefinerPlugin
-from plugins.tool_display import sanitize_for_italic, tool_label
+from plugins.tool_display import tool_label
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +69,11 @@ async def generate_sse(
 
     Layout::
 
-        *💭 refined summary*
+        <details><summary>💭 Thinking</summary>
+        refined prose with interesting specifics
+        </details>
         🔧 *Researching topic X*
         🔧 *Reading URL*
-        ---
-        **Answer:**
         <final answer text>
         *Researched using N sources in Xs*
 
@@ -122,16 +122,14 @@ async def generate_sse(
 
         # Normal case: thinking followed by tools/answer.
         if thought_refiner and thought_refiner.is_available:
-            yield openai_chunk(req_id, model, "*💭 ")
+            yield openai_chunk(req_id, model, "<details>\n<summary>💭 Thinking</summary>\n\n")
             refined = await thought_refiner.refine_async(raw_thinking)
-            safe = sanitize_for_italic(refined)
-            yield openai_chunk(req_id, model, f"{safe}*\n\n")
+            yield openai_chunk(req_id, model, f"{refined}\n\n</details>\n\n")
         else:
             truncated = raw_thinking[:500]
             if len(raw_thinking) > 500:
                 truncated += "…"
-            safe = sanitize_for_italic(truncated)
-            yield openai_chunk(req_id, model, f"*💭 {safe}*\n\n")
+            yield openai_chunk(req_id, model, f"<details>\n<summary>💭 Thinking</summary>\n\n{truncated}\n\n</details>\n\n")
 
     while True:
         try:
@@ -172,7 +170,7 @@ async def generate_sse(
             async for chunk in _flush_thinking():
                 yield chunk
             if not has_answer_text and tool_count > 0:
-                yield openai_chunk(req_id, model, "\n---\n\n**Answer:**\n\n")
+                yield openai_chunk(req_id, model, "\n---\n\n")
             has_answer_text = True
             yield openai_chunk(req_id, model, data)
 
@@ -231,14 +229,14 @@ def build_non_streaming_response(
             refined = captured_reasoning[:500]
             if len(captured_reasoning) > 500:
                 refined += "…"
-        parts.append(f"*💭 {sanitize_for_italic(refined)}*\n\n")
+        parts.append(f"<details>\n<summary>💭 Thinking</summary>\n\n{refined}\n\n</details>\n\n")
 
     # Tool call labels
     if captured_tool_events:
         for ev in captured_tool_events:
             label = tool_label(ev.get("tool", "unknown"), ev.get("input", ""))
             parts.append(f"🔧 *{label}*\n\n")
-        parts.append("\n---\n\n**Answer:**\n\n")
+        parts.append("\n---\n\n")
 
     parts.append(answer)
     parts.append(inline_log)

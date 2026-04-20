@@ -65,7 +65,7 @@ class TestBuildNonStreamingResponse:
             inline_log="",
         )
         assert "🔧" in result
-        assert "**Answer:**" in result
+        assert "---" in result
         assert "result" in result
 
     def test_with_reasoning(self) -> None:
@@ -76,6 +76,7 @@ class TestBuildNonStreamingResponse:
             inline_log="",
         )
         assert "💭" in result
+        assert "<details>" in result
         assert "final answer" in result
 
     def test_reasoning_same_as_answer_suppressed(self) -> None:
@@ -125,10 +126,10 @@ class TestBuildNonStreamingResponse:
             captured_reasoning="Let me think about this.",
             inline_log="\n*footer*",
         )
-        # Ordering: thinking → tools → answer separator → answer → footer
+        # Ordering: thinking → tools → separator → answer → footer
         think_pos = result.index("💭")
         tool_pos = result.index("🔧")
-        answer_pos = result.index("**Answer:**")
+        separator_pos = result.index("---")
         content_pos = result.index("The answer is 42.")
         footer_pos = result.index("*footer*")
-        assert think_pos < tool_pos < answer_pos < content_pos < footer_pos
+        assert think_pos < tool_pos < separator_pos < content_pos < footer_pos

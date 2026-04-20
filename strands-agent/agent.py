@@ -1,17 +1,16 @@
 # Copyright (c) 2025 deep-search-portal
 # This source code is licensed under the Apache 2.0 License.
 
-"""
-Venice GLM-4.7 uncensored research agent — Strands Agents SDK.
+"""Venice GLM-4.7 uncensored research agent — Strands Agents SDK.
 
 Features used:
 - OpenAI-compatible model provider (Venice AI)
 - MCP tool integration (Brave, Firecrawl, Exa, Kagi)
-- Streaming responses (PrintingCallbackHandler)
+- SDK-native plugins (BudgetPlugin, StreamCapturePlugin, ThoughtRefinerPlugin, ToolDisplayPlugin)
+- Streaming responses (PrintingCallbackHandler + StreamCapturePlugin)
 - Conversation memory (SlidingWindowConversationManager)
 - Agent loop with automatic tool dispatch
 - Multi-agent orchestration (planner + researcher via agent-as-tool)
-- Guardrails (callback-based pre/post processing with budget limits)
 - Adaptive loop prevention (Plugin + @hook — temperature escalation)
 - OpenTelemetry observability (OTEL_EXPORTER_OTLP_ENDPOINT)
 """
@@ -20,20 +19,22 @@ from __future__ import annotations
 
 import logging
 import os
-import queue
 import sys
-import threading
-import time
+from typing import Any
 
 from dotenv import load_dotenv
-from strands import Agent
+from strands import Agent, Plugin
+from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.handlers.callback_handler import (
     CompositeCallbackHandler,
     PrintingCallbackHandler,
 )
-from strands.agent.conversation_manager import SlidingWindowConversationManager
 
 from config import build_model
+from plugins.budget import BudgetPlugin
+from plugins.stream_capture import StreamCapturePlugin
+from plugins.thought_refiner import ThoughtRefinerPlugin
+from plugins.tool_display import ToolDisplayPlugin
 from prompts import (
     DEEP_AGENT_INSTRUCTIONS,
     DEEP_CITATIONS_PROMPT,
@@ -46,185 +47,56 @@ from tools import get_all_mcp_clients
 
 logger = logging.getLogger(__name__)
 
-# ── Guardrails: budget tracking callback ─────────────────────────────
-# Tracks actual tool invocations (not user queries) via Strands' callback
-# system.  The callback fires for every streaming event; we only increment
-# when ``current_tool_use`` is present with a tool ``name`` and we haven't
-# already counted that specific invocation (keyed by ``toolUseId``).
+# ── Shared plugin instances ──────────────────────────────────────────
+# Created once at module level so the FastAPI server can access them
+# from main.py (e.g. stream_capture.activate() in the SSE handler).
 
-_session_start = time.time()
-_tool_call_count = 0
-_seen_tool_use_ids: set[str] = set()
-_MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", "200"))
-_SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT", "3600"))
+budget_plugin = BudgetPlugin()
+stream_capture = StreamCapturePlugin()
+thought_refiner = ThoughtRefinerPlugin()
+tool_display = ToolDisplayPlugin()
 
 # Module-level reference to the AdaptiveLoopPlugin instance (if created).
-# Set by create_multi_agent() so reset_budget() can call plugin.reset().
-_adaptive_plugin = None
+# Set by create_multi_agent() so reset_plugins() can call plugin.reset().
+_adaptive_plugin: Any = None
 
 
-def reset_budget() -> None:
-    """Reset per-request budget counters and adaptive plugin state.
+def get_default_plugins() -> list[Plugin]:
+    """Return the standard plugin set for all agents.
 
-    Call this before each HTTP request so that budget globals don't
-    accumulate across requests in a long-running server process.
-    Also resets the AdaptiveLoopPlugin (query history + temperature)
-    if one is registered.
+    Returns:
+        List of SDK Plugin instances.
     """
-    global _session_start, _tool_call_count, _seen_tool_use_ids
-    _session_start = time.time()
-    _tool_call_count = 0
-    _seen_tool_use_ids = set()
+    return [budget_plugin, stream_capture, thought_refiner, tool_display]
+
+
+def reset_plugins() -> None:
+    """Reset per-request state on all plugins.
+
+    Call this before each HTTP request so that plugin state doesn't
+    accumulate across requests in a long-running server process.
+    """
+    budget_plugin.reset()
     if _adaptive_plugin is not None:
         _adaptive_plugin.reset()
 
 
-def budget_callback(**kwargs) -> None:
-    """Callback-handler guardrail that counts actual tool invocations.
+def _build_callback_handler() -> CompositeCallbackHandler:
+    """Build a composite callback handler.
 
-    Strands fires this callback for every streaming event.  We detect new
-    tool calls by checking for the ``current_tool_use`` kwarg with a tool
-    ``name`` and a unique ``toolUseId``.  Each unique ID is counted once.
+    Combines PrintingCallbackHandler (stdout for REPL) with
+    StreamCapturePlugin's raw callback (per-token SSE streaming).
+
+    Returns:
+        CompositeCallbackHandler with printing and stream capture.
     """
-    global _tool_call_count
-
-    tool_use = kwargs.get("current_tool_use")
-    if not tool_use or not tool_use.get("name"):
-        return
-
-    tool_use_id = tool_use.get("toolUseId", "")
-    if tool_use_id in _seen_tool_use_ids:
-        return
-    _seen_tool_use_ids.add(tool_use_id)
-
-    _tool_call_count += 1
-
-    elapsed = time.time() - _session_start
-    if elapsed > _SESSION_TIMEOUT:
-        logger.warning(
-            "Session timeout reached (%.0fs > %ds). Consider wrapping up.",
-            elapsed,
-            _SESSION_TIMEOUT,
-        )
-
-    if _tool_call_count > _MAX_TOOL_CALLS:
-        logger.warning(
-            "Tool call budget exceeded (%d > %d). Consider wrapping up.",
-            _tool_call_count,
-            _MAX_TOOL_CALLS,
-        )
-
-    if _tool_call_count % 10 == 0:
-        logger.info(
-            "Budget: %d tool calls, %.0fs elapsed",
-            _tool_call_count,
-            elapsed,
-        )
-
-
-class StreamCapture:
-    """Thread-safe callback that captures streaming tokens to a queue.
-
-    Activate before a request to start capturing; deactivate after.
-    When no queue is active, tokens are silently dropped.
-    ``PrintingCallbackHandler`` is included separately in the composite
-    handler so REPL users still see real-time stdout output.
-    """
-
-    def __init__(self):
-        self._queue: queue.Queue | None = None
-        self._lock = threading.Lock()
-        self.tool_events: list[dict] = []
-        self._seen_tool_ids: set[str] = set()
-        self.all_text: list[str] = []
-        self.response_text: list[str] = []
-        self.reasoning_text: list[str] = []
-
-    def activate(self) -> queue.Queue:
-        """Start capturing. Returns queue the caller reads from."""
-        with self._lock:
-            q: queue.Queue = queue.Queue()
-            self._queue = q
-            self.tool_events.clear()
-            self._seen_tool_ids.clear()
-            self.all_text.clear()
-            self.response_text.clear()
-            self.reasoning_text.clear()
-            return q
-
-    def deactivate(self):
-        """Stop capturing and send sentinel so readers know we're done."""
-        with self._lock:
-            if self._queue is not None:
-                self._queue.put(None)
-            self._queue = None
-
-    def __call__(self, **kwargs):
-        # Only accumulate data when a consumer is actively capturing
-        # (i.e. activate() has been called).  This prevents unbounded
-        # memory growth from /query endpoints that never activate.
-        with self._lock:
-            active = self._queue is not None
-        if not active:
-            return
-
-        # Capture streaming text tokens (both regular data and reasoning text)
-        data = kwargs.get("data", "")
-        reasoning = kwargs.get("reasoningText", "")
-
-        # Track reasoning and response text separately.
-        # all_text = everything (for logging); response_text = data only (for answer fallback)
-        if reasoning and isinstance(reasoning, str):
-            self.all_text.append(reasoning)
-            self.reasoning_text.append(reasoning)
-            with self._lock:
-                if self._queue is not None:
-                    self._queue.put(("thinking", reasoning))
-
-        if data and isinstance(data, str):
-            self.all_text.append(data)
-            self.response_text.append(data)
-            with self._lock:
-                if self._queue is not None:
-                    self._queue.put(("text", data))
-
-        # Capture tool invocations (deduplicated by toolUseId)
-        # Tools can come via either 'current_tool_use' or 'event.contentBlockStart'
-        tool_use = kwargs.get("current_tool_use")
-        if not tool_use or not tool_use.get("name"):
-            tool_use = (
-                kwargs.get("event", {})
-                .get("contentBlockStart", {})
-                .get("start", {})
-                .get("toolUse")
-            )
-        if tool_use and tool_use.get("name"):
-            tid = tool_use.get("toolUseId", "")
-            if tid and tid not in self._seen_tool_ids:
-                self._seen_tool_ids.add(tid)
-                event = {
-                    "tool": tool_use["name"],
-                    "input": str(tool_use.get("input", {}))[:500],
-                    "time": time.time(),
-                }
-                self.tool_events.append(event)
-                with self._lock:
-                    if self._queue is not None:
-                        self._queue.put(("tool", event))
-
-
-# Global stream-capture instance shared by all agents
-stream_capture = StreamCapture()
-
-
-def _build_callback_handler():
-    """Build a composite callback handler: printing + streaming capture + budget guardrail."""
-    return CompositeCallbackHandler(PrintingCallbackHandler(), stream_capture, budget_callback)
+    return CompositeCallbackHandler(
+        PrintingCallbackHandler(),
+        stream_capture.callback_handler,
+    )
 
 
 # ── OpenTelemetry setup ──────────────────────────────────────────────
-# Strands has built-in OTEL support.  Set OTEL_EXPORTER_OTLP_ENDPOINT
-# in .env to stream traces to Phoenix or any OTEL backend.
 
 
 def _setup_otel() -> None:
@@ -245,10 +117,10 @@ def _setup_otel() -> None:
         exporter = OTLPSpanExporter(endpoint=endpoint)
         provider.add_span_processor(BatchSpanProcessor(exporter))
         trace.set_tracer_provider(provider)
-        logger.info("OTEL tracing enabled → %s", endpoint)
+        logger.info("endpoint=<%s> | OTEL tracing enabled", endpoint)
     except ImportError:
         logger.warning(
-            "OTEL packages not installed. Run: pip install opentelemetry-sdk "
+            "OTEL packages not installed — run: pip install opentelemetry-sdk "
             "opentelemetry-exporter-otlp-proto-http"
         )
 
@@ -256,27 +128,28 @@ def _setup_otel() -> None:
 # ── Agent factories ──────────────────────────────────────────────────
 
 
-def _enter_mcp_clients(mcp_clients):
+def _enter_mcp_clients(mcp_clients: list) -> list:
     """Enter MCP client contexts and collect tools, skipping failures.
 
     Each client is entered independently.  If a client's ``__enter__()``
     or ``list_tools_sync()`` raises, it is logged and skipped — the
-    remaining clients still initialise.  This prevents a single flaky
-    MCP server (e.g. network timeout on npx download) from taking down
-    all tools.
+    remaining clients still initialise.
+
+    Args:
+        mcp_clients: List of MCP client instances to enter.
+
+    Returns:
+        List of MCP tools from all successfully entered clients.
     """
-    entered: list = []
     tool_list: list = []
     for client in mcp_clients:
         try:
             client.__enter__()
             tools = client.list_tools_sync()
-            entered.append(client)
             tool_list.extend(tools)
-            logger.info("MCP client ready — %d tools", len(tools))
+            logger.info("tools=<%d> | MCP client ready", len(tools))
         except Exception:
             logger.exception("MCP client failed to initialise — skipping")
-            # Try to clean up the partially-entered client
             try:
                 client.__exit__(None, None, None)
             except Exception:
@@ -284,74 +157,68 @@ def _enter_mcp_clients(mcp_clients):
     return tool_list
 
 
-def create_single_agent(tool_list=None, mcp_clients=None):
+def create_single_agent(
+    tool_list: list | None = None,
+    mcp_clients: list | None = None,
+    plugins: list[Plugin] | None = None,
+) -> tuple[Agent, list]:
     """Create a single-agent setup with all tools directly available.
 
-    Use this for simple interactive sessions where one agent handles
-    both search and synthesis.
-
     Args:
-        tool_list: Pre-built list of MCP tools.  When *None* the
-            function enters its own MCP clients (REPL use-case).
-        mcp_clients: MCP clients that were entered to produce
-            *tool_list*.  Returned as-is for the caller to manage.
+        tool_list: Pre-built list of MCP tools.  When None the function
+            enters its own MCP clients (REPL use-case).
+        mcp_clients: MCP clients that were entered to produce tool_list.
+        plugins: Override the default plugin set.  When None, uses
+            get_default_plugins().
+
+    Returns:
+        Tuple of (agent, mcp_clients).
     """
     model = build_model()
-    owns_clients = tool_list is None
-    if owns_clients:
+    if tool_list is None:
         mcp_clients = get_all_mcp_clients()
         tool_list = _enter_mcp_clients(mcp_clients)
-
-    conversation_manager = SlidingWindowConversationManager(
-        window_size=20,
-        should_truncate_results=True,
-    )
 
     agent = Agent(
         model=model,
         system_prompt=SYSTEM_PROMPT,
         tools=tool_list,
-        conversation_manager=conversation_manager,
+        conversation_manager=SlidingWindowConversationManager(
+            window_size=20,
+            should_truncate_results=True,
+        ),
         callback_handler=_build_callback_handler(),
+        plugins=plugins if plugins is not None else get_default_plugins(),
     )
     return agent, mcp_clients or []
 
 
-def create_multi_agent(tool_list=None, mcp_clients=None):
+def create_multi_agent(
+    tool_list: list | None = None,
+    mcp_clients: list | None = None,
+    plugins: list[Plugin] | None = None,
+) -> tuple[Agent, Agent, list]:
     """Create a planner + researcher multi-agent setup.
 
-    The researcher agent has direct access to all MCP tools and handles
-    web search/scraping.  The planner agent delegates to the researcher
-    via the agent-as-tool pattern and handles strategic decomposition
-    and synthesis.
-
-    The planner is equipped with the AdaptiveLoopPlugin which detects
-    repeated/similar queries and escalates the researcher's temperature
-    to force divergent thinking, preventing infinite loops.
+    The researcher agent has direct access to all MCP tools.  The planner
+    delegates to the researcher via the agent-as-tool pattern.
 
     Args:
-        tool_list: Pre-built list of MCP tools.  When *None* the
-            function enters its own MCP clients (REPL use-case).
-        mcp_clients: MCP clients that were entered to produce
-            *tool_list*.  Returned as-is for the caller to manage.
+        tool_list: Pre-built list of MCP tools.
+        mcp_clients: MCP clients that were entered to produce tool_list.
+        plugins: Override the default plugin set for the planner.
 
     Returns:
         Tuple of (planner_agent, researcher_agent, mcp_clients).
     """
-    # Separate model instances so temperature escalation on the researcher
-    # does not affect the planner's reasoning quality.
+    global _adaptive_plugin
+
     planner_model = build_model()
     researcher_model = build_model()
 
-    owns_clients = tool_list is None
-    if owns_clients:
+    if tool_list is None:
         mcp_clients = get_all_mcp_clients()
         tool_list = _enter_mcp_clients(mcp_clients)
-
-    conversation_manager = SlidingWindowConversationManager(
-        window_size=20,
-        should_truncate_results=True,
-    )
 
     # Researcher: tool-capable agent that does the actual searching
     researcher = Agent(
@@ -363,24 +230,21 @@ def create_multi_agent(tool_list=None, mcp_clients=None):
             should_truncate_results=True,
         ),
         callback_handler=_build_callback_handler(),
+        plugins=plugins if plugins is not None else get_default_plugins(),
     )
 
-    # ── Adaptive loop prevention plugin ──
-    # Imported from deep-search-portal/proxies/strands_adaptive.py via PYTHONPATH.
-    # If unavailable, the planner still works — just without loop prevention.
-    plugins = []
+    # Planner plugins: default set + optional adaptive loop prevention
+    planner_plugins: list[Plugin] = list(plugins if plugins is not None else get_default_plugins())
     try:
         from strands_adaptive import AdaptiveLoopPlugin
 
-        plugin = AdaptiveLoopPlugin(researcher_model)
-        plugins.append(plugin)
-        global _adaptive_plugin
-        _adaptive_plugin = plugin
+        adaptive = AdaptiveLoopPlugin(researcher_model)
+        planner_plugins.append(adaptive)
+        _adaptive_plugin = adaptive
         logger.info("AdaptiveLoopPlugin registered on planner")
     except ImportError:
         logger.warning(
-            "strands_adaptive not available — loop prevention disabled. "
-            "Ensure deep-search-portal/proxies is on PYTHONPATH."
+            "strands_adaptive not available — loop prevention disabled"
         )
 
     # Planner: strategic agent that delegates to the researcher
@@ -397,31 +261,29 @@ def create_multi_agent(tool_list=None, mcp_clients=None):
                 ),
             ),
         ],
-        conversation_manager=conversation_manager,
+        conversation_manager=SlidingWindowConversationManager(
+            window_size=20,
+            should_truncate_results=True,
+        ),
         callback_handler=_build_callback_handler(),
-        plugins=plugins,
+        plugins=planner_plugins,
     )
     return planner, researcher, mcp_clients or []
 
 
-def create_deep_agent_instance(tool_list=None, mcp_clients=None):
+def create_deep_agent_instance(
+    tool_list: list | None = None,
+    mcp_clients: list | None = None,
+) -> tuple[Agent, list]:
     """Create a Deep Agent using the strands-deep-agents package.
 
     The Deep Agent uses the DeepAgents pattern: a lead agent with strategic
     planning (TODO lists), file-based context management, and sub-agent
-    orchestration.  Sub-agents are spawned ephemerally for each task and
-    run in isolation to keep the lead agent's context lean.
-
-    Architecture:
-      - **Lead Agent** — plans research, delegates, synthesizes
-      - **research_subagent** — focused web research with all MCP tools
-      - **citations_agent** — adds source references to reports
+    orchestration.
 
     Args:
-        tool_list: Pre-built list of MCP tools.  When *None* the
-            function enters its own MCP clients (REPL use-case).
-        mcp_clients: MCP clients that were entered to produce
-            *tool_list*.  Returned as-is for the caller to manage.
+        tool_list: Pre-built list of MCP tools.
+        mcp_clients: MCP clients that were entered to produce tool_list.
 
     Returns:
         Tuple of (deep_agent, mcp_clients).
@@ -430,12 +292,10 @@ def create_deep_agent_instance(tool_list=None, mcp_clients=None):
 
     model = build_model()
 
-    owns_clients = tool_list is None
-    if owns_clients:
+    if tool_list is None:
         mcp_clients = get_all_mcp_clients()
         tool_list = _enter_mcp_clients(mcp_clients)
 
-    # Research sub-agent: has all MCP search tools
     research_subagent = SubAgent(
         name="research_subagent",
         description=(
@@ -449,7 +309,6 @@ def create_deep_agent_instance(tool_list=None, mcp_clients=None):
         model=build_model(),
     )
 
-    # Citations sub-agent: adds source references to reports
     citations_agent = SubAgent(
         name="citations_agent",
         description=(
@@ -470,13 +329,13 @@ def create_deep_agent_instance(tool_list=None, mcp_clients=None):
     )
 
     logger.info(
-        "Deep agent ready — %d tools",
+        "tools=<%d> | deep agent ready",
         len(agent.tool_registry.get_all_tools_config()),
     )
     return agent, mcp_clients or []
 
 
-def _cleanup_mcp(mcp_clients):
+def _cleanup_mcp(mcp_clients: list) -> None:
     """Gracefully close all MCP client connections."""
     for client in mcp_clients:
         try:
@@ -485,7 +344,7 @@ def _cleanup_mcp(mcp_clients):
             pass
 
 
-def main():
+def main() -> None:
     """Interactive REPL for the Venice GLM-4.7 agent."""
     load_dotenv()
     logging.basicConfig(
@@ -495,7 +354,6 @@ def main():
 
     _setup_otel()
 
-    # Choose mode based on --multi flag
     multi_agent = "--multi" in sys.argv
 
     if multi_agent:

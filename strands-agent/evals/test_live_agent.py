@@ -102,7 +102,7 @@ def parse_sse_stream(raw: str) -> ParsedSSEResponse:
 
     # Extract footer: *Researched using N sources in Xs* or *Completed in Xs*
     footer_pattern = re.compile(
-        r"\*(Researched using \d+ sources? in \d+s|Completed in \d+s)\*"
+        r"\*(Researched using \d+ sources? in (?:\d+s|<1s)|Completed in (?:\d+s|<1s))\*"
     )
     footer_match = footer_pattern.search(result.full_text)
     if footer_match:
@@ -543,7 +543,7 @@ class TestFormattingConsistency:
 
     def test_footer_is_italic(self, research_response: ParsedSSEResponse) -> None:
         """Footer uses *Researched using...* italic format."""
-        footer_pattern = re.compile(r"\*Researched using \d+ sources? in \d+s\*")
+        footer_pattern = re.compile(r"\*Researched using \d+ sources? in (?:\d+s|<1s)\*")
         assert footer_pattern.search(research_response.full_text), (
             f"Footer not in italic format. Last 300 chars: "
             f"{research_response.full_text[-300:]}"
@@ -581,7 +581,7 @@ class TestFormattingConsistency:
         self, research_response: ParsedSSEResponse
     ) -> None:
         """Only one footer line per response (not duplicated)."""
-        footer_pattern = re.compile(r"\*Researched using \d+ sources? in \d+s\*")
+        footer_pattern = re.compile(r"\*Researched using \d+ sources? in (?:\d+s|<1s)\*")
         matches = footer_pattern.findall(research_response.full_text)
         assert len(matches) <= 1, (
             f"Multiple footer lines found ({len(matches)}): {matches}"

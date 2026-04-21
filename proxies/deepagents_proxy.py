@@ -317,7 +317,7 @@ def _extract_files_from_messages(state: dict) -> dict[str, str]:
 
 # Regex that matches paths the agent emits: /foo/bar.md, /research/notes.txt, etc.
 _VFILE_PATH_RE = re.compile(
-    r"(?<![`\w])"                   # not preceded by backtick or word char
+    r"(?<![`\w/:])"                  # not preceded by backtick, word char, slash, or colon
     r"(/[\w./-]+\.(?:md|txt|json|csv|yaml|yml|toml))"  # /path/to/file.ext
     r"(?![`\w])"                    # not followed by backtick or word char
 )
@@ -596,7 +596,7 @@ async def _invoke_agent_json(
             if appendix:
                 final_text += appendix
                 log.info(
-                    f"[{req_id}] Appended {len(files)} research file(s) "
+                    f"[{req_id}] Appended {len(remaining)} research file(s) "
                     f"to non-streaming response"
                 )
 

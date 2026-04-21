@@ -225,6 +225,17 @@ def fetch_webpage(url: str) -> str:
     try:
         resp = _HTTP_CLIENT.get(url, headers={"User-Agent": "DeepSearchBot/1.0"})
         resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "")
+        if "pdf" in content_type.lower():
+            return f"PDF document at {url} (binary content, cannot extract text directly)"
+        if (
+            "text/html" not in content_type
+            and "text/plain" not in content_type
+            and "text/xml" not in content_type
+            and "application/json" not in content_type
+            and content_type
+        ):
+            return f"Non-text content type: {content_type} at {url}"
         text = resp.text
         # Strip HTML tags, scripts, styles to extract readable text
         text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)

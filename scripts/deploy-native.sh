@@ -542,7 +542,7 @@ log "Waiting for services to become healthy..."
 sleep 10
 
 SERVICES=(
-    "LibreChat-prod:${LIBRECHAT_PORT}"
+    "LibreChat-${DEPLOY_ENV}:${LIBRECHAT_PORT}"
 )
 if [[ "$DEPLOY_ENV" == "prod" ]]; then
     SERVICES+=("LibreChat-staging:3002")

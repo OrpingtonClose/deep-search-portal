@@ -49,7 +49,7 @@ fi
 DEPLOY_ENV="${DEPLOY_ENV:-prod}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --env) DEPLOY_ENV="$2"; shift 2 ;;
+        --env) if [[ $# -lt 2 ]]; then echo "ERROR: --env requires an argument" >&2; exit 1; fi; DEPLOY_ENV="$2"; shift 2 ;;
         *) shift ;;
     esac
 done
@@ -181,7 +181,7 @@ else
     log "Meilisearch already installed."
 fi
 if ! pgrep -f meilisearch > /dev/null 2>&1; then
-    screen -dmS meilisearch bash -c "meilisearch --master-key meilisearch_master_key --db-path /tmp/meilisearch_data --http-addr 0.0.0.0:7700 2>&1 | tee /var/log/meilisearch.log"
+    screen -dmS meilisearch bash -c "meilisearch --master-key meilisearch_master_key --db-path /tmp/meilisearch_data --http-addr 127.0.0.1:7700 2>&1 | tee /var/log/meilisearch.log"
     log "Meilisearch started on port 7700."
 fi
 
@@ -246,6 +246,18 @@ JWT_REFRESH_SECRET="${JWT_REFRESH_SECRET:-$(openssl rand -hex 32)}"
 STAGING_CREDS_KEY="${STAGING_CREDS_KEY:-$(openssl rand -hex 32)}"
 STAGING_JWT_SECRET="${STAGING_JWT_SECRET:-$(openssl rand -hex 32)}"
 STAGING_JWT_REFRESH="${STAGING_JWT_REFRESH:-$(openssl rand -hex 32)}"
+
+# Select the correct auth secrets for this environment's LibreChat .env.
+# This prevents --env staging from using prod JWT signing keys.
+if [[ "$DEPLOY_ENV" == "staging" ]]; then
+    LC_CREDS_KEY="$STAGING_CREDS_KEY"
+    LC_JWT_SECRET="$STAGING_JWT_SECRET"
+    LC_JWT_REFRESH_SECRET="$STAGING_JWT_REFRESH"
+else
+    LC_CREDS_KEY="$CREDS_KEY"
+    LC_JWT_SECRET="$JWT_SECRET"
+    LC_JWT_REFRESH_SECRET="$JWT_REFRESH_SECRET"
+fi
 
 log "Writing /opt/.env..."
 install -m 600 /dev/null /opt/.env
@@ -317,9 +329,11 @@ MEILI_HOST=http://127.0.0.1:7700
 MEILI_MASTER_KEY=meilisearch_master_key
 
 # --- Auth secrets (stable across re-deploys) ---
-CREDS_KEY=${CREDS_KEY}
-JWT_SECRET=${JWT_SECRET}
-JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+# When DEPLOY_ENV=staging, use staging-specific secrets to avoid sharing
+# JWT signing keys with prod (a JWT minted by prod must not be valid on staging).
+CREDS_KEY=${LC_CREDS_KEY}
+JWT_SECRET=${LC_JWT_SECRET}
+JWT_REFRESH_SECRET=${LC_JWT_REFRESH_SECRET}
 
 # --- Domain ---
 DOMAIN_CLIENT=${DOMAIN_CLIENT}

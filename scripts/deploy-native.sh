@@ -90,7 +90,9 @@ if [ ${#MISSING[@]} -gt 0 ]; then
 fi
 
 # Derived model config (Venice AI primary)
-UPSTREAM_KEY="${UPSTREAM_KEY:-$VENICE_API_KEY}"
+# UPSTREAM_KEY is always re-derived from VENICE_API_KEY (not :- default)
+# so that rotating VENICE_API_KEY in /opt/.env propagates to all proxies.
+UPSTREAM_KEY="$VENICE_API_KEY"
 UPSTREAM_BASE="${UPSTREAM_BASE:-https://api.venice.ai/api/v1}"
 UPSTREAM_MODEL="${UPSTREAM_MODEL:-olafangensan-glm-4.7-flash-heretic}"
 SUBAGENT_MODEL="${SUBAGENT_MODEL:-qwen3.5-9b}"

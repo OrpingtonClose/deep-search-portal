@@ -32,6 +32,7 @@ import traceback
 import uuid
 from typing import AsyncGenerator, Optional
 
+import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import (
@@ -42,6 +43,7 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from langchain_core.tools import tool as langchain_tool
 from langchain_openai import ChatOpenAI
 
 from deepagents import SubAgent, create_deep_agent
@@ -122,14 +124,25 @@ OUTPUT RULES
 - Professional objectivity: your voice is that of a competent analyst \
   briefing a colleague, not a customer-service bot.
 
+AVAILABLE TOOLS
+You have the following tools in addition to planning, filesystem, and sub-agents:
+- `web_search(query, max_results)` — search the web via DuckDuckGo. Use this \
+  to find current information, verify facts, and discover sources.
+- `fetch_webpage(url)` — fetch the full text content of any URL. Use this to \
+  read articles, documentation, or any web page found via search.
+
+ALWAYS use `web_search` for factual questions. NEVER claim you cannot access \
+the internet — you have full web search capability.
+
 WORKFLOW
 1. Write a short plan with `write_todos` before doing anything non-trivial.
-2. Delegate focused research tasks to `research_subagent` via the `task` \
-   tool. Each sub-task should have a single clear question.
-3. Use the virtual filesystem (`write_file`, `read_file`, `edit_file`) as a \
-   scratchpad for notes, findings, and draft sections. Keep working files \
-   small and well-named.
-4. When the plan is complete, synthesize the findings into a final answer \
+2. Use `web_search` to find current information about the topic.
+3. Use `fetch_webpage` to read full articles from promising search results.
+4. Delegate focused sub-investigations to `research_subagent` via the `task` \
+   tool for parallel research on different aspects.
+5. Use the virtual filesystem (`write_file`, `read_file`, `edit_file`) as a \
+   scratchpad for notes, findings, and draft sections.
+6. When the plan is complete, synthesize the findings into a final answer \
    that directly addresses the user's original question.
 """
 
@@ -156,6 +169,71 @@ Rules:
 
 
 # ============================================================================
+# Web search tools — give the agent real internet access
+# ============================================================================
+
+_HTTP_CLIENT = httpx.Client(timeout=30, follow_redirects=True)
+
+
+@langchain_tool
+def web_search(query: str, max_results: int = 5) -> str:
+    """Search the web using DuckDuckGo and return results.
+
+    Args:
+        query: The search query.
+        max_results: Maximum number of results to return (default 5).
+
+    Returns:
+        Formatted search results with titles, URLs, and snippets.
+    """
+    try:
+        from duckduckgo_search import DDGS
+
+        results = []
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=max_results):
+                results.append(
+                    f"**{r.get('title', 'No title')}**\n"
+                    f"URL: {r.get('href', 'N/A')}\n"
+                    f"{r.get('body', 'No snippet')}"
+                )
+        if not results:
+            return f"No results found for: {query}"
+        return "\n\n---\n\n".join(results)
+    except ImportError:
+        return (
+            "ERROR: duckduckgo_search package not installed. "
+            "Use fetch_webpage to access URLs directly instead."
+        )
+    except Exception as exc:
+        return f"Search error: {exc}"
+
+
+@langchain_tool
+def fetch_webpage(url: str) -> str:
+    """Fetch the text content of a web page.
+
+    Args:
+        url: The URL to fetch.
+
+    Returns:
+        The page text content (truncated to 15000 chars).
+    """
+    try:
+        resp = _HTTP_CLIENT.get(url, headers={"User-Agent": "DeepSearchBot/1.0"})
+        resp.raise_for_status()
+        text = resp.text
+        if len(text) > 15000:
+            text = text[:15000] + "\n\n[... truncated ...]"
+        return text
+    except Exception as exc:
+        return f"Fetch error for {url}: {exc}"
+
+
+SEARCH_TOOLS = [web_search, fetch_webpage]
+
+
+# ============================================================================
 # Agent construction (module-level singleton)
 # ============================================================================
 
@@ -165,6 +243,9 @@ def _build_agent():
     The LLM is a ``ChatOpenAI`` instance pointed at Venice AI's OpenAI-compatible
     endpoint. The deepagents SDK wires planning, filesystem, and sub-agent
     middleware around it automatically.
+
+    Web search tools (web_search, fetch_webpage) are injected so the agent can
+    actually research topics on the internet instead of relying on training data.
     """
     model = ChatOpenAI(
         model=DEEPAGENTS_MODEL,
@@ -188,9 +269,11 @@ def _build_agent():
         model=model,
         system_prompt=SYSTEM_PROMPT,
         subagents=[research_subagent],
+        tools=SEARCH_TOOLS,
         name=MODEL_ID,
     )
-    log.info("Deep agent constructed successfully")
+    tool_count = len(SEARCH_TOOLS)
+    log.info("subagents=<1>, search_tools=<%d> | deep agent constructed", tool_count)
     return agent
 
 

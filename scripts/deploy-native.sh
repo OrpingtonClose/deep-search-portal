@@ -33,7 +33,18 @@ log() { echo "[deploy-native] $(date '+%H:%M:%S') $*"; }
 warn() { echo "[deploy-native] $(date '+%H:%M:%S') WARNING: $*" >&2; }
 
 # ---------------------------------------------------------------------------
-# 0. Determine environment (prod vs staging)
+# 0. Load existing env FIRST (before --env parsing)
+# ---------------------------------------------------------------------------
+# This must happen BEFORE the env-specific DOMAIN_CLIENT/DOMAIN_SERVER
+# assignments below. If sourced after, stale domain values from a previous
+# prod deployment would clobber the staging domain on a cross-env re-run.
+if [ -f /opt/.env ]; then
+    set -a; source /opt/.env 2>/dev/null; set +a
+    log "Loaded existing /opt/.env"
+fi
+
+# ---------------------------------------------------------------------------
+# 0b. Determine environment (prod vs staging)
 # ---------------------------------------------------------------------------
 DEPLOY_ENV="${DEPLOY_ENV:-prod}"
 while [[ $# -gt 0 ]]; do
@@ -43,15 +54,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Domain assignments are UNCONDITIONAL (not :- defaults) because /opt/.env
+# was sourced above and may contain stale domain values from a previous run.
 if [[ "$DEPLOY_ENV" == "prod" ]]; then
-    DOMAIN_CLIENT="${DOMAIN_CLIENT:-https://deep-search.uk}"
-    DOMAIN_SERVER="${DOMAIN_SERVER:-https://deep-search.uk}"
+    DOMAIN_CLIENT="https://deep-search.uk"
+    DOMAIN_SERVER="https://deep-search.uk"
     LIBRECHAT_PORT=3000
     LIBRECHAT_YAML="librechat.yaml"
     MONGO_DB="LibreChat"
 elif [[ "$DEPLOY_ENV" == "staging" ]]; then
-    DOMAIN_CLIENT="${DOMAIN_CLIENT:-https://staging.deep-search.uk}"
-    DOMAIN_SERVER="${DOMAIN_SERVER:-https://staging.deep-search.uk}"
+    DOMAIN_CLIENT="https://staging.deep-search.uk"
+    DOMAIN_SERVER="https://staging.deep-search.uk"
     LIBRECHAT_PORT=3002
     LIBRECHAT_YAML="librechat-staging.yaml"
     MONGO_DB="LibreChat-staging"
@@ -61,14 +74,6 @@ else
 fi
 
 log "Deploying as: $DEPLOY_ENV (domain: $DOMAIN_CLIENT, port: $LIBRECHAT_PORT)"
-
-# ---------------------------------------------------------------------------
-# 0b. Load existing env if available
-# ---------------------------------------------------------------------------
-if [ -f /opt/.env ]; then
-    set -a; source /opt/.env 2>/dev/null; set +a
-    log "Loaded existing /opt/.env"
-fi
 
 # ---------------------------------------------------------------------------
 # 0c. Pre-flight: check required vars

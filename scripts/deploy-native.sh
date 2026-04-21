@@ -162,7 +162,7 @@ else
 fi
 # Start MongoDB if not running
 if ! pgrep -x mongod > /dev/null 2>&1; then
-    mkdir -p /var/lib/mongodb /var/log/mongodb
+    mkdir -p /var/lib/mongodb /var/log/mongodb /tmp/mongodb
     chown -R mongodb:mongodb /var/lib/mongodb /var/log/mongodb 2>/dev/null || true
     mongod --dbpath /var/lib/mongodb --logpath /var/log/mongodb/mongod.log --fork --bind_ip 127.0.0.1 2>/dev/null || \
         mongod --dbpath /tmp/mongodb --logpath /var/log/mongodb/mongod.log --fork --bind_ip 127.0.0.1 2>/dev/null || true
@@ -487,14 +487,20 @@ fi
 
 # --- Proxy services (all use /opt/venv/bin/python3) ---
 # write_proxy_env writes a per-service env file to avoid double shell expansion.
-# Values are written as quoted assignments so $, backticks, and \ in API keys
-# are preserved when the inner bash -c shell sources the file.
+# Values are single-quoted so $, backticks, and \ in API keys are preserved
+# verbatim when the inner bash -c shell sources the file.
+# Callers pass KEY=VALUE pairs; this function splits on the first '=' and
+# wraps the value in single quotes (escaping any embedded single quotes).
 write_proxy_env() {
     local name="$1"; shift
     local envfile="/tmp/${name}.env"
     install -m 600 /dev/null "$envfile"
     for pair in "$@"; do
-        echo "$pair" >> "$envfile"
+        local key="${pair%%=*}"
+        local val="${pair#*=}"
+        # Escape any single quotes in the value: replace ' with '"'"'
+        val="${val//\'/\'\"\'\"\'}"
+        printf "%s='%s'\n" "$key" "$val" >> "$envfile"
     done
 }
 
@@ -513,42 +519,42 @@ start_proxy() {
 }
 
 start_proxy "thinking-proxy" 9100 "thinking_proxy.py" \
-    "UPSTREAM_BASE=\"https://api.mistral.ai/v1\"" \
-    "UPSTREAM_KEY=\"${MISTRAL_API_KEY:-}\"" \
-    "UPSTREAM_MODEL=\"mistral-large-latest\"" \
-    "THINKING_PROXY_PORT=\"9100\""
+    "UPSTREAM_BASE=https://api.mistral.ai/v1" \
+    "UPSTREAM_KEY=${MISTRAL_API_KEY:-}" \
+    "UPSTREAM_MODEL=mistral-large-latest" \
+    "THINKING_PROXY_PORT=9100"
 
 start_proxy "deep-research" 9200 "deep_research_proxy.py" \
-    "DEEP_RESEARCH_PORT=\"9200\""
+    "DEEP_RESEARCH_PORT=9200"
 
 start_proxy "persistent-research" 9300 "persistent_deep_research_proxy.py" \
-    "PERSISTENT_RESEARCH_PORT=\"9300\""
+    "PERSISTENT_RESEARCH_PORT=9300"
 
 start_proxy "miroflow-sprint" 9400 "miroflow_sprint_proxy.py" \
-    "MIROFLOW_SPRINT_PORT=\"9400\""
+    "MIROFLOW_SPRINT_PORT=9400"
 
 start_proxy "swarm-proxy" 9500 "swarm_proxy.py" \
-    "UPSTREAM_BASE=\"https://api.venice.ai/api/v1\"" \
-    "UPSTREAM_KEY=\"${VENICE_API_KEY:-}\"" \
-    "UPSTREAM_MODEL=\"venice-uncensored\"" \
-    "SWARM_SYNTHESIS_MODEL=\"venice-uncensored\"" \
-    "SWARM_WORKER_MODEL=\"venice-uncensored\"" \
-    "SWARM_PROXY_PORT=\"9500\""
+    "UPSTREAM_BASE=https://api.venice.ai/api/v1" \
+    "UPSTREAM_KEY=${VENICE_API_KEY:-}" \
+    "UPSTREAM_MODEL=venice-uncensored" \
+    "SWARM_SYNTHESIS_MODEL=venice-uncensored" \
+    "SWARM_WORKER_MODEL=venice-uncensored" \
+    "SWARM_PROXY_PORT=9500"
 
 start_proxy "godmode-proxy" 9600 "godmode_proxy.py" \
-    "GODMODE_PROXY_PORT=\"9600\""
+    "GODMODE_PROXY_PORT=9600"
 
 start_proxy "xai-native-proxy" 9700 "xai_native_proxy.py" \
-    "XAI_PROXY_PORT=\"9700\""
+    "XAI_PROXY_PORT=9700"
 
 start_proxy "tier-chooser" 9900 "tier_chooser_proxy.py" \
-    "TIER_CHOOSER_PORT=\"9900\""
+    "TIER_CHOOSER_PORT=9900"
 
 start_proxy "heretic-proxy" 9950 "heretic_proxy.py" \
-    "HERETIC_PROXY_PORT=\"9950\""
+    "HERETIC_PROXY_PORT=9950"
 
 start_proxy "miro-proxy" 9951 "miro_proxy.py" \
-    "MIRO_PROXY_PORT=\"9951\""
+    "MIRO_PROXY_PORT=9951"
 
 # --- Strands Agent ---
 STRANDS_AGENT_PORT="${STRANDS_AGENT_PORT:-8100}"
@@ -557,8 +563,8 @@ if ! curl -sf "http://localhost:${STRANDS_AGENT_PORT}/health" > /dev/null 2>&1; 
     REPO_ROOT="/opt/deep-search-portal"
     # Write strands-agent env file to avoid double expansion of API keys
     write_proxy_env "strands-agent" \
-        "PYTHONPATH=\"${REPO_ROOT}/proxies:\${PYTHONPATH:-}\"" \
-        "BRAVE_API_KEY=\"${BRAVE_SEARCH_API_KEY:-}\""
+        "PYTHONPATH=${REPO_ROOT}/proxies:\${PYTHONPATH:-}" \
+        "BRAVE_API_KEY=${BRAVE_SEARCH_API_KEY:-}"
     screen -dmS strands-agent bash -c "
         set -a; source /opt/.env 2>/dev/null; source /tmp/strands-agent.env 2>/dev/null; set +a
         cd '${STRANDS_DIR}'

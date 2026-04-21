@@ -266,46 +266,46 @@ cat > /opt/.env << ENVEOF
 # === Environment: ${DEPLOY_ENV} ===
 
 # --- LLM API Keys ---
-VENICE_API_KEY=${VENICE_API_KEY}
-XAI_API_KEY=${XAI_API_KEY}
-OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+VENICE_API_KEY="${VENICE_API_KEY}"
+XAI_API_KEY="${XAI_API_KEY}"
+OPENROUTER_API_KEY="${OPENROUTER_API_KEY}"
+MISTRAL_API_KEY="${MISTRAL_API_KEY:-}"
 
 # --- Search/Tool API Keys ---
-FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
-EXA_API_KEY=${EXA_API_KEY:-}
-BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY:-}
-BRAVE_API_KEY=${BRAVE_API_KEY:-${BRAVE_SEARCH_API_KEY:-}}
-BRIGHT_DATA_API_KEY=${BRIGHT_DATA_API_KEY:-}
-APIFY_API_TOKEN=${APIFY_API_TOKEN:-}
-KAGI_API_KEY=${KAGI_API_KEY:-}
+FIRECRAWL_API_KEY="${FIRECRAWL_API_KEY:-}"
+EXA_API_KEY="${EXA_API_KEY:-}"
+BRAVE_SEARCH_API_KEY="${BRAVE_SEARCH_API_KEY:-}"
+BRAVE_API_KEY="${BRAVE_API_KEY:-${BRAVE_SEARCH_API_KEY:-}}"
+BRIGHT_DATA_API_KEY="${BRIGHT_DATA_API_KEY:-}"
+APIFY_API_TOKEN="${APIFY_API_TOKEN:-}"
+KAGI_API_KEY="${KAGI_API_KEY:-}"
 
 # --- Google OAuth ---
-GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
-GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID}"
+GOOGLE_CLIENT_SECRET="${GOOGLE_CLIENT_SECRET}"
 
 # --- LibreChat Secrets (stable across re-deploys) ---
-CREDS_KEY=${CREDS_KEY}
-JWT_SECRET=${JWT_SECRET}
-JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+CREDS_KEY="${CREDS_KEY}"
+JWT_SECRET="${JWT_SECRET}"
+JWT_REFRESH_SECRET="${JWT_REFRESH_SECRET}"
 
 # --- Staging LibreChat Secrets (stable across re-deploys) ---
-STAGING_CREDS_KEY=${STAGING_CREDS_KEY}
-STAGING_JWT_SECRET=${STAGING_JWT_SECRET}
-STAGING_JWT_REFRESH=${STAGING_JWT_REFRESH}
+STAGING_CREDS_KEY="${STAGING_CREDS_KEY}"
+STAGING_JWT_SECRET="${STAGING_JWT_SECRET}"
+STAGING_JWT_REFRESH="${STAGING_JWT_REFRESH}"
 
 # --- Domain ---
-DOMAIN_CLIENT=${DOMAIN_CLIENT}
-DOMAIN_SERVER=${DOMAIN_SERVER}
+DOMAIN_CLIENT="${DOMAIN_CLIENT}"
+DOMAIN_SERVER="${DOMAIN_SERVER}"
 
 # --- Cloudflare ---
-CLOUDFLARE_TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN}"
 
 # --- Derived (model routing) ---
-UPSTREAM_KEY=${UPSTREAM_KEY}
-UPSTREAM_BASE=${UPSTREAM_BASE}
-UPSTREAM_MODEL=${UPSTREAM_MODEL}
-SUBAGENT_MODEL=${SUBAGENT_MODEL}
+UPSTREAM_KEY="${UPSTREAM_KEY}"
+UPSTREAM_BASE="${UPSTREAM_BASE}"
+UPSTREAM_MODEL="${UPSTREAM_MODEL}"
+SUBAGENT_MODEL="${SUBAGENT_MODEL}"
 ENVEOF
 log "/opt/.env written."
 
@@ -486,48 +486,81 @@ STAGING_LCEOF
 fi
 
 # --- Proxy services (all use /opt/venv/bin/python3) ---
+# write_proxy_env writes a per-service env file to avoid double shell expansion.
+# Values are written as quoted assignments so $, backticks, and \ in API keys
+# are preserved when the inner bash -c shell sources the file.
+write_proxy_env() {
+    local name="$1"; shift
+    local envfile="/tmp/${name}.env"
+    install -m 600 /dev/null "$envfile"
+    for pair in "$@"; do
+        echo "$pair" >> "$envfile"
+    done
+}
+
 start_proxy() {
-    local name="$1" port="$2" script="$3" extra_env="${4:-}"
+    local name="$1" port="$2" script="$3"
+    shift 3
     if curl -sf "http://localhost:${port}/health" > /dev/null 2>&1; then
         log "  OK: $name already healthy on port $port"
         return 0
     fi
+    # Write per-service env file with any extra vars (already quoted by caller)
+    write_proxy_env "$name" "$@"
     screen -S "$name" -X quit 2>/dev/null || true
-    screen -dmS "$name" bash -c "set -a; source /opt/.env 2>/dev/null; set +a; export ${extra_env}; cd /opt/deep-search-portal/proxies && $PYTHON $script 2>&1 | tee /var/log/${name}.log"
+    screen -dmS "$name" bash -c "set -a; source /opt/.env 2>/dev/null; source /tmp/${name}.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && $PYTHON $script 2>&1 | tee /var/log/${name}.log"
     log "  Starting $name on port $port..."
 }
 
 start_proxy "thinking-proxy" 9100 "thinking_proxy.py" \
-    "UPSTREAM_BASE=https://api.mistral.ai/v1 UPSTREAM_KEY=${MISTRAL_API_KEY:-} UPSTREAM_MODEL=mistral-large-latest THINKING_PROXY_PORT=9100"
+    "UPSTREAM_BASE=\"https://api.mistral.ai/v1\"" \
+    "UPSTREAM_KEY=\"${MISTRAL_API_KEY:-}\"" \
+    "UPSTREAM_MODEL=\"mistral-large-latest\"" \
+    "THINKING_PROXY_PORT=\"9100\""
 
-start_proxy "deep-research" 9200 "deep_research_proxy.py" "DEEP_RESEARCH_PORT=9200"
+start_proxy "deep-research" 9200 "deep_research_proxy.py" \
+    "DEEP_RESEARCH_PORT=\"9200\""
 
-start_proxy "persistent-research" 9300 "persistent_deep_research_proxy.py" "PERSISTENT_RESEARCH_PORT=9300"
+start_proxy "persistent-research" 9300 "persistent_deep_research_proxy.py" \
+    "PERSISTENT_RESEARCH_PORT=\"9300\""
 
-start_proxy "miroflow-sprint" 9400 "miroflow_sprint_proxy.py" "MIROFLOW_SPRINT_PORT=9400"
+start_proxy "miroflow-sprint" 9400 "miroflow_sprint_proxy.py" \
+    "MIROFLOW_SPRINT_PORT=\"9400\""
 
 start_proxy "swarm-proxy" 9500 "swarm_proxy.py" \
-    "UPSTREAM_BASE=https://api.venice.ai/api/v1 UPSTREAM_KEY=${VENICE_API_KEY:-} UPSTREAM_MODEL=venice-uncensored SWARM_SYNTHESIS_MODEL=venice-uncensored SWARM_WORKER_MODEL=venice-uncensored SWARM_PROXY_PORT=9500"
+    "UPSTREAM_BASE=\"https://api.venice.ai/api/v1\"" \
+    "UPSTREAM_KEY=\"${VENICE_API_KEY:-}\"" \
+    "UPSTREAM_MODEL=\"venice-uncensored\"" \
+    "SWARM_SYNTHESIS_MODEL=\"venice-uncensored\"" \
+    "SWARM_WORKER_MODEL=\"venice-uncensored\"" \
+    "SWARM_PROXY_PORT=\"9500\""
 
-start_proxy "godmode-proxy" 9600 "godmode_proxy.py" "GODMODE_PROXY_PORT=9600"
+start_proxy "godmode-proxy" 9600 "godmode_proxy.py" \
+    "GODMODE_PROXY_PORT=\"9600\""
 
-start_proxy "xai-native-proxy" 9700 "xai_native_proxy.py" "XAI_PROXY_PORT=9700"
+start_proxy "xai-native-proxy" 9700 "xai_native_proxy.py" \
+    "XAI_PROXY_PORT=\"9700\""
 
-start_proxy "tier-chooser" 9900 "tier_chooser_proxy.py" "TIER_CHOOSER_PORT=9900"
+start_proxy "tier-chooser" 9900 "tier_chooser_proxy.py" \
+    "TIER_CHOOSER_PORT=\"9900\""
 
-start_proxy "heretic-proxy" 9950 "heretic_proxy.py" "HERETIC_PROXY_PORT=9950"
+start_proxy "heretic-proxy" 9950 "heretic_proxy.py" \
+    "HERETIC_PROXY_PORT=\"9950\""
 
-start_proxy "miro-proxy" 9951 "miro_proxy.py" "MIRO_PROXY_PORT=9951"
+start_proxy "miro-proxy" 9951 "miro_proxy.py" \
+    "MIRO_PROXY_PORT=\"9951\""
 
 # --- Strands Agent ---
 STRANDS_AGENT_PORT="${STRANDS_AGENT_PORT:-8100}"
 if ! curl -sf "http://localhost:${STRANDS_AGENT_PORT}/health" > /dev/null 2>&1; then
     screen -S strands-agent -X quit 2>/dev/null || true
     REPO_ROOT="/opt/deep-search-portal"
+    # Write strands-agent env file to avoid double expansion of API keys
+    write_proxy_env "strands-agent" \
+        "PYTHONPATH=\"${REPO_ROOT}/proxies:\${PYTHONPATH:-}\"" \
+        "BRAVE_API_KEY=\"${BRAVE_SEARCH_API_KEY:-}\""
     screen -dmS strands-agent bash -c "
-        set -a; source /opt/.env 2>/dev/null; set +a
-        export PYTHONPATH='${REPO_ROOT}/proxies:\${PYTHONPATH:-}'
-        if [ -n '${BRAVE_SEARCH_API_KEY:-}' ]; then export BRAVE_API_KEY='${BRAVE_SEARCH_API_KEY:-}'; fi
+        set -a; source /opt/.env 2>/dev/null; source /tmp/strands-agent.env 2>/dev/null; set +a
         cd '${STRANDS_DIR}'
         ${STRANDS_VENV}/bin/python -m uvicorn main:app --host 0.0.0.0 --port ${STRANDS_AGENT_PORT} 2>&1 | tee /var/log/strands-agent.log
     "

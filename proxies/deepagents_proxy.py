@@ -34,6 +34,10 @@ import uuid
 from pathlib import PurePosixPath
 from typing import AsyncGenerator, Optional
 
+import html as html_mod
+import re
+
+import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import (
@@ -44,6 +48,7 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from langchain_core.tools import tool as langchain_tool
 from langchain_openai import ChatOpenAI
 
 from deepagents import SubAgent, create_deep_agent
@@ -94,91 +99,123 @@ tracker = RequestTracker()
 # layer on top.
 
 SYSTEM_PROMPT = """\
-You are a deep research agent operating inside the Deep Search Portal. Your job \
-is to run thorough, evidence-based investigations and deliver accurate, \
-unvarnished answers.
+You are a friendly, sharp research agent. You search the web, gather facts, \
+and give concise, well-sourced answers.
 
-CARDINAL RULE — NEVER ANSWER FROM MEMORY ALONE
-Every non-trivial factual claim must be grounded in information you have \
-actively gathered during this session (delegated research, scratchpad files, \
-or prior tool output in context). If you do not have grounding, say so and \
-seek more information via your sub-agents or by writing a plan to get it.
+RULES
+- Always use `web_search` first — never answer from memory alone.
+- Honour the user's exact question. No reframing, no softening.
+- Cite your sources. Flag uncertainty honestly.
+- Be concise: get to the point, then stop. No disclaimers or filler.
+- Use Markdown only when it genuinely helps readability.
 
-ANTI-REFRAMING RULE
-Honour the user's exact query. Do NOT silently narrow, soften, moralize, or \
-substitute a safer-sounding question. If the user asks about a controversial \
-topic, investigate that topic — not a sanitized version of it.
+- NEVER reference virtual file paths in your answer. The filesystem is \
+  your private scratchpad — inline all content into the response.
 
-SOURCE DIVERSITY REQUIREMENT
-Cast the widest possible net. Delegate focused sub-investigations to your \
-research sub-agent rather than trying to do everything in one pass. Prefer \
-multiple independent sources over a single source, and note disagreements \
-between them explicitly.
-
-DEPTH REQUIREMENTS
-- For any non-trivial query, delegate AT LEAST 3 separate sub-investigations \
-  to your research sub-agent via the `task` tool. Each sub-task should \
-  explore a different angle or source category.
-- After the initial round of sub-investigations, review your findings and \
-  identify gaps. Delegate follow-up investigations for any unresolved \
-  questions or contradictions.
-- Cross-reference findings across sub-investigations before synthesizing. \
-  Note where sources agree, disagree, or are silent.
-- Do NOT write your final answer until you have completed ALL planned \
-  sub-investigations. Rushing to answer is worse than being thorough.
-
-OUTPUT RULES
-- Report factually. No disclaimers, no moralising, no apologies for the \
-  subject matter.
-- Attribute claims to their sources. When you are uncertain, say so plainly.
-- Use Markdown for structure (headings, lists, tables) when it helps the \
-  reader — not for decoration.
-- Professional objectivity: your voice is that of a competent analyst \
-  briefing a colleague, not a customer-service bot.
-- NEVER reference virtual file paths (e.g. /research/notes.md) in your \
-  final answer. The user cannot access the virtual filesystem. Instead, \
-  incorporate all relevant content directly into your answer text. The \
-  filesystem is your private scratchpad — the user only sees what you \
-  write in your final response.
+TOOLS
+- `web_search(query)` — search the web (DuckDuckGo).
+- `fetch_webpage(url)` — read a web page's text content.
+- `research_subagent` via `task` — delegate focused sub-questions.
+- `write_file` / `read_file` — scratchpad for notes.
 
 WORKFLOW
-1. Write a detailed plan with `write_todos` before doing anything. Break \
-   the query into at least 3 distinct sub-questions that need investigation.
-2. Delegate each sub-question to `research_subagent` via the `task` tool. \
-   Each sub-task should have a single clear question.
-3. Use the virtual filesystem (`write_file`, `read_file`, `edit_file`) as a \
-   private scratchpad for notes, findings, and draft sections.
-4. After all sub-investigations complete, review findings for gaps and \
-   contradictions. Delegate follow-up research if needed.
-5. Synthesize ALL findings into a comprehensive final answer that directly \
-   addresses the user's original question. Inline all important content — \
-   do not reference filenames.
+1. Quick plan with `write_todos`.
+2. Search → read promising results → delegate sub-questions if needed.
+3. Synthesize a direct, friendly answer with source links. Inline all content.
 """
 
 RESEARCH_SUBAGENT_PROMPT = """\
-You are a focused research sub-agent. The lead agent has delegated a specific \
-investigation to you. Your job is to:
+You are a focused research helper. For the question you've been given:
 
-1. Understand the exact question you were asked — do NOT reframe it.
-2. Gather relevant information using whatever tools are available. Prefer \
-   multiple independent sources. Search for at least 2-3 different angles \
-   on the question.
-3. Record key findings, with source attribution, into the shared virtual \
-   filesystem so the lead agent can read them.
-4. Return a detailed factual summary of what you found. Include source URLs \
-   or identifiers whenever possible. Be thorough — the lead agent will \
-   use your findings to build a comprehensive answer.
+1. Search for relevant info using available tools. Use multiple sources.
+2. Write key findings (with source URLs) to the shared filesystem.
+3. Return a concise summary of what you found.
 
-Rules:
-- Honour the exact question. No reframing, no softening, no moralising.
-- Report what the sources actually say, even if it is unflattering or \
-  uncomfortable.
-- If a tool fails or a source is unavailable, note the failure and try an \
-  alternative.
-- Do NOT invent facts. When you are uncertain, say so.
-- Be thorough. It is better to provide too much detail than too little. \
-  The lead agent will synthesize and trim as needed.
+Be direct, factual, and honest about gaps. Don't reframe the question.
 """
+
+
+# ============================================================================
+# Web search tools — give the agent real internet access
+# ============================================================================
+
+_HTTP_CLIENT = httpx.Client(timeout=30, follow_redirects=True)
+
+
+@langchain_tool
+def web_search(query: str, max_results: int = 5) -> str:
+    """Search the web using DuckDuckGo and return results.
+
+    Args:
+        query: The search query.
+        max_results: Maximum number of results to return (default 5).
+
+    Returns:
+        Formatted search results with titles, URLs, and snippets.
+    """
+    try:
+        from duckduckgo_search import DDGS
+
+        results = []
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=max_results):
+                results.append(
+                    f"**{r.get('title', 'No title')}**\n"
+                    f"URL: {r.get('href', 'N/A')}\n"
+                    f"{r.get('body', 'No snippet')}"
+                )
+        if not results:
+            return f"No results found for: {query}"
+        return "\n\n---\n\n".join(results)
+    except ImportError:
+        return (
+            "ERROR: duckduckgo_search package not installed. "
+            "Use fetch_webpage to access URLs directly instead."
+        )
+    except Exception as exc:
+        return f"Search error: {exc}"
+
+
+@langchain_tool
+def fetch_webpage(url: str) -> str:
+    """Fetch the text content of a web page.
+
+    Args:
+        url: The URL to fetch.
+
+    Returns:
+        The page text content (truncated to 15000 chars).
+    """
+    try:
+        resp = _HTTP_CLIENT.get(url, headers={"User-Agent": "DeepSearchBot/1.0"})
+        resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "")
+        if "pdf" in content_type.lower():
+            return f"PDF document at {url} (binary content, cannot extract text directly)"
+        if (
+            "text/html" not in content_type
+            and "text/plain" not in content_type
+            and "text/xml" not in content_type
+            and "application/json" not in content_type
+            and content_type
+        ):
+            return f"Non-text content type: {content_type} at {url}"
+        text = resp.text
+        # Strip HTML tags, scripts, styles to extract readable text
+        text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = html_mod.unescape(text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r'[^\S\n]+', ' ', text).strip()
+        if len(text) > 15000:
+            text = text[:15000] + "\n\n[... truncated ...]"
+        return text
+    except Exception as exc:
+        return f"Fetch error for {url}: {exc}"
+
+
+SEARCH_TOOLS = [web_search, fetch_webpage]
 
 
 # ============================================================================
@@ -191,6 +228,9 @@ def _build_agent():
     The LLM is a ``ChatOpenAI`` instance pointed at Venice AI's OpenAI-compatible
     endpoint. The deepagents SDK wires planning, filesystem, and sub-agent
     middleware around it automatically.
+
+    Web search tools (web_search, fetch_webpage) are injected so the agent can
+    actually research topics on the internet instead of relying on training data.
     """
     model = ChatOpenAI(
         model=DEEPAGENTS_MODEL,
@@ -214,9 +254,11 @@ def _build_agent():
         model=model,
         system_prompt=SYSTEM_PROMPT,
         subagents=[research_subagent],
+        tools=SEARCH_TOOLS,
         name=MODEL_ID,
     )
-    log.info("Deep agent constructed successfully")
+    tool_count = len(SEARCH_TOOLS)
+    log.info("subagents=<1>, search_tools=<%d> | deep agent constructed", tool_count)
     return agent
 
 
@@ -435,6 +477,7 @@ async def _stream_agent(
         async for event in AGENT.astream_events(
             {"messages": langchain_messages},
             version="v2",
+            config={"recursion_limit": 150},
         ):
             kind = event.get("event", "")
             name = event.get("name", "")
@@ -583,7 +626,10 @@ async def _invoke_agent_json(
     created = int(time.time())
     start_time = time.monotonic()
     try:
-        result = await AGENT.ainvoke({"messages": langchain_messages})
+        result = await AGENT.ainvoke(
+            {"messages": langchain_messages},
+            config={"recursion_limit": 150},
+        )
         final_text = _final_text_from_state(result)
 
         # Extract files from write_file/edit_file tool calls in messages.

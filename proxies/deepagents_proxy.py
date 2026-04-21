@@ -32,6 +32,9 @@ import traceback
 import uuid
 from typing import AsyncGenerator, Optional
 
+import html as html_mod
+import re
+
 import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -223,6 +226,13 @@ def fetch_webpage(url: str) -> str:
         resp = _HTTP_CLIENT.get(url, headers={"User-Agent": "DeepSearchBot/1.0"})
         resp.raise_for_status()
         text = resp.text
+        # Strip HTML tags, scripts, styles to extract readable text
+        text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = html_mod.unescape(text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r'[^\S\n]+', ' ', text).strip()
         if len(text) > 15000:
             text = text[:15000] + "\n\n[... truncated ...]"
         return text

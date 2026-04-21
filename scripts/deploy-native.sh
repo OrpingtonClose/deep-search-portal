@@ -576,6 +576,31 @@ start_proxy "heretic-proxy" 9950 "heretic_proxy.py" \
 start_proxy "miro-proxy" 9951 "miro_proxy.py" \
     "MIRO_PROXY_PORT=9951"
 
+# --- Deep Agents proxy (deepagents SDK, port 8200) ---
+# The deepagents proxy runs in its own Python 3.11+ venv because the SDK
+# requires >=3.11 while the VM's system Python may be 3.10.
+# It uses the main /opt/venv for langchain deps but needs the deepagents
+# package from /opt/deepagents/.venv.
+DEEPAGENTS_PORT="${DEEPAGENTS_PORT:-8200}"
+if ! curl -sf "http://localhost:${DEEPAGENTS_PORT}/health" > /dev/null 2>&1; then
+    screen -S deepagents-proxy -X quit 2>/dev/null || true
+    # Use /opt/deepagents/.venv if it exists (has deepagents SDK), else /opt/venv
+    DAGENT_PYTHON="/opt/deepagents/.venv/bin/python"
+    if [ ! -f "$DAGENT_PYTHON" ]; then
+        DAGENT_PYTHON="$PYTHON"
+    fi
+    write_proxy_env "deepagents-proxy" \
+        "DEEPAGENTS_PORT=${DEEPAGENTS_PORT}" \
+        "VENICE_API_KEY=${VENICE_API_KEY:-}" \
+        "VENICE_API_BASE=${UPSTREAM_BASE}" \
+        "DEEPAGENTS_MODEL=${UPSTREAM_MODEL}"
+    screen -dmS deepagents-proxy bash -c "
+        set -a; source /opt/.env 2>/dev/null; source /tmp/deepagents-proxy.env 2>/dev/null; set +a
+        cd /opt/deep-search-portal/proxies && $DAGENT_PYTHON deepagents_proxy.py 2>&1 | tee /var/log/deepagents_proxy.log
+    "
+    log "  Deep Agents proxy starting on port ${DEEPAGENTS_PORT}..."
+fi
+
 # --- Strands Agent ---
 STRANDS_AGENT_PORT="${STRANDS_AGENT_PORT:-8100}"
 if ! curl -sf "http://localhost:${STRANDS_AGENT_PORT}/health" > /dev/null 2>&1; then
@@ -619,6 +644,7 @@ SERVICES+=(
     "TierChooser:9900"
     "Heretic:9950"
     "Miro:9951"
+    "DeepAgents:${DEEPAGENTS_PORT}"
     "StrandsAgent:${STRANDS_AGENT_PORT}"
 )
 

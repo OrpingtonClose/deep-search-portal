@@ -414,6 +414,7 @@ async def _stream_agent(
         async for event in AGENT.astream_events(
             {"messages": langchain_messages},
             version="v2",
+            config={"recursion_limit": 150},
         ):
             kind = event.get("event", "")
             name = event.get("name", "")
@@ -523,7 +524,10 @@ async def _invoke_agent_json(
     created = int(time.time())
     start_time = time.monotonic()
     try:
-        result = await AGENT.ainvoke({"messages": langchain_messages})
+        result = await AGENT.ainvoke(
+            {"messages": langchain_messages},
+            config={"recursion_limit": 150},
+        )
         final_text = _final_text_from_state(result)
         elapsed = time.monotonic() - start_time
         log.info(

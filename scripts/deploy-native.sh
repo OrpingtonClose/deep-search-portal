@@ -236,6 +236,12 @@ CREDS_KEY="${CREDS_KEY:-$(openssl rand -hex 32)}"
 JWT_SECRET="${JWT_SECRET:-$(openssl rand -hex 32)}"
 JWT_REFRESH_SECRET="${JWT_REFRESH_SECRET:-$(openssl rand -hex 32)}"
 
+# Generate staging secrets early so they can be persisted in /opt/.env.
+# This ensures staging user sessions survive re-deploys.
+STAGING_CREDS_KEY="${STAGING_CREDS_KEY:-$(openssl rand -hex 32)}"
+STAGING_JWT_SECRET="${STAGING_JWT_SECRET:-$(openssl rand -hex 32)}"
+STAGING_JWT_REFRESH="${STAGING_JWT_REFRESH:-$(openssl rand -hex 32)}"
+
 log "Writing /opt/.env..."
 install -m 600 /dev/null /opt/.env
 cat > /opt/.env << ENVEOF
@@ -265,6 +271,11 @@ GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
 CREDS_KEY=${CREDS_KEY}
 JWT_SECRET=${JWT_SECRET}
 JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+
+# --- Staging LibreChat Secrets (stable across re-deploys) ---
+STAGING_CREDS_KEY=${STAGING_CREDS_KEY}
+STAGING_JWT_SECRET=${STAGING_JWT_SECRET}
+STAGING_JWT_REFRESH=${STAGING_JWT_REFRESH}
 
 # --- Domain ---
 DOMAIN_CLIENT=${DOMAIN_CLIENT}
@@ -421,9 +432,7 @@ if [[ "$DEPLOY_ENV" == "prod" ]]; then
         cp -r "$LIBRECHAT_DIR" "$STAGING_DIR"
     fi
     # Write staging .env with DIFFERENT domain
-    STAGING_CREDS_KEY="${STAGING_CREDS_KEY:-$(openssl rand -hex 32)}"
-    STAGING_JWT_SECRET="${STAGING_JWT_SECRET:-$(openssl rand -hex 32)}"
-    STAGING_JWT_REFRESH="${STAGING_JWT_REFRESH:-$(openssl rand -hex 32)}"
+    # Staging secrets were generated earlier and persisted in /opt/.env
     cat > "$STAGING_DIR/.env" << STAGING_LCEOF
 MONGO_URI=mongodb://127.0.0.1:27017/LibreChat-staging
 MEILI_HOST=http://127.0.0.1:7700
@@ -465,7 +474,7 @@ start_proxy() {
         return 0
     fi
     screen -S "$name" -X quit 2>/dev/null || true
-    screen -dmS "$name" bash -c "set -a; source /opt/.env 2>/dev/null; set +a; ${extra_env} cd /opt/deep-search-portal/proxies && $PYTHON $script 2>&1 | tee /var/log/${name}.log"
+    screen -dmS "$name" bash -c "set -a; source /opt/.env 2>/dev/null; set +a; export ${extra_env}; cd /opt/deep-search-portal/proxies && $PYTHON $script 2>&1 | tee /var/log/${name}.log"
     log "  Starting $name on port $port..."
 }
 
@@ -540,7 +549,7 @@ for svc in "${SERVICES[@]}"; do
     if curl -sf -m 3 "http://localhost:${PORT}/health" > /dev/null 2>&1 || \
        curl -sf -m 3 "http://localhost:${PORT}" > /dev/null 2>&1; then
         log "  OK: ${NAME} (${PORT})"
-        ((HEALTHY++))
+        ((HEALTHY++)) || true
     else
         warn "FAIL: ${NAME} (${PORT})"
     fi

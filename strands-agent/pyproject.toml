@@ -27,7 +27,7 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["main", "agent", "config", "tools", "prompts", "conversation", "streaming", "log_viewer"]
+py-modules = ["main", "agent", "config", "tools", "prompts", "conversation", "streaming", "log_viewer", "knowledge_store"]
 
 [tool.setuptools.packages.find]
 include = ["plugins*", "evals*"]

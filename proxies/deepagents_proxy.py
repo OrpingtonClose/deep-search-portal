@@ -326,18 +326,26 @@ _VFILE_PATH_RE = re.compile(
 def _scrub_file_references(
     text: str,
     captured_files: dict[str, str],
-) -> str:
+) -> tuple[str, set[str]]:
     """Replace virtual file-path references in the final answer with inline content.
 
     If the referenced file was captured during the session, the path is replaced
     with a collapsible ``<details>`` block containing the file content. If the
     file was not captured, the bare path is removed and replaced with a note.
+
+    Returns:
+        A tuple of (scrubbed_text, inlined_paths) where *inlined_paths* is the
+        set of file paths that were expanded inline so the caller can exclude
+        them from the appendix.
     """
+    inlined: set[str] = set()
+
     def _replacer(match: re.Match) -> str:
         path = match.group(1)
         filename = PurePosixPath(path).name
         content = captured_files.get(path)
         if content is not None:
+            inlined.add(path)
             # Inline as collapsible section
             return (
                 f"\n<details><summary>📄 {filename}</summary>\n\n"
@@ -346,7 +354,8 @@ def _scrub_file_references(
         # File not captured — just show the filename without the path
         return f"*{filename}*"
 
-    return _VFILE_PATH_RE.sub(_replacer, text)
+    scrubbed = _VFILE_PATH_RE.sub(_replacer, text)
+    return scrubbed, inlined
 
 
 def _build_files_appendix(captured_files: dict[str, str]) -> str:
@@ -580,8 +589,10 @@ async def _invoke_agent_json(
         # Extract files from write_file/edit_file tool calls in messages.
         files = _extract_files_from_messages(result)
         if files:
-            final_text = _scrub_file_references(final_text, files)
-            appendix = _build_files_appendix(files)
+            final_text, inlined_paths = _scrub_file_references(final_text, files)
+            # Only append files that were NOT already inlined by the scrub.
+            remaining = {p: c for p, c in files.items() if p not in inlined_paths}
+            appendix = _build_files_appendix(remaining)
             if appendix:
                 final_text += appendix
                 log.info(

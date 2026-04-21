@@ -279,6 +279,38 @@ def _final_text_from_state(state: dict) -> str:
     return ""
 
 
+def _extract_files_from_messages(state: dict) -> dict[str, str]:
+    """Extract virtual file contents from write_file/edit_file tool calls in messages.
+
+    Walks the message history looking for AIMessage tool_calls with write_file
+    or edit_file names and reconstructs the file contents by replaying writes
+    and edits in order.
+    """
+    files: dict[str, str] = {}
+    messages = state.get("messages", []) if isinstance(state, dict) else []
+    for msg in messages:
+        if not isinstance(msg, (AIMessage, AIMessageChunk)):
+            continue
+        tool_calls = getattr(msg, "tool_calls", None) or []
+        for tc in tool_calls:
+            tc_name = tc.get("name", "")
+            tc_args = tc.get("args", {})
+            if not isinstance(tc_args, dict):
+                continue
+            if tc_name == "write_file":
+                fpath = tc_args.get("file_path", "")
+                fcontent = tc_args.get("content", "")
+                if fpath and fcontent:
+                    files[fpath] = fcontent
+            elif tc_name == "edit_file":
+                fpath = tc_args.get("file_path", "")
+                old_str = tc_args.get("old_string", "")
+                new_str = tc_args.get("new_string", "")
+                if fpath and fpath in files and old_str:
+                    files[fpath] = files[fpath].replace(old_str, new_str)
+    return files
+
+
 # ============================================================================
 # Virtual-file interception
 # ============================================================================
@@ -388,8 +420,6 @@ async def _stream_agent(
 
     try:
         any_content_emitted = False
-        # Buffer lead-agent content so we can scrub file references at the end.
-        lead_content_buffer: list[str] = []
         # Track the most recent tool name so we can match on_tool_start data.
         pending_tool_name: str = ""
 
@@ -426,7 +456,6 @@ async def _stream_agent(
                     yield _chunk(reasoning=text)
                 else:
                     any_content_emitted = True
-                    lead_content_buffer.append(text)
                     yield _chunk(content=text)
 
             elif kind == "on_tool_start":
@@ -434,7 +463,7 @@ async def _stream_agent(
                 tool_input = data.get("input", {})
                 pending_tool_name = tool_name
 
-                # Capture write_file inputs so we can inline them later.
+                # Capture write_file / edit_file inputs so we can inline them.
                 if tool_name == "write_file" and isinstance(tool_input, dict):
                     fpath = tool_input.get("file_path", "")
                     fcontent = tool_input.get("content", "")
@@ -443,6 +472,18 @@ async def _stream_agent(
                         log.info(
                             f"[{req_id}] Captured file: {fpath} "
                             f"({len(fcontent)} chars)"
+                        )
+                elif tool_name == "edit_file" and isinstance(tool_input, dict):
+                    fpath = tool_input.get("file_path", "")
+                    old_str = tool_input.get("old_string", "")
+                    new_str = tool_input.get("new_string", "")
+                    if fpath and fpath in captured_files and old_str:
+                        captured_files[fpath] = captured_files[fpath].replace(
+                            old_str, new_str
+                        )
+                        log.info(
+                            f"[{req_id}] Updated captured file: {fpath} "
+                            f"(edit_file patch applied)"
                         )
 
                 try:
@@ -475,14 +516,9 @@ async def _stream_agent(
 
         # --- Post-processing: inline captured file contents ---
         if captured_files:
-            # Build the full lead-agent text and scrub any remaining file paths.
-            full_text = "".join(lead_content_buffer)
-            scrubbed = _scrub_file_references(full_text, captured_files)
-
-            # If scrubbing changed the text, we need to emit a correction.
-            # Since we already streamed the original tokens, emit a small
-            # appendix with the research files instead of trying to replace
-            # mid-stream content.
+            # Since tokens were already streamed, we cannot retroactively
+            # replace file references mid-stream. Instead, append captured
+            # research files as collapsible sections at the end.
             appendix = _build_files_appendix(captured_files)
             if appendix:
                 log.info(
@@ -541,10 +577,8 @@ async def _invoke_agent_json(
         result = await AGENT.ainvoke({"messages": langchain_messages})
         final_text = _final_text_from_state(result)
 
-        # Extract files from agent state and inline them.
-        files = {}
-        if isinstance(result, dict):
-            files = result.get("files", {}) or {}
+        # Extract files from write_file/edit_file tool calls in messages.
+        files = _extract_files_from_messages(result)
         if files:
             final_text = _scrub_file_references(final_text, files)
             appendix = _build_files_appendix(files)

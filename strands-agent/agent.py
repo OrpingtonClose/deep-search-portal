@@ -6,7 +6,8 @@
 Features used:
 - OpenAI-compatible model provider (Venice AI)
 - MCP tool integration (Brave, Firecrawl, Exa, Kagi)
-- SDK-native plugins (BudgetPlugin, StreamCapturePlugin, ThoughtRefinerPlugin, ToolDisplayPlugin)
+- SDK-native plugins (BudgetPlugin, StreamCapturePlugin, ThoughtRefinerPlugin, ToolDisplayPlugin,
+  KnowledgePlugin, ToolRouterPlugin, ToolAuditPlugin)
 - Streaming responses (PrintingCallbackHandler + StreamCapturePlugin)
 - Conversation memory (SlidingWindowConversationManager)
 - Agent loop with automatic tool dispatch
@@ -32,9 +33,12 @@ from strands.handlers.callback_handler import (
 
 from config import build_model
 from plugins.budget import BudgetPlugin
+from plugins.knowledge import KnowledgePlugin
 from plugins.stream_capture import StreamCapturePlugin
 from plugins.thought_refiner import ThoughtRefinerPlugin
+from plugins.tool_audit import ToolAuditPlugin
 from plugins.tool_display import ToolDisplayPlugin
+from plugins.tool_router import ToolRouterPlugin
 from prompts import (
     DEEP_AGENT_INSTRUCTIONS,
     DEEP_CITATIONS_PROMPT,
@@ -52,9 +56,12 @@ logger = logging.getLogger(__name__)
 # from main.py (e.g. stream_capture.activate() in the SSE handler).
 
 budget_plugin = BudgetPlugin()
+knowledge_plugin = KnowledgePlugin()
 stream_capture = StreamCapturePlugin()
 thought_refiner = ThoughtRefinerPlugin()
+tool_audit = ToolAuditPlugin()
 tool_display = ToolDisplayPlugin()
+tool_router = ToolRouterPlugin()
 
 # Module-level reference to the AdaptiveLoopPlugin instance (if created).
 # Set by create_multi_agent() so reset_plugins() can call plugin.reset().
@@ -67,7 +74,15 @@ def get_default_plugins() -> list[Plugin]:
     Returns:
         List of SDK Plugin instances.
     """
-    return [budget_plugin, stream_capture, thought_refiner, tool_display]
+    return [
+        knowledge_plugin,
+        tool_router,
+        budget_plugin,
+        stream_capture,
+        thought_refiner,
+        tool_display,
+        tool_audit,
+    ]
 
 
 def reset_plugins() -> None:

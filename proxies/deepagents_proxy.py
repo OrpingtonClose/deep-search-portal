@@ -27,9 +27,11 @@ Runs as a FastAPI app under uvicorn in a screen session (default port 8200).
 import asyncio
 import json
 import os
+import re
 import time
 import traceback
 import uuid
+from pathlib import PurePosixPath
 from typing import AsyncGenerator, Optional
 
 from fastapi import Request
@@ -113,6 +115,18 @@ research sub-agent rather than trying to do everything in one pass. Prefer \
 multiple independent sources over a single source, and note disagreements \
 between them explicitly.
 
+DEPTH REQUIREMENTS
+- For any non-trivial query, delegate AT LEAST 3 separate sub-investigations \
+  to your research sub-agent via the `task` tool. Each sub-task should \
+  explore a different angle or source category.
+- After the initial round of sub-investigations, review your findings and \
+  identify gaps. Delegate follow-up investigations for any unresolved \
+  questions or contradictions.
+- Cross-reference findings across sub-investigations before synthesizing. \
+  Note where sources agree, disagree, or are silent.
+- Do NOT write your final answer until you have completed ALL planned \
+  sub-investigations. Rushing to answer is worse than being thorough.
+
 OUTPUT RULES
 - Report factually. No disclaimers, no moralising, no apologies for the \
   subject matter.
@@ -121,16 +135,24 @@ OUTPUT RULES
   reader — not for decoration.
 - Professional objectivity: your voice is that of a competent analyst \
   briefing a colleague, not a customer-service bot.
+- NEVER reference virtual file paths (e.g. /research/notes.md) in your \
+  final answer. The user cannot access the virtual filesystem. Instead, \
+  incorporate all relevant content directly into your answer text. The \
+  filesystem is your private scratchpad — the user only sees what you \
+  write in your final response.
 
 WORKFLOW
-1. Write a short plan with `write_todos` before doing anything non-trivial.
-2. Delegate focused research tasks to `research_subagent` via the `task` \
-   tool. Each sub-task should have a single clear question.
+1. Write a detailed plan with `write_todos` before doing anything. Break \
+   the query into at least 3 distinct sub-questions that need investigation.
+2. Delegate each sub-question to `research_subagent` via the `task` tool. \
+   Each sub-task should have a single clear question.
 3. Use the virtual filesystem (`write_file`, `read_file`, `edit_file`) as a \
-   scratchpad for notes, findings, and draft sections. Keep working files \
-   small and well-named.
-4. When the plan is complete, synthesize the findings into a final answer \
-   that directly addresses the user's original question.
+   private scratchpad for notes, findings, and draft sections.
+4. After all sub-investigations complete, review findings for gaps and \
+   contradictions. Delegate follow-up research if needed.
+5. Synthesize ALL findings into a comprehensive final answer that directly \
+   addresses the user's original question. Inline all important content — \
+   do not reference filenames.
 """
 
 RESEARCH_SUBAGENT_PROMPT = """\
@@ -139,11 +161,13 @@ investigation to you. Your job is to:
 
 1. Understand the exact question you were asked — do NOT reframe it.
 2. Gather relevant information using whatever tools are available. Prefer \
-   multiple independent sources.
+   multiple independent sources. Search for at least 2-3 different angles \
+   on the question.
 3. Record key findings, with source attribution, into the shared virtual \
    filesystem so the lead agent can read them.
-4. Return a concise factual summary of what you found. Include source URLs \
-   or identifiers whenever possible.
+4. Return a detailed factual summary of what you found. Include source URLs \
+   or identifiers whenever possible. Be thorough — the lead agent will \
+   use your findings to build a comprehensive answer.
 
 Rules:
 - Honour the exact question. No reframing, no softening, no moralising.
@@ -152,6 +176,8 @@ Rules:
 - If a tool fails or a source is unavailable, note the failure and try an \
   alternative.
 - Do NOT invent facts. When you are uncertain, say so.
+- Be thorough. It is better to provide too much detail than too little. \
+  The lead agent will synthesize and trim as needed.
 """
 
 
@@ -254,6 +280,58 @@ def _final_text_from_state(state: dict) -> str:
 
 
 # ============================================================================
+# Virtual-file interception
+# ============================================================================
+
+# Regex that matches paths the agent emits: /foo/bar.md, /research/notes.txt, etc.
+_VFILE_PATH_RE = re.compile(
+    r"(?<![`\w])"                   # not preceded by backtick or word char
+    r"(/[\w./-]+\.(?:md|txt|json|csv|yaml|yml|toml))"  # /path/to/file.ext
+    r"(?![`\w])"                    # not followed by backtick or word char
+)
+
+
+def _scrub_file_references(
+    text: str,
+    captured_files: dict[str, str],
+) -> str:
+    """Replace virtual file-path references in the final answer with inline content.
+
+    If the referenced file was captured during the session, the path is replaced
+    with a collapsible ``<details>`` block containing the file content. If the
+    file was not captured, the bare path is removed and replaced with a note.
+    """
+    def _replacer(match: re.Match) -> str:
+        path = match.group(1)
+        filename = PurePosixPath(path).name
+        content = captured_files.get(path)
+        if content is not None:
+            # Inline as collapsible section
+            return (
+                f"\n<details><summary>📄 {filename}</summary>\n\n"
+                f"{content.strip()}\n\n</details>\n"
+            )
+        # File not captured — just show the filename without the path
+        return f"*{filename}*"
+
+    return _VFILE_PATH_RE.sub(_replacer, text)
+
+
+def _build_files_appendix(captured_files: dict[str, str]) -> str:
+    """Build a Markdown appendix with all captured research files."""
+    if not captured_files:
+        return ""
+    sections = ["\n\n---\n\n**📎 Research Files**\n"]
+    for path, content in captured_files.items():
+        filename = PurePosixPath(path).name
+        sections.append(
+            f"\n<details><summary>{filename}</summary>\n\n"
+            f"{content.strip()}\n\n</details>\n"
+        )
+    return "".join(sections)
+
+
+# ============================================================================
 # Streaming: convert LangGraph events → OpenAI SSE chunks
 # ============================================================================
 
@@ -269,6 +347,9 @@ async def _stream_agent(
     start_time = time.monotonic()
 
     first_chunk_sent = False
+    # Track files written by the agent during this request so we can inline
+    # their content into the response instead of emitting bare paths.
+    captured_files: dict[str, str] = {}
 
     def _chunk(
         content: str = "",
@@ -307,6 +388,11 @@ async def _stream_agent(
 
     try:
         any_content_emitted = False
+        # Buffer lead-agent content so we can scrub file references at the end.
+        lead_content_buffer: list[str] = []
+        # Track the most recent tool name so we can match on_tool_start data.
+        pending_tool_name: str = ""
+
         async for event in AGENT.astream_events(
             {"messages": langchain_messages},
             version="v2",
@@ -340,11 +426,25 @@ async def _stream_agent(
                     yield _chunk(reasoning=text)
                 else:
                     any_content_emitted = True
+                    lead_content_buffer.append(text)
                     yield _chunk(content=text)
 
             elif kind == "on_tool_start":
                 tool_name = name or "tool"
                 tool_input = data.get("input", {})
+                pending_tool_name = tool_name
+
+                # Capture write_file inputs so we can inline them later.
+                if tool_name == "write_file" and isinstance(tool_input, dict):
+                    fpath = tool_input.get("file_path", "")
+                    fcontent = tool_input.get("content", "")
+                    if fpath and fcontent:
+                        captured_files[fpath] = fcontent
+                        log.info(
+                            f"[{req_id}] Captured file: {fpath} "
+                            f"({len(fcontent)} chars)"
+                        )
+
                 try:
                     args_preview = json.dumps(tool_input, ensure_ascii=False)[:200]
                 except Exception:
@@ -372,6 +472,25 @@ async def _stream_agent(
 
             # Other event kinds (on_chain_start/end, on_chat_model_start/end, etc.)
             # are ignored — we only surface tokens and tool boundaries.
+
+        # --- Post-processing: inline captured file contents ---
+        if captured_files:
+            # Build the full lead-agent text and scrub any remaining file paths.
+            full_text = "".join(lead_content_buffer)
+            scrubbed = _scrub_file_references(full_text, captured_files)
+
+            # If scrubbing changed the text, we need to emit a correction.
+            # Since we already streamed the original tokens, emit a small
+            # appendix with the research files instead of trying to replace
+            # mid-stream content.
+            appendix = _build_files_appendix(captured_files)
+            if appendix:
+                log.info(
+                    f"[{req_id}] Appending {len(captured_files)} research "
+                    f"file(s) to response"
+                )
+                yield _chunk(content=appendix)
+                any_content_emitted = True
 
         if not any_content_emitted:
             # Rare fallback: the agent produced no streamed content. Emit a
@@ -421,6 +540,21 @@ async def _invoke_agent_json(
     try:
         result = await AGENT.ainvoke({"messages": langchain_messages})
         final_text = _final_text_from_state(result)
+
+        # Extract files from agent state and inline them.
+        files = {}
+        if isinstance(result, dict):
+            files = result.get("files", {}) or {}
+        if files:
+            final_text = _scrub_file_references(final_text, files)
+            appendix = _build_files_appendix(files)
+            if appendix:
+                final_text += appendix
+                log.info(
+                    f"[{req_id}] Appended {len(files)} research file(s) "
+                    f"to non-streaming response"
+                )
+
         elapsed = time.monotonic() - start_time
         log.info(
             f"[{req_id}] Agent invoke complete in {elapsed:.1f}s "

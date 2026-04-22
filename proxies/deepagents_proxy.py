@@ -109,8 +109,10 @@ RULES
 - Cite your sources with URLs. Flag uncertainty honestly.
 - Be concise: get to the point, then stop. No disclaimers or filler.
 - Use Markdown only when it genuinely helps readability.
-- NEVER reference virtual file paths in your answer. The filesystem is \
-  your private scratchpad — inline all content into the response.
+- NEVER reference virtual file paths, filenames, or documents you created \
+  in your answer. The user CANNOT access your filesystem. All content MUST \
+  be inlined directly into the response text. Never say "I saved to X" or \
+  "see file X" — just put the content in your answer.
 
 WEB SEARCH
 - `brave_search(query)` — primary general-purpose web search (Brave API)
@@ -142,7 +144,8 @@ ARCHIVES
 
 BUILT-IN
 - `research_subagent` via `task` — delegate focused sub-questions
-- `write_file` / `read_file` — private scratchpad for notes
+- `write_file` / `read_file` — private scratchpad (NEVER mention these \
+  files or their paths in your answer — the user cannot see them)
 
 QUERY-AWARE TOOL SELECTION
 - Academic question: openalex_search + semantic_scholar_search, then \
@@ -463,6 +466,47 @@ def _final_text_from_state(state: dict) -> str:
 
 
 # ============================================================================
+# File-reference stripping
+# ============================================================================
+
+# Matches file paths and common "I saved to file" patterns the agent emits.
+_FILE_REF_PATTERNS = [
+    # "I've saved the findings to `compound_interactions.md`"
+    re.compile(
+        r"(?:I(?:'ve|'ve| have)?|Here(?:'s| is))\s+"
+        r"(?:saved|written|compiled|created|stored|put|exported|generated)\s+"
+        r"(?:the |my |a |an )?(?:findings?|research|results?|notes?|report|"
+        r"analysis|data|summary|details?|content|document|overview|information)?"
+        r"\s*(?:to|in|into|as|at)\s+"
+        r"[`\"']?[\w/.\-]+\.(?:md|txt|json|csv|html|pdf)[`\"']?"
+        r"[.]?",
+        re.IGNORECASE,
+    ),
+    # "See `filename.md` for details" / "refer to filename.md"
+    re.compile(
+        r"(?:see|refer to|check|view|open|read)\s+"
+        r"[`\"']?[\w/.\-]+\.(?:md|txt|json|csv|html|pdf)[`\"']?"
+        r"(?:\s+for\s+\w+(?:\s+\w+){0,4})?[.]?",
+        re.IGNORECASE,
+    ),
+    # Bare backtick-quoted filenames like `research_notes.md`
+    re.compile(
+        r"`[\w/.\-]+\.(?:md|txt|json|csv|html|pdf)`"
+        r"(?:\s*[-–—]\s*[^\n]{0,80})?",
+    ),
+]
+
+
+def _strip_file_references(text: str) -> str:
+    """Remove virtual-filesystem references from agent output."""
+    for pat in _FILE_REF_PATTERNS:
+        text = pat.sub("", text)
+    # Clean up leftover blank lines from stripped references
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+# ============================================================================
 # Streaming: convert LangGraph events → OpenAI SSE chunks
 # ============================================================================
 
@@ -516,6 +560,8 @@ async def _stream_agent(
 
     try:
         any_content_emitted = False
+        # Track files written by the agent so we can inline them for the user.
+        written_files: dict[str, str] = {}  # filename → content
         async for event in AGENT.astream_events(
             {"messages": langchain_messages},
             version="v2",
@@ -555,6 +601,23 @@ async def _stream_agent(
             elif kind == "on_tool_start":
                 tool_name = name or "tool"
                 tool_input = data.get("input", {})
+
+                # Capture write_file content so we can inline it later.
+                if tool_name in ("write_file", "edit_file"):
+                    fname = (
+                        tool_input.get("filename")
+                        or tool_input.get("file_path")
+                        or tool_input.get("path")
+                        or "untitled"
+                    )
+                    fcontent = tool_input.get("content", "")
+                    if isinstance(fname, str) and isinstance(fcontent, str) and fcontent:
+                        written_files[fname] = fcontent
+                        log.info(
+                            f"[{req_id}] Captured write_file: "
+                            f"{fname} ({len(fcontent)} chars)"
+                        )
+
                 try:
                     args_preview = json.dumps(tool_input, ensure_ascii=False)[:200]
                 except Exception:
@@ -582,6 +645,20 @@ async def _stream_agent(
 
             # Other event kinds (on_chain_start/end, on_chat_model_start/end, etc.)
             # are ignored — we only surface tokens and tool boundaries.
+
+        # Append captured file content as collapsible sections so the user
+        # can see the research the agent compiled (instead of broken paths).
+        if written_files:
+            yield _chunk(content="\n\n---\n\n")
+            for fname, fcontent in written_files.items():
+                section = (
+                    f"<details>\n"
+                    f"<summary>📎 {fname}</summary>\n\n"
+                    f"{fcontent}\n\n"
+                    f"</details>\n\n"
+                )
+                yield _chunk(content=section)
+                any_content_emitted = True
 
         if not any_content_emitted:
             # Rare fallback: the agent produced no streamed content. Emit a
@@ -633,7 +710,7 @@ async def _invoke_agent_json(
             {"messages": langchain_messages},
             config={"recursion_limit": 150},
         )
-        final_text = _final_text_from_state(result)
+        final_text = _strip_file_references(_final_text_from_state(result))
         elapsed = time.monotonic() - start_time
         log.info(
             f"[{req_id}] Agent invoke complete in {elapsed:.1f}s "

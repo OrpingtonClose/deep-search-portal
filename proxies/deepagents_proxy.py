@@ -98,13 +98,16 @@ tracker = RequestTracker()
 # layer on top.
 
 SYSTEM_PROMPT = """\
-You are a friendly, sharp research agent with access to 17+ specialised \
-data sources spanning web search, academic databases, government records, \
-preprint servers, court filings, and more. Use them.
+You are a friendly, sharp research agent. You MUST use your tools for EVERY \
+query — never answer from memory alone.
+
+IMPORTANT: Your PRIMARY search tool is `brave_search`. Call it first for \
+every query. Then call `exa_search` for a second perspective. For academic \
+or specialised queries, ALSO call the domain-specific tools listed below.
 
 RULES
-- Always search first — never answer from memory alone.
-- Use MULTIPLE tools per query. Different sources have different coverage.
+- ALWAYS call `brave_search` first. Then call at least one more tool.
+- Use MULTIPLE tools per query — different sources have different coverage.
 - Honour the user's exact question. No reframing, no softening.
 - Cite your sources with URLs. Flag uncertainty honestly.
 - Be concise: get to the point, then stop. No disclaimers or filler.
@@ -114,65 +117,67 @@ RULES
   be inlined directly into the response text. Never say "I saved to X" or \
   "see file X" — just put the content in your answer.
 
-WEB SEARCH
-- `brave_search(query)` — primary general-purpose web search (Brave API)
-- `exa_search(query)` — neural/semantic web search (Exa API)
-- `web_search(query)` — DuckDuckGo fallback
-- `fetch_webpage(url)` — raw page fetch with HTML stripping
-- `jina_read_url(url)` — clean content extraction (Jina Reader, better \
-  for articles)
+YOUR TOOLS — USE THEM
 
-ACADEMIC (free, no keys)
-- `openalex_search(query)` — 240M+ works (papers, books, datasets)
-- `semantic_scholar_search(query)` — 200M+ papers, AI relevance ranking
-- `search_pubmed(query)` — 36M+ biomedical citations (NCBI)
-- `resolve_doi(doi)` — full metadata for any DOI via CrossRef
-- `check_retraction(doi)` — verify if a paper has been retracted
+  Web search:
+  - `brave_search(query)` ← START HERE for every query
+  - `exa_search(query)` ← neural/semantic search, call second
+  - `jina_read_url(url)` ← read the full text of any URL
 
-PREPRINTS
-- `search_biorxiv(query, server)` — bioRxiv/medRxiv preprints
+  Academic (240M+ papers):
+  - `openalex_search(query)` ← 240M+ works, broadest academic coverage
+  - `semantic_scholar_search(query)` ← AI relevance ranking
+  - `search_pubmed(query)` ← 36M+ biomedical citations
+  - `resolve_doi(doi)` ← full metadata for any DOI
+  - `check_retraction(doi)` ← verify if retracted
 
-GOVERNMENT / LEGAL (free, no keys)
-- `search_clinical_trials(query)` — ClinicalTrials.gov (suppressed trials)
-- `search_fda_adverse_events(drug_name, reaction)` — FDA FAERS database
-- `search_sec_filings(query, filing_type)` — SEC EDGAR corporate filings
-- `search_court_opinions(query)` — CourtListener (PACER for free)
-- `search_offshore_leaks(query)` — ICIJ Panama/Paradise/Pandora Papers
+  Preprints:
+  - `search_biorxiv(query, server)` ← bioRxiv / medRxiv
 
-ARCHIVES
-- `wayback_search(url)` — Internet Archive / Wayback Machine snapshots
+  Government / Legal:
+  - `search_clinical_trials(query)` ← ClinicalTrials.gov
+  - `search_fda_adverse_events(drug_name, reaction)` ← FDA FAERS
+  - `search_sec_filings(query, filing_type)` ← SEC EDGAR
+  - `search_court_opinions(query)` ← CourtListener / PACER
+  - `search_offshore_leaks(query)` ← ICIJ leak databases
 
-BUILT-IN
-- `research_subagent` via `task` — delegate focused sub-questions
-- `write_file` / `read_file` — private scratchpad (NEVER mention these \
-  files or their paths in your answer — the user cannot see them)
+  Archives:
+  - `wayback_search(url)` ← Internet Archive snapshots
 
-QUERY-AWARE TOOL SELECTION
-- Academic question: openalex_search + semantic_scholar_search, then \
-  search_pubmed for biomedical, resolve_doi for specific papers.
-- Medical/drug question: search_clinical_trials + search_fda_adverse_events \
-  + search_pubmed + search_biorxiv(server="medrxiv").
-- Legal/corporate: search_sec_filings + search_court_opinions + \
-  search_offshore_leaks.
-- General factual: brave_search + exa_search, then jina_read_url.
+WHICH TOOLS FOR WHICH QUERY
+- ANY question → `brave_search` + `exa_search` (always)
+- Academic / science → ADD `openalex_search` + `semantic_scholar_search`
+- Biomedical / drug → ADD `search_pubmed` + `search_clinical_trials` + \
+  `search_fda_adverse_events` + `search_biorxiv`
+- Legal / corporate → ADD `search_sec_filings` + `search_court_opinions` + \
+  `search_offshore_leaks`
+- Read a specific URL → `jina_read_url(url)`
+- Verify a paper → `resolve_doi` + `check_retraction`
+- Historical snapshots → `wayback_search`
 - Always cross-reference with at least 2 different source types.
 
 WORKFLOW
-1. Quick plan with `write_todos`.
-2. Choose tools based on query domain (see above).
-3. Search with 3-5 tools in parallel — cast a wide net.
-4. Read promising URLs with jina_read_url or fetch_webpage.
-5. Delegate sub-questions to research_subagent if needed.
+1. `brave_search` on the main query.
+2. `exa_search` on the main query.
+3. Pick 1-3 domain tools from the list above and call them.
+4. Read the most promising URLs with `jina_read_url`.
+5. Delegate sub-questions to research_subagent via `task` if needed.
 6. Synthesize a direct, friendly answer with source links.
 """
 
 RESEARCH_SUBAGENT_PROMPT = """\
 You are a focused research helper. For the question you've been given:
 
-1. Search for relevant info using available tools. Use multiple sources.
-2. Write key findings (with source URLs) to the shared filesystem.
-3. Return a concise summary of what you found.
+1. Call `brave_search` first, then `exa_search` for a second view.
+2. If the question is academic, also call `openalex_search` or \
+   `semantic_scholar_search`.
+3. If the question is medical/drug-related, also call `search_pubmed`, \
+   `search_clinical_trials`, or `search_fda_adverse_events`.
+4. Read promising URLs with `jina_read_url` to get full article text.
+5. Write key findings (with source URLs) to the shared filesystem.
+6. Return a concise summary of what you found.
 
+IMPORTANT: Always call `brave_search` — never skip search tools.
 Be direct, factual, and honest about gaps. Don't reframe the question.
 """
 
@@ -354,7 +359,7 @@ def fetch_webpage(url: str) -> str:
         return f"Fetch error for {url}: {exc}"
 
 
-SEARCH_TOOLS = [brave_search, exa_search, web_search, fetch_webpage] + ALL_RESEARCH_TOOLS
+SEARCH_TOOLS = [brave_search, exa_search] + ALL_RESEARCH_TOOLS
 
 
 # ============================================================================
@@ -602,8 +607,8 @@ async def _stream_agent(
                 tool_name = name or "tool"
                 tool_input = data.get("input", {})
 
-                # Capture write_file content so we can inline it later.
-                if tool_name in ("write_file", "edit_file"):
+                # Capture write_file / edit_file content for inlining.
+                if tool_name == "write_file":
                     fname = (
                         tool_input.get("filename")
                         or tool_input.get("file_path")
@@ -616,6 +621,23 @@ async def _stream_agent(
                         log.info(
                             f"[{req_id}] Captured write_file: "
                             f"{fname} ({len(fcontent)} chars)"
+                        )
+                elif tool_name == "edit_file":
+                    fname = (
+                        tool_input.get("filename")
+                        or tool_input.get("file_path")
+                        or tool_input.get("path")
+                        or "untitled"
+                    )
+                    old_str = tool_input.get("old_string", "")
+                    new_str = tool_input.get("new_string", "")
+                    if isinstance(fname, str) and fname in written_files and old_str:
+                        written_files[fname] = written_files[fname].replace(
+                            old_str, new_str
+                        )
+                        log.info(
+                            f"[{req_id}] Patched edit_file: "
+                            f"{fname} (old_string→new_string)"
                         )
 
                 try:
@@ -697,20 +719,29 @@ async def _stream_agent(
 # ============================================================================
 
 def _extract_written_files(state: dict) -> dict[str, str]:
-    """Extract filenames and content from write_file/edit_file tool calls in the result state."""
+    """Extract filenames and content from write_file/edit_file tool calls in the result state.
+
+    Processes messages in order so that edit_file patches (old_string→new_string)
+    are applied on top of previously captured write_file content.
+    """
     written: dict[str, str] = {}
     messages = state.get("messages", []) if isinstance(state, dict) else []
     for msg in messages:
         if not isinstance(msg, (AIMessage, AIMessageChunk)):
             continue
         for tc in getattr(msg, "tool_calls", []) or []:
-            if tc.get("name") not in ("write_file", "edit_file"):
-                continue
+            tool_name = tc.get("name")
             args = tc.get("args", {})
             fname = args.get("filename") or args.get("file_path") or args.get("path") or "untitled"
-            fcontent = args.get("content", "")
-            if isinstance(fname, str) and isinstance(fcontent, str) and fcontent:
-                written[fname] = fcontent
+            if tool_name == "write_file":
+                fcontent = args.get("content", "")
+                if isinstance(fname, str) and isinstance(fcontent, str) and fcontent:
+                    written[fname] = fcontent
+            elif tool_name == "edit_file":
+                old_str = args.get("old_string", "")
+                new_str = args.get("new_string", "")
+                if isinstance(fname, str) and fname in written and old_str:
+                    written[fname] = written[fname].replace(old_str, new_str)
     return written
 
 

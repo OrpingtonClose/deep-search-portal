@@ -403,7 +403,7 @@ def search_clinical_trials(
         "sort": "LastUpdatePostDate:desc",
     }
     if status:
-        params["query.term"] += f" AND AREA[OverallStatus]{status}"
+        params["filter.overallStatus"] = status
 
     try:
         resp = _HTTP.get(
@@ -772,7 +772,7 @@ def wayback_search(url: str, limit: int = 5) -> str:
                 "output": "json",
                 "limit": min(limit, 20),
                 "fl": "timestamp,original,statuscode,mimetype,length",
-                "sort": "timestamp:desc",
+                "sort": "reverse",
             },
             timeout=30,
         )

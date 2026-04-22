@@ -27,11 +27,9 @@ Runs as a FastAPI app under uvicorn in a screen session (default port 8200).
 import asyncio
 import json
 import os
-import re
 import time
 import traceback
 import uuid
-from pathlib import PurePosixPath
 from typing import AsyncGenerator, Optional
 
 import html as html_mod
@@ -53,6 +51,7 @@ from langchain_openai import ChatOpenAI
 
 from deepagents import SubAgent, create_deep_agent
 
+from research_tools import ALL_RESEARCH_TOOLS
 from shared import (
     RequestTracker,
     create_app,
@@ -99,29 +98,72 @@ tracker = RequestTracker()
 # layer on top.
 
 SYSTEM_PROMPT = """\
-You are a friendly, sharp research agent. You search the web, gather facts, \
-and give concise, well-sourced answers.
+You are a friendly, sharp research agent with access to 17+ specialised \
+data sources spanning web search, academic databases, government records, \
+preprint servers, court filings, and more. Use them.
 
 RULES
-- Always use `web_search` first — never answer from memory alone.
+- Always search first — never answer from memory alone.
+- Use MULTIPLE tools per query. Different sources have different coverage.
 - Honour the user's exact question. No reframing, no softening.
-- Cite your sources. Flag uncertainty honestly.
+- Cite your sources with URLs. Flag uncertainty honestly.
 - Be concise: get to the point, then stop. No disclaimers or filler.
 - Use Markdown only when it genuinely helps readability.
+- NEVER reference virtual file paths, filenames, or documents you created \
+  in your answer. The user CANNOT access your filesystem. All content MUST \
+  be inlined directly into the response text. Never say "I saved to X" or \
+  "see file X" — just put the content in your answer.
 
-- NEVER reference virtual file paths in your answer. The filesystem is \
-  your private scratchpad — inline all content into the response.
+WEB SEARCH
+- `brave_search(query)` — primary general-purpose web search (Brave API)
+- `exa_search(query)` — neural/semantic web search (Exa API)
+- `web_search(query)` — DuckDuckGo fallback
+- `fetch_webpage(url)` — raw page fetch with HTML stripping
+- `jina_read_url(url)` — clean content extraction (Jina Reader, better \
+  for articles)
 
-TOOLS
-- `web_search(query)` — search the web (DuckDuckGo).
-- `fetch_webpage(url)` — read a web page's text content.
-- `research_subagent` via `task` — delegate focused sub-questions.
-- `write_file` / `read_file` — scratchpad for notes.
+ACADEMIC (free, no keys)
+- `openalex_search(query)` — 240M+ works (papers, books, datasets)
+- `semantic_scholar_search(query)` — 200M+ papers, AI relevance ranking
+- `search_pubmed(query)` — 36M+ biomedical citations (NCBI)
+- `resolve_doi(doi)` — full metadata for any DOI via CrossRef
+- `check_retraction(doi)` — verify if a paper has been retracted
+
+PREPRINTS
+- `search_biorxiv(query, server)` — bioRxiv/medRxiv preprints
+
+GOVERNMENT / LEGAL (free, no keys)
+- `search_clinical_trials(query)` — ClinicalTrials.gov (suppressed trials)
+- `search_fda_adverse_events(drug_name, reaction)` — FDA FAERS database
+- `search_sec_filings(query, filing_type)` — SEC EDGAR corporate filings
+- `search_court_opinions(query)` — CourtListener (PACER for free)
+- `search_offshore_leaks(query)` — ICIJ Panama/Paradise/Pandora Papers
+
+ARCHIVES
+- `wayback_search(url)` — Internet Archive / Wayback Machine snapshots
+
+BUILT-IN
+- `research_subagent` via `task` — delegate focused sub-questions
+- `write_file` / `read_file` — private scratchpad (NEVER mention these \
+  files or their paths in your answer — the user cannot see them)
+
+QUERY-AWARE TOOL SELECTION
+- Academic question: openalex_search + semantic_scholar_search, then \
+  search_pubmed for biomedical, resolve_doi for specific papers.
+- Medical/drug question: search_clinical_trials + search_fda_adverse_events \
+  + search_pubmed + search_biorxiv(server="medrxiv").
+- Legal/corporate: search_sec_filings + search_court_opinions + \
+  search_offshore_leaks.
+- General factual: brave_search + exa_search, then jina_read_url.
+- Always cross-reference with at least 2 different source types.
 
 WORKFLOW
 1. Quick plan with `write_todos`.
-2. Search → read promising results → delegate sub-questions if needed.
-3. Synthesize a direct, friendly answer with source links. Inline all content.
+2. Choose tools based on query domain (see above).
+3. Search with 3-5 tools in parallel — cast a wide net.
+4. Read promising URLs with jina_read_url or fetch_webpage.
+5. Delegate sub-questions to research_subagent if needed.
+6. Synthesize a direct, friendly answer with source links.
 """
 
 RESEARCH_SUBAGENT_PROMPT = """\
@@ -136,15 +178,112 @@ Be direct, factual, and honest about gaps. Don't reframe the question.
 
 
 # ============================================================================
-# Web search tools — give the agent real internet access
+# Search tools — API-backed engines for reliable web research
 # ============================================================================
 
 _HTTP_CLIENT = httpx.Client(timeout=30, follow_redirects=True)
 
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY") or os.getenv("BRAVE_SEARCH_API_KEY", "")
+EXA_API_KEY = os.getenv("EXA_API_KEY", "")
+
+log.info(
+    "search_keys: brave=%s, exa=%s",
+    "SET" if BRAVE_API_KEY else "MISSING",
+    "SET" if EXA_API_KEY else "MISSING",
+)
+
+
+@langchain_tool
+def brave_search(query: str, max_results: int = 8) -> str:
+    """Search the web using the Brave Search API.
+
+    This is the primary search engine — use it first for every query.
+    Returns titles, URLs, and descriptions from Brave's index.
+
+    Args:
+        query: The search query.
+        max_results: Maximum number of results (default 8).
+
+    Returns:
+        Formatted search results with titles, URLs, and descriptions.
+    """
+    if not BRAVE_API_KEY:
+        return "ERROR: BRAVE_API_KEY not configured"
+    try:
+        resp = _HTTP_CLIENT.get(
+            "https://api.search.brave.com/res/v1/web/search",
+            params={"q": query, "count": max_results},
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip",
+                "X-Subscription-Token": BRAVE_API_KEY,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = []
+        for r in data.get("web", {}).get("results", [])[:max_results]:
+            title = r.get("title", "No title")
+            url = r.get("url", "N/A")
+            desc = r.get("description", "No description")
+            results.append(f"**{title}**\nURL: {url}\n{desc}")
+        if not results:
+            return f"No Brave results for: {query}"
+        return "\n\n---\n\n".join(results)
+    except Exception as exc:
+        return f"Brave search error: {exc}"
+
+
+@langchain_tool
+def exa_search(query: str, max_results: int = 8) -> str:
+    """Search the web using the Exa neural search API.
+
+    Exa excels at finding specific documents, research papers, niche content,
+    and pages that match the meaning of a query (not just keywords).
+
+    Args:
+        query: The search query (can be a natural language question).
+        max_results: Maximum number of results (default 8).
+
+    Returns:
+        Formatted search results with titles, URLs, and text highlights.
+    """
+    if not EXA_API_KEY:
+        return "ERROR: EXA_API_KEY not configured"
+    try:
+        resp = _HTTP_CLIENT.post(
+            "https://api.exa.ai/search",
+            json={
+                "query": query,
+                "numResults": max_results,
+                "type": "auto",
+                "contents": {"text": {"maxCharacters": 1000}},
+            },
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": EXA_API_KEY,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = []
+        for r in data.get("results", [])[:max_results]:
+            title = r.get("title", "No title")
+            url = r.get("url", "N/A")
+            text = r.get("text", "No content")[:500]
+            results.append(f"**{title}**\nURL: {url}\n{text}")
+        if not results:
+            return f"No Exa results for: {query}"
+        return "\n\n---\n\n".join(results)
+    except Exception as exc:
+        return f"Exa search error: {exc}"
+
 
 @langchain_tool
 def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web using DuckDuckGo and return results.
+    """Search the web using DuckDuckGo (fallback search engine).
+
+    Use brave_search and exa_search first — this is the fallback.
 
     Args:
         query: The search query.
@@ -165,15 +304,15 @@ def web_search(query: str, max_results: int = 5) -> str:
                     f"{r.get('body', 'No snippet')}"
                 )
         if not results:
-            return f"No results found for: {query}"
+            return f"No DuckDuckGo results for: {query}"
         return "\n\n---\n\n".join(results)
     except ImportError:
         return (
-            "ERROR: duckduckgo_search package not installed. "
-            "Use fetch_webpage to access URLs directly instead."
+            "DuckDuckGo not available. "
+            "Use brave_search or exa_search instead."
         )
     except Exception as exc:
-        return f"Search error: {exc}"
+        return f"DuckDuckGo search error: {exc}"
 
 
 @langchain_tool
@@ -215,7 +354,7 @@ def fetch_webpage(url: str) -> str:
         return f"Fetch error for {url}: {exc}"
 
 
-SEARCH_TOOLS = [web_search, fetch_webpage]
+SEARCH_TOOLS = [brave_search, exa_search, web_search, fetch_webpage] + ALL_RESEARCH_TOOLS
 
 
 # ============================================================================
@@ -258,7 +397,12 @@ def _build_agent():
         name=MODEL_ID,
     )
     tool_count = len(SEARCH_TOOLS)
-    log.info("subagents=<1>, search_tools=<%d> | deep agent constructed", tool_count)
+    tool_names = [t.name for t in SEARCH_TOOLS]
+    log.info(
+        "subagents=<1>, search_tools=<%d>, tools=<%s> | deep agent constructed",
+        tool_count,
+        tool_names,
+    )
     return agent
 
 
@@ -321,97 +465,45 @@ def _final_text_from_state(state: dict) -> str:
     return ""
 
 
-def _extract_files_from_messages(state: dict) -> dict[str, str]:
-    """Extract virtual file contents from write_file/edit_file tool calls in messages.
-
-    Walks the message history looking for AIMessage tool_calls with write_file
-    or edit_file names and reconstructs the file contents by replaying writes
-    and edits in order.
-    """
-    files: dict[str, str] = {}
-    messages = state.get("messages", []) if isinstance(state, dict) else []
-    for msg in messages:
-        if not isinstance(msg, (AIMessage, AIMessageChunk)):
-            continue
-        tool_calls = getattr(msg, "tool_calls", None) or []
-        for tc in tool_calls:
-            tc_name = tc.get("name", "")
-            tc_args = tc.get("args", {})
-            if not isinstance(tc_args, dict):
-                continue
-            if tc_name == "write_file":
-                fpath = tc_args.get("file_path", "")
-                fcontent = tc_args.get("content", "")
-                if fpath and fcontent:
-                    files[fpath] = fcontent
-            elif tc_name == "edit_file":
-                fpath = tc_args.get("file_path", "")
-                old_str = tc_args.get("old_string", "")
-                new_str = tc_args.get("new_string", "")
-                if fpath and fpath in files and old_str:
-                    files[fpath] = files[fpath].replace(old_str, new_str)
-    return files
-
-
 # ============================================================================
-# Virtual-file interception
+# File-reference stripping
 # ============================================================================
 
-# Regex that matches paths the agent emits: /foo/bar.md, /research/notes.txt, etc.
-_VFILE_PATH_RE = re.compile(
-    r"(?<![`\w/:])"                  # not preceded by backtick, word char, slash, or colon
-    r"(/[\w./-]+\.(?:md|txt|json|csv|yaml|yml|toml))"  # /path/to/file.ext
-    r"(?![`\w])"                    # not followed by backtick or word char
-)
+# Matches file paths and common "I saved to file" patterns the agent emits.
+_FILE_REF_PATTERNS = [
+    # "I've saved the findings to `compound_interactions.md`"
+    re.compile(
+        r"(?:I(?:'ve|'ve| have)?|Here(?:'s| is))\s+"
+        r"(?:saved|written|compiled|created|stored|put|exported|generated)\s+"
+        r"(?:the |my |a |an )?(?:findings?|research|results?|notes?|report|"
+        r"analysis|data|summary|details?|content|document|overview|information)?"
+        r"\s*(?:to|in|into|as|at)\s+"
+        r"[`\"']?[\w/.\-]+\.(?:md|txt|json|csv|html|pdf)[`\"']?"
+        r"[.]?",
+        re.IGNORECASE,
+    ),
+    # "See `filename.md` for details" / "refer to filename.md"
+    re.compile(
+        r"(?:see|refer to|check|view|open|read)\s+"
+        r"[`\"']?[\w/.\-]+\.(?:md|txt|json|csv|html|pdf)[`\"']?"
+        r"(?:\s+for\s+\w+(?:\s+\w+){0,4})?[.]?",
+        re.IGNORECASE,
+    ),
+    # Bare backtick-quoted filenames like `research_notes.md`
+    re.compile(
+        r"`[\w/.\-]+\.(?:md|txt|json|csv|html|pdf)`"
+        r"(?:\s*[-–—]\s*[^\n]{0,80})?",
+    ),
+]
 
 
-def _scrub_file_references(
-    text: str,
-    captured_files: dict[str, str],
-) -> tuple[str, set[str]]:
-    """Replace virtual file-path references in the final answer with inline content.
-
-    If the referenced file was captured during the session, the path is replaced
-    with a collapsible ``<details>`` block containing the file content. If the
-    file was not captured, the bare path is removed and replaced with a note.
-
-    Returns:
-        A tuple of (scrubbed_text, inlined_paths) where *inlined_paths* is the
-        set of file paths that were expanded inline so the caller can exclude
-        them from the appendix.
-    """
-    inlined: set[str] = set()
-
-    def _replacer(match: re.Match) -> str:
-        path = match.group(1)
-        filename = PurePosixPath(path).name
-        content = captured_files.get(path)
-        if content is not None:
-            inlined.add(path)
-            # Inline as collapsible section
-            return (
-                f"\n<details><summary>📄 {filename}</summary>\n\n"
-                f"{content.strip()}\n\n</details>\n"
-            )
-        # File not captured — just show the filename without the path
-        return f"*{filename}*"
-
-    scrubbed = _VFILE_PATH_RE.sub(_replacer, text)
-    return scrubbed, inlined
-
-
-def _build_files_appendix(captured_files: dict[str, str]) -> str:
-    """Build a Markdown appendix with all captured research files."""
-    if not captured_files:
-        return ""
-    sections = ["\n\n---\n\n**📎 Research Files**\n"]
-    for path, content in captured_files.items():
-        filename = PurePosixPath(path).name
-        sections.append(
-            f"\n<details><summary>{filename}</summary>\n\n"
-            f"{content.strip()}\n\n</details>\n"
-        )
-    return "".join(sections)
+def _strip_file_references(text: str) -> str:
+    """Remove virtual-filesystem references from agent output."""
+    for pat in _FILE_REF_PATTERNS:
+        text = pat.sub("", text)
+    # Clean up leftover blank lines from stripped references
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 # ============================================================================
@@ -430,9 +522,6 @@ async def _stream_agent(
     start_time = time.monotonic()
 
     first_chunk_sent = False
-    # Track files written by the agent during this request so we can inline
-    # their content into the response instead of emitting bare paths.
-    captured_files: dict[str, str] = {}
 
     def _chunk(
         content: str = "",
@@ -471,9 +560,8 @@ async def _stream_agent(
 
     try:
         any_content_emitted = False
-        # Track the most recent tool name so we can match on_tool_start data.
-        pending_tool_name: str = ""
-
+        # Track files written by the agent so we can inline them for the user.
+        written_files: dict[str, str] = {}  # filename → content
         async for event in AGENT.astream_events(
             {"messages": langchain_messages},
             version="v2",
@@ -513,29 +601,21 @@ async def _stream_agent(
             elif kind == "on_tool_start":
                 tool_name = name or "tool"
                 tool_input = data.get("input", {})
-                pending_tool_name = tool_name
 
-                # Capture write_file / edit_file inputs so we can inline them.
-                if tool_name == "write_file" and isinstance(tool_input, dict):
-                    fpath = tool_input.get("file_path", "")
+                # Capture write_file content so we can inline it later.
+                if tool_name in ("write_file", "edit_file"):
+                    fname = (
+                        tool_input.get("filename")
+                        or tool_input.get("file_path")
+                        or tool_input.get("path")
+                        or "untitled"
+                    )
                     fcontent = tool_input.get("content", "")
-                    if fpath and fcontent:
-                        captured_files[fpath] = fcontent
+                    if isinstance(fname, str) and isinstance(fcontent, str) and fcontent:
+                        written_files[fname] = fcontent
                         log.info(
-                            f"[{req_id}] Captured file: {fpath} "
-                            f"({len(fcontent)} chars)"
-                        )
-                elif tool_name == "edit_file" and isinstance(tool_input, dict):
-                    fpath = tool_input.get("file_path", "")
-                    old_str = tool_input.get("old_string", "")
-                    new_str = tool_input.get("new_string", "")
-                    if fpath and fpath in captured_files and old_str:
-                        captured_files[fpath] = captured_files[fpath].replace(
-                            old_str, new_str
-                        )
-                        log.info(
-                            f"[{req_id}] Updated captured file: {fpath} "
-                            f"(edit_file patch applied)"
+                            f"[{req_id}] Captured write_file: "
+                            f"{fname} ({len(fcontent)} chars)"
                         )
 
                 try:
@@ -566,18 +646,18 @@ async def _stream_agent(
             # Other event kinds (on_chain_start/end, on_chat_model_start/end, etc.)
             # are ignored — we only surface tokens and tool boundaries.
 
-        # --- Post-processing: inline captured file contents ---
-        if captured_files:
-            # Since tokens were already streamed, we cannot retroactively
-            # replace file references mid-stream. Instead, append captured
-            # research files as collapsible sections at the end.
-            appendix = _build_files_appendix(captured_files)
-            if appendix:
-                log.info(
-                    f"[{req_id}] Appending {len(captured_files)} research "
-                    f"file(s) to response"
+        # Append captured file content as collapsible sections so the user
+        # can see the research the agent compiled (instead of broken paths).
+        if written_files:
+            yield _chunk(content="\n\n---\n\n")
+            for fname, fcontent in written_files.items():
+                section = (
+                    f"<details>\n"
+                    f"<summary>📎 {fname}</summary>\n\n"
+                    f"{fcontent}\n\n"
+                    f"</details>\n\n"
                 )
-                yield _chunk(content=appendix)
+                yield _chunk(content=section)
                 any_content_emitted = True
 
         if not any_content_emitted:
@@ -616,6 +696,24 @@ async def _stream_agent(
 # Non-streaming path: run the agent and return a single JSON response
 # ============================================================================
 
+def _extract_written_files(state: dict) -> dict[str, str]:
+    """Extract filenames and content from write_file/edit_file tool calls in the result state."""
+    written: dict[str, str] = {}
+    messages = state.get("messages", []) if isinstance(state, dict) else []
+    for msg in messages:
+        if not isinstance(msg, (AIMessage, AIMessageChunk)):
+            continue
+        for tc in getattr(msg, "tool_calls", []) or []:
+            if tc.get("name") not in ("write_file", "edit_file"):
+                continue
+            args = tc.get("args", {})
+            fname = args.get("filename") or args.get("file_path") or args.get("path") or "untitled"
+            fcontent = args.get("content", "")
+            if isinstance(fname, str) and isinstance(fcontent, str) and fcontent:
+                written[fname] = fcontent
+    return written
+
+
 async def _invoke_agent_json(
     langchain_messages: list[BaseMessage],
     *,
@@ -630,22 +728,20 @@ async def _invoke_agent_json(
             {"messages": langchain_messages},
             config={"recursion_limit": 150},
         )
-        final_text = _final_text_from_state(result)
+        final_text = _strip_file_references(_final_text_from_state(result))
 
-        # Extract files from write_file/edit_file tool calls in messages.
-        files = _extract_files_from_messages(result)
-        if files:
-            final_text, inlined_paths = _scrub_file_references(final_text, files)
-            # Only append files that were NOT already inlined by the scrub.
-            remaining = {p: c for p, c in files.items() if p not in inlined_paths}
-            appendix = _build_files_appendix(remaining)
-            if appendix:
-                final_text += appendix
-                log.info(
-                    f"[{req_id}] Appended {len(remaining)} research file(s) "
-                    f"to non-streaming response"
+        # Inline any files the agent wrote (mirrors streaming path behaviour).
+        written_files = _extract_written_files(result)
+        if written_files:
+            sections = ["\n\n---\n\n"]
+            for fname, fcontent in written_files.items():
+                sections.append(
+                    f"<details>\n"
+                    f"<summary>📎 {fname}</summary>\n\n"
+                    f"{fcontent}\n\n"
+                    f"</details>\n\n"
                 )
-
+            final_text += "".join(sections)
         elapsed = time.monotonic() - start_time
         log.info(
             f"[{req_id}] Agent invoke complete in {elapsed:.1f}s "

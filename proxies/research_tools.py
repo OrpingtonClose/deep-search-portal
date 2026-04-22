@@ -474,7 +474,7 @@ def search_fda_adverse_events(
         resp = _HTTP.get(
             "https://api.fda.gov/drug/event.json",
             params={
-                "search": "+AND+".join(terms),
+                "search": " AND ".join(terms),
                 "limit": min(max_results, 100),
             },
         )

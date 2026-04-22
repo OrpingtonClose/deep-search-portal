@@ -280,7 +280,10 @@ def resolve_doi(doi: str) -> str:
         for a in d.get("author", [])[:6]
     )
     year_parts = d.get("published-print", d.get("published-online", {}))
-    year = str((year_parts or {}).get("date-parts", [[""]])[0][0])
+    try:
+        year = str((year_parts or {}).get("date-parts", [[""]])[0][0])
+    except (IndexError, KeyError):
+        year = ""
     journal = " ".join(d.get("container-title", [""]))
     abstract = d.get("abstract", "")[:500]
     url = d.get("URL", f"https://doi.org/{doi}")
@@ -349,7 +352,7 @@ def search_biorxiv(
             filtered.append(p)
 
     if not filtered:
-        filtered = collection[:max_results]
+        return f"No {server} preprints matching '{query}' in the last 90 days ({len(collection)} preprints checked)."
 
     out = [f"**{server} preprints: {query}** ({len(filtered)} matches)\n"]
     for i, p in enumerate(filtered[:max_results], 1):

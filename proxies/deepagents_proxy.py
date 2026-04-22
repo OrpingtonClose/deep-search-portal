@@ -696,6 +696,24 @@ async def _stream_agent(
 # Non-streaming path: run the agent and return a single JSON response
 # ============================================================================
 
+def _extract_written_files(state: dict) -> dict[str, str]:
+    """Extract filenames and content from write_file/edit_file tool calls in the result state."""
+    written: dict[str, str] = {}
+    messages = state.get("messages", []) if isinstance(state, dict) else []
+    for msg in messages:
+        if not isinstance(msg, (AIMessage, AIMessageChunk)):
+            continue
+        for tc in getattr(msg, "tool_calls", []) or []:
+            if tc.get("name") not in ("write_file", "edit_file"):
+                continue
+            args = tc.get("args", {})
+            fname = args.get("filename") or args.get("file_path") or args.get("path") or "untitled"
+            fcontent = args.get("content", "")
+            if isinstance(fname, str) and isinstance(fcontent, str) and fcontent:
+                written[fname] = fcontent
+    return written
+
+
 async def _invoke_agent_json(
     langchain_messages: list[BaseMessage],
     *,
@@ -711,6 +729,19 @@ async def _invoke_agent_json(
             config={"recursion_limit": 150},
         )
         final_text = _strip_file_references(_final_text_from_state(result))
+
+        # Inline any files the agent wrote (mirrors streaming path behaviour).
+        written_files = _extract_written_files(result)
+        if written_files:
+            sections = ["\n\n---\n\n"]
+            for fname, fcontent in written_files.items():
+                sections.append(
+                    f"<details>\n"
+                    f"<summary>📎 {fname}</summary>\n\n"
+                    f"{fcontent}\n\n"
+                    f"</details>\n\n"
+                )
+            final_text += "".join(sections)
         elapsed = time.monotonic() - start_time
         log.info(
             f"[{req_id}] Agent invoke complete in {elapsed:.1f}s "

@@ -152,10 +152,11 @@ def semantic_scholar_search(
         if resp.status_code == 429:
             return "Semantic Scholar rate-limited. Wait a minute and retry."
         resp.raise_for_status()
+        data = resp.json()
     except Exception as exc:
         return f"Semantic Scholar error: {exc}"
 
-    papers = resp.json().get("data", [])
+    papers = data.get("data", [])
     if not papers:
         return f"No Semantic Scholar results for: {query}"
 

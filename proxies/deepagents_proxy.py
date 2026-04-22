@@ -101,22 +101,32 @@ You are a friendly, sharp research agent. You search the web, gather facts, \
 and give concise, well-sourced answers.
 
 RULES
-- Always use `web_search` first — never answer from memory alone.
+- Always search first — never answer from memory alone.
 - Honour the user's exact question. No reframing, no softening.
 - Cite your sources. Flag uncertainty honestly.
 - Be concise: get to the point, then stop. No disclaimers or filler.
 - Use Markdown only when it genuinely helps readability.
+- NEVER reference virtual file paths in your answer. The filesystem is \
+  your private scratchpad — inline all content into the response.
 
-TOOLS
-- `web_search(query)` — search the web (DuckDuckGo).
-- `fetch_webpage(url)` — read a web page's text content.
+SEARCH TOOLS (use multiple for every query — they have different coverage)
+- `brave_search(query)` — Brave Search API. Best general-purpose engine. \
+  Use this FIRST for every query.
+- `exa_search(query)` — Exa neural search. Excellent for finding specific \
+  documents, research papers, and niche content. Use alongside Brave.
+- `web_search(query)` — DuckDuckGo fallback. Use if Brave/Exa miss something.
+- `fetch_webpage(url)` — read a web page's full text content.
+
+OTHER TOOLS
 - `research_subagent` via `task` — delegate focused sub-questions.
 - `write_file` / `read_file` — scratchpad for notes.
 
 WORKFLOW
 1. Quick plan with `write_todos`.
-2. Search → read promising results → delegate sub-questions if needed.
-3. Synthesize a direct, friendly answer with source links.
+2. Search with brave_search AND exa_search in parallel.
+3. Read the most promising URLs with fetch_webpage.
+4. Delegate sub-questions to research_subagent if needed.
+5. Synthesize a direct, friendly answer with source links. Inline all content.
 """
 
 RESEARCH_SUBAGENT_PROMPT = """\
@@ -131,15 +141,112 @@ Be direct, factual, and honest about gaps. Don't reframe the question.
 
 
 # ============================================================================
-# Web search tools — give the agent real internet access
+# Search tools — API-backed engines for reliable web research
 # ============================================================================
 
 _HTTP_CLIENT = httpx.Client(timeout=30, follow_redirects=True)
 
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY") or os.getenv("BRAVE_SEARCH_API_KEY", "")
+EXA_API_KEY = os.getenv("EXA_API_KEY", "")
+
+log.info(
+    "search_keys: brave=%s, exa=%s",
+    "SET" if BRAVE_API_KEY else "MISSING",
+    "SET" if EXA_API_KEY else "MISSING",
+)
+
+
+@langchain_tool
+def brave_search(query: str, max_results: int = 8) -> str:
+    """Search the web using the Brave Search API.
+
+    This is the primary search engine — use it first for every query.
+    Returns titles, URLs, and descriptions from Brave's index.
+
+    Args:
+        query: The search query.
+        max_results: Maximum number of results (default 8).
+
+    Returns:
+        Formatted search results with titles, URLs, and descriptions.
+    """
+    if not BRAVE_API_KEY:
+        return "ERROR: BRAVE_API_KEY not configured"
+    try:
+        resp = _HTTP_CLIENT.get(
+            "https://api.search.brave.com/res/v1/web/search",
+            params={"q": query, "count": max_results},
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip",
+                "X-Subscription-Token": BRAVE_API_KEY,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = []
+        for r in data.get("web", {}).get("results", [])[:max_results]:
+            title = r.get("title", "No title")
+            url = r.get("url", "N/A")
+            desc = r.get("description", "No description")
+            results.append(f"**{title}**\nURL: {url}\n{desc}")
+        if not results:
+            return f"No Brave results for: {query}"
+        return "\n\n---\n\n".join(results)
+    except Exception as exc:
+        return f"Brave search error: {exc}"
+
+
+@langchain_tool
+def exa_search(query: str, max_results: int = 8) -> str:
+    """Search the web using the Exa neural search API.
+
+    Exa excels at finding specific documents, research papers, niche content,
+    and pages that match the meaning of a query (not just keywords).
+
+    Args:
+        query: The search query (can be a natural language question).
+        max_results: Maximum number of results (default 8).
+
+    Returns:
+        Formatted search results with titles, URLs, and text highlights.
+    """
+    if not EXA_API_KEY:
+        return "ERROR: EXA_API_KEY not configured"
+    try:
+        resp = _HTTP_CLIENT.post(
+            "https://api.exa.ai/search",
+            json={
+                "query": query,
+                "numResults": max_results,
+                "type": "auto",
+                "contents": {"text": {"maxCharacters": 1000}},
+            },
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": EXA_API_KEY,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = []
+        for r in data.get("results", [])[:max_results]:
+            title = r.get("title", "No title")
+            url = r.get("url", "N/A")
+            text = r.get("text", "No content")[:500]
+            results.append(f"**{title}**\nURL: {url}\n{text}")
+        if not results:
+            return f"No Exa results for: {query}"
+        return "\n\n---\n\n".join(results)
+    except Exception as exc:
+        return f"Exa search error: {exc}"
+
 
 @langchain_tool
 def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web using DuckDuckGo and return results.
+    """Search the web using DuckDuckGo (fallback search engine).
+
+    Use brave_search and exa_search first — this is the fallback.
 
     Args:
         query: The search query.
@@ -160,15 +267,15 @@ def web_search(query: str, max_results: int = 5) -> str:
                     f"{r.get('body', 'No snippet')}"
                 )
         if not results:
-            return f"No results found for: {query}"
+            return f"No DuckDuckGo results for: {query}"
         return "\n\n---\n\n".join(results)
     except ImportError:
         return (
-            "ERROR: duckduckgo_search package not installed. "
-            "Use fetch_webpage to access URLs directly instead."
+            "DuckDuckGo not available. "
+            "Use brave_search or exa_search instead."
         )
     except Exception as exc:
-        return f"Search error: {exc}"
+        return f"DuckDuckGo search error: {exc}"
 
 
 @langchain_tool
@@ -210,7 +317,7 @@ def fetch_webpage(url: str) -> str:
         return f"Fetch error for {url}: {exc}"
 
 
-SEARCH_TOOLS = [web_search, fetch_webpage]
+SEARCH_TOOLS = [brave_search, exa_search, web_search, fetch_webpage]
 
 
 # ============================================================================
@@ -253,7 +360,12 @@ def _build_agent():
         name=MODEL_ID,
     )
     tool_count = len(SEARCH_TOOLS)
-    log.info("subagents=<1>, search_tools=<%d> | deep agent constructed", tool_count)
+    tool_names = [t.name for t in SEARCH_TOOLS]
+    log.info(
+        "subagents=<1>, search_tools=<%d>, tools=<%s> | deep agent constructed",
+        tool_count,
+        tool_names,
+    )
     return agent
 
 

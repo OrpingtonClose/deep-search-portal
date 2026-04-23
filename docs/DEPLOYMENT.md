@@ -175,3 +175,4 @@ Requires `VAST_AI_API_KEY` (or `VASTAI_API_KEY`) env var.
 | LibreChat won't start | Missing `GOOGLE_CLIENT_ID`, `CREDS_KEY`, or `JWT_SECRET` | Check `/opt/.env` has all required vars. `CREDS_KEY`/`JWT_SECRET` auto-generate if missing. |
 | Proxy won't start | Missing API key in `/opt/.env` | `source /opt/.env && env \| grep KEY` to verify |
 | Config drift between repo and server | `/opt/LibreChat/librechat.yaml` is a standalone copy | Always copy from repo after `git pull` |
+| Docker won't start on Vast.ai | Container lacks overlayfs/iptables permissions | Use `deploy-production.sh` which handles this; or run LibreChat as standalone Node.js with separate MongoDB |

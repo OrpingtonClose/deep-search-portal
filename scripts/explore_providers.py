@@ -102,7 +102,7 @@ SURFACES: dict[str, dict[str, Any]] = {
     },
     "dashscope": {
         "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-        "key_env": "ALIBABA_API_KEY",
+        "key_env": "DASHSCOPE_API_KEY",
         "display": "Alibaba DashScope / Qwen (native)",
     },
     "perplexity": {

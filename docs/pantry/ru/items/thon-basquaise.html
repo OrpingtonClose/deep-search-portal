@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jean de Luz — баскский тунец — Кладовая частного шефа</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Language switcher */
+.lang-switch {
+  float: right;
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+.lang-switch a {
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: sans-serif;
+}
+.lang-switch a:hover { color: var(--accent); border-color: var(--accent-dim); text-decoration: none; }
+.lang-switch a.active { color: var(--accent); border-color: var(--accent); }
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <span class="lang-switch"><a href="../../items/thon-basquaise.html">EN</a> <a href="#" class="active">RU</a></span>
+    <h1><a href="../index.html" style="color:var(--accent)">Кладовая частного шефа</a></h1>
+    <div class="subtitle">Кураторская коллекция премиальных консервов и деликатесов</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Кладовая</a>
+<span class="sep">›</span>
+<a href="../index.html#french">Французские продукты</a>
+<span class="sep">›</span>
+<span>Jean de Luz — баскский тунец</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../../images/batch2_16.jpg" alt="Jean de Luz — баскский тунец">
+<div class="hero-text">
+<span class="category-badge">Французские продукты</span>
+<h2>Jean de Luz — баскский тунец</h2>
+<p class="brief">Thon Basquaise aux Légumes Bio — альбакор с органическими овощами и перцем Эспелет.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Jean de Luz Basque Tuna with Organic Vegetables (Thon Basquaise aux Légumes Bio)</h3>
+<p><strong>Что это такое</strong></p>
+<p>Полностью готовое _plat cuisiné_ в банке объемом 380 г, основанное на 39 % рыбы, пойманной на линию, альбакоре (_Thunnus alalunga_, в баскских портах называется _germon_), тушеном с органическими помидорами (25 %), луком (10 %), красным и зеленым перцем (по 10 %), органическим экстра-вирджин оливковым маслом (5 %), чесноком, перцем Эспелет AOP и немного органического томатного порошка для глубины вкуса. Jean de Luz — это микро-консервация, основанная в 2003 году в Сен-Жан-де-Люз, последняя восстановленная консервация в порту, который когда-то принимал семнадцать. Они покупают на местном аукционе и работают исключительно вручную; банка часто носит имя лодки, которая поймала рыбу. Без добавок, красителей и консервантов.</p>
+<p><strong>Пищевая ценность</strong></p>
+<p>На 100 г: примерно 115–130 ккал, 10–12 г белка, 6–8 г жиров (в основном EVOO и рыбьего масла), 4–5 г углеводов (из овощей), минимальное количество сахаров. Ключевые минералы: селен из тунца, калий из овощной смеси, умеренное количество натрия (~300–400 мг). Обычная порция в 150 г содержит примерно 18 г белка и остается ниже 200 ккал.</p>
+<p><strong>Приготовление и подача</strong></p>
+<p>Подавайте теплым, никогда не кипящим. Откройте банку, выложите содержимое в небольшую медную или нержавеющую сковороду и аккуратно разогрейте на слабом огне в течение 4–5 минут, пока соус не станет более жидким и кухня не наполнится ароматом помидоров и перца. Не добавляйте дополнительное масло — EVOO в банке уже сбалансировано с рыбой. Не промывайте. Не нагревайте слишком сильно; перцы станут горькими, а тунец превратится в мелкую крошку.</p>
+<p>Для составной тарелки: сначала разогрейте, затем подавайте на тонком слое отварного белого риса или мелких _pâtes_ (malloreddus или orzo). Украсьте одной сырой нитью перца Эспелет и каплей отличного уксуса из хереса. Если подаете из банки как повседневный обед, просто разогрейте и ешьте с багетом, оторванным руками.</p>
+<p><strong>Традиционный и современный контекст употребления</strong></p>
+<p>В Стране Басков _thon basquaise_ — это основное блюдо домашней кухни, подается с рисом или пастой на _table d&#x27;hôte_. Для VIP-клиента подайте это как изысканное _mise en conserve_: разогрейте, выложите в неглубокую подогретую тарелку на слой _sauce verte_ (петрушка, шпинат, оливковое масло, сырой чеснок) и завершите хрустящей подушкой из белого риса или _quenelle_ из масляного _pommes purée_. Это выглядит как деревенская роскошь.</p>
+<p><strong>Вкус и текстура</strong></p>
+<p>Тунец представлен в плотных кусочках, а не в крошках — альбакор лучше сохраняет свою структуру, чем скипджек. Соус яркий, слегка сладкий от спелых помидоров, с капсикумной основой и теплым фоном (не жжением) от Эспелета. Оливковое масло приносит зеленый перцевый вкус, который сбалансирует насыщенность. Текстура мягкая, но не кашеобразная; перцы сохраняют легкое сопротивление.</p>
+<p><strong>Сочетания и композиция</strong></p>
+<p>Вина: молодое Irouléguy rouge (смесь Tannat/Cab Franc) или Txakoli для кислотности. Хлеб: _pain de campagne_ или традиционный хлеб на закваске. Идея составного блюда: _Thon basquaise en croûte de riz_ — прижмите рис для суши в кольцевую форму, сверху выложите разогретую смесь тунца и овощей, и завершите мягко-пашотированным яйцом и стружкой вяленого Иберико. Еще одна идея: перемешайте, слегка разогрев, с нарезанными вручную _pappardelle_ с дополнительным EVOO и поджаренными панировочными сухарями.</p>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    Руководство частного шефа по премиум консервам и деликатесам
+  </div>
+</footer>
+</body>
+</html>

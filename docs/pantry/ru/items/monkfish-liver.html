@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fangst — печень исландского морского чёрта — Кладовая частного шефа</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Language switcher */
+.lang-switch {
+  float: right;
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+.lang-switch a {
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: sans-serif;
+}
+.lang-switch a:hover { color: var(--accent); border-color: var(--accent-dim); text-decoration: none; }
+.lang-switch a.active { color: var(--accent); border-color: var(--accent); }
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <span class="lang-switch"><a href="../../items/monkfish-liver.html">EN</a> <a href="#" class="active">RU</a></span>
+    <h1><a href="../index.html" style="color:var(--accent)">Кладовая частного шефа</a></h1>
+    <div class="subtitle">Кураторская коллекция премиальных консервов и деликатесов</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Кладовая</a>
+<span class="sep">›</span>
+<a href="../index.html#nordic">Скандинавские деликатесы</a>
+<span class="sep">›</span>
+<span>Fangst — печень исландского морского чёрта</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../../images/batch2_08.jpg" alt="Fangst — печень исландского морского чёрта">
+<div class="hero-text">
+<span class="category-badge">Скандинавские деликатесы</span>
+<h2>Fangst — печень исландского морского чёрта</h2>
+<p class="brief">Havtaske Lever — слегка копчёная печень исландского морского чёрта. «Фуа-гра моря».</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Fangst Icelandic Monkfish Liver (Havtaske Lever) – Легко копченый, в собственном масле</h3>
+<h4>Что это такое</h4>
+<p>Печень морского ангела — <em>ankimo</em> в Японии, <em>havtaske lever</em> в Исландии — это <strong>фуа-гра моря</strong>, а исландская версия Fangst является одной из самых изысканных консервированных версий. Печень морского ангела (<em>Lophius piscatorius</em>) из холодного Северного Атлантики имеет исключительное содержание жира, с чистым, почти сладким вкусом благодаря рациону рыбы, состоящему из ракообразных и мелкой рыбы. Fangst легким холодным копчением обрабатывает печень над исландской березой или дубом, а затем упаковывает в собственное топленое масло. Копчение — это легкий намек, а не крик — достаточно, чтобы добавить измерение, не маскируя внутреннюю сладость печени. Качество: целые дольки с минимальным разрушением, бледный кораллово-охристый цвет, масло, которое чистое и золотистое (не темное или мутное), и аромат, который копченый-кремовый без следов аммиака или рыбного запаха.</p>
+<h4>Пищевая ценность</h4>
+<p>Типичная порция 50–60 г (примерно половина банки) содержит примерно <strong>140–170 ккал</strong>, <strong>8–10 г белка</strong> и <strong>12–15 г жира</strong>, большая часть из которых <strong>мононенасыщенные и полиненасыщенные</strong> с сильным присутствием омега-3 (EPA/DHA в совокупности примерно 1,5–2,5 г на 100 г). Это один из самых богатых природных источников <strong>витамина A</strong> (ретинол) и <strong>витамина D</strong> — порция 50 г может обеспечить более 100% DV обоих. Также стоит отметить: высокий <strong>B12</strong>, <strong>селен</strong> и <strong>фосфор</strong>. Жирорастворимые витамины означают, что это следует рассматривать как богатый, случайный деликатес, а не как повседневный продукт.</p>
+<h4>Подготовка и подача</h4>
+<p>Подавайте при <strong>прохладной комнатной температуре</strong> — 16–18°C. Текстура здесь ключевая: слишком холодно — жир застывает, становится восковым и глухим; слишком тепло — теряет свою нежную структуру, становится маслянистым и рыхлым. Уберите банку из холодильника за 30–45 минут до подачи. Осторожно поднимите дольку(и) из масла с помощью тонкой лопатки или обратной стороны ложки; масло, прилипшее к печени, приветствуется — не вытирайте его агрессивно.</p>
+<p><strong>Подача</strong>: Нарежьте дольку на медальоны толщиной 5–6 мм с ножом, опущенным в горячую воду (это предотвращает прилипание нежной ткани). Разложите 2–3 медальона на охлажденной тарелке. Ложкой добавьте небольшое количество копченого масла вокруг тарелки. Соль Maldon сверху — это единственная завершающая деталь, которая нужна.</p>
+<p><strong>Чего НЕЛЬЗЯ делать</strong>: Не нагревайте этот продукт — никакого обжаривания, никакого поджаривания, никаких теплых тарелок. Не сочетайте с агрессивными дополнениями, такими как каперсы, корнишоны или крепкие горчицы; дым уже выполняет работу по уменьшению насыщенности. Не подавайте холодным из холодильника.</p>
+<h4>Традиционный и современный контекст употребления</h4>
+<p>В Исландии печень морского ангела традиционно варится свежей и подается просто с ржаным хлебом и картошкой или маринованной. Консервированная, копченая версия — это относительно недавняя роскошь. Для VIP-клиента обращайтесь с этим так же, как с <strong>торшоном фуа-гра</strong> или <strong>консервированным тунцом в животе</strong>. Это должно быть в составе первого блюда или как часть <strong>консервированного морского плато</strong> (скандинавский ответ испанскому <em>conservas</em>). Это также может быть роскошным центром смёрребрёд или лежать на теплом блине с crème fraîche и зеленью.</p>
+<h4>Вкус и текстура</h4>
+<p>Текстура <strong>шелковистая и кремовая</strong>, мягкая и маслянистая, с плотностью, которая покрывает нёбо, не прилипая. Вкус <strong>богатый, сладкий и слегка морской</strong> — нет металлической горечи, которую иногда можно найти в куриной или утиной печени. Дым добавляет <strong>сухой, древесный верхний тон</strong>, который воспринимается почти как поджаренный фундук. Финиш <strong>чистый и длительный</strong>, с легким послевкусием чистого океана и тонким теплом йода. Само масло — это взрыв вкуса — копченое, соленое и слегка сладкое — сохраните его для заправки картошки или завершения супов.</p>
+<h4>Сочетания и состав</h4>
+<ul>
+<li><strong>Хлеб</strong>: Поджаренный бриошь или молочный хлеб (сладость перекликается с печенью); датский rugbrød для скандинавского контраста; теплые, тонкие гречневые блины для французско-скандинавского моста.</li>
+<li><strong>Овощи</strong>: Маринованный фенхель (см. ниже), тонко нарезанный сырой корень сельдерея, слегка заправленный фризе, микрозелень.</li>
+<li><strong>Соусы</strong>: Легкая лимонная crème fraîche; капля масла из банки; намек на yuzu kosho для остроты-цитруса.</li>
+<li><strong>Вина</strong>: Выдержанный Sauternes или поздний Riesling (классическое сочетание с фуа-гра); окисленный Jura vin jaune; копченый Mezcal для несетевого обслуживания.</li>
+<li><strong>Идея блюда</strong>: <em>Nordic Foie Gras</em> — медальоны печени морского ангела на поджаренном бриоше, шарик компота из кислого яблока, лента маринованного фенхеля и щепотка укропа. Завершите несколькими крупинками копченой соли и каплей масла из банки.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    Руководство частного шефа по премиум консервам и деликатесам
+  </div>
+</footer>
+</body>
+</html>

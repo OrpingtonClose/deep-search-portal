@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Charcuterie Bobosse — свиной террин — Кладовая частного шефа</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Language switcher */
+.lang-switch {
+  float: right;
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+.lang-switch a {
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: sans-serif;
+}
+.lang-switch a:hover { color: var(--accent); border-color: var(--accent-dim); text-decoration: none; }
+.lang-switch a.active { color: var(--accent); border-color: var(--accent); }
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <span class="lang-switch"><a href="../../items/pork-terrine.html">EN</a> <a href="#" class="active">RU</a></span>
+    <h1><a href="../index.html" style="color:var(--accent)">Кладовая частного шефа</a></h1>
+    <div class="subtitle">Кураторская коллекция премиальных консервов и деликатесов</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Кладовая</a>
+<span class="sep">›</span>
+<a href="../index.html#french">Французские продукты</a>
+<span class="sep">›</span>
+<span>Charcuterie Bobosse — свиной террин</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../../images/batch2_10.jpg" alt="Charcuterie Bobosse — свиной террин">
+<div class="hero-text">
+<span class="category-badge">Французские продукты</span>
+<h2>Charcuterie Bobosse — свиной террин</h2>
+<p class="brief">Terrine Bobossienne N°5 — ремесленный французский свиной террин.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Charcuterie Bobosse Pork Terrine (Terrine Bobossienne N°5)</h3>
+<p><strong>Что это такое</strong></p>
+<p>90 г &quot;verrine&quot; (номерная банка, N°5) от Charcuterie Bobosse, лионского и божолейского колбасника. Bobossienne по сути является _andouillette beaujolaise_, лишенной оболочки и переосмысленной как грубая, намазываемая террина. Формула: телячий трепан (panse de veau, 28 %), свиной трепан (panse de porc, 28 %), соленая свиная щека (gorge de porc, 28 %), лук, уксус из красного вина, горчица (семена и приправа), чеснок, соль и специи. Содержит сульфиты и аллергены горчицы. Мясо французского происхождения. Срок хранения тридцать шесть месяцев; не замораживать.</p>
+<p><strong>Пищевая ценность</strong></p>
+<p>На 100 г: 984 кДж / 238 ккал, жиров 20 г (насыщенных 7.6 г), углеводов 1.5 г (сахаров &lt; 0.5 г), белка 12 г, соли 2.7 г. Полная 90 г веррина обеспечивает примерно 215 ккал, 11 г белка и 18 г жира. Это продукт с высоким содержанием натрия и насыщенных жиров — богат коллагеновым белком, но не подходит для клиентов с ограничением натрия.</p>
+<p><strong>Приготовление и подача</strong></p>
+<p>Подавайте охлажденным или при прохладной комнатной температуре (16–18 °C / 60–65 °F). Не разогревайте — трепановые террины становятся резиновыми и неаккуратно выделяют жир при нагревании. Откройте веррину, проведите тонким ножом по краю и переверните на доску или тарелку. Фарш должен держать форму, но поддаваться ножу. Нарежьте тонким острым лезвием (опустите в горячую воду между нарезками для чистых краев) или подавайте как грубую порцию ложкой для более деревенской подачи.</p>
+<p>Для составной тарелки: извлеките из банки, нарежьте на 8–10 мм ломтики и разложите на охлажденном сланце с корнишонами, дижонской горчицей и _é chalote_ маринованным луком. Для поданного первого блюда: один ломтик, ложка _choucroute_ garnie, разогретая отдельно, и капля горчичного винегрета.</p>
+<p><strong>Традиционный и современный контекст употребления</strong></p>
+<p>В Лионе это закуска или _mâ chon_: едят в 9 утра с новым Божоле и _cervelle de canut_ на стороне. Для VIP-клиента подайте это как колбасное блюдо в дегустационном меню: один кусок в форме _quenelle_ с тремя каплями горчицы (черной семенной дижонской, цельнозерновой Мё, и тархуновой _mou starde_ из Бордо), маленький _salade_ из фризе с грецким маслом и двумя корнишонами в форме спичек.</p>
+<p><strong>Вкус и текстура</strong></p>
+<p>Аромат яркий — это трепан, и он не стесняется этого — но уксус и горчица поднимают его до яркости, а не тяжести. На вкус: грубая, уверенная текстура хаши, слегка сопротивляющаяся от трепана, смазанная растопленным жиром щеки. Семена горчицы щелкают между зубами. Послевкусие дичи, уксуса и несомненно лионское. Это не тонко. Клиенты, которые любят _andouillette_, будут в восторге от этого; тех, кто боится потрохов, следует направить в другое место.</p>
+<p><strong>Сочетания и композиция</strong></p>
+<p>Вина: Beaujolais cru (Morgon или Fleurie), чтобы соответствовать терруару, или острый эльзасский Рислинг, чтобы сбалансировать жир. Хлеб: _pain de campagne_ или семенной _boule_ — что-то с жевательностью, чтобы противостоять жиру. Гарниры: корнишоны, _céleri ré moulade_, маринованные грибы или острый _compote de pomme_. Идея составного блюда: _Tartine Bobossienne_ — поджарьте кусок _pain au levain_, намажьте тонким слоем террины, сверху положите нарезанный черный редис, ломтики корнишонов и лист фризе. Или современное: &quot;террина-сюрприз&quot; — вырежьте сердцевину из отварного молодого картофеля с помощью ложки для дыни, заполните _quenelle_ Bobossienne и подавайте на слое горчичного крема.</p>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    Руководство частного шефа по премиум консервам и деликатесам
+  </div>
+</footer>
+</body>
+</html>

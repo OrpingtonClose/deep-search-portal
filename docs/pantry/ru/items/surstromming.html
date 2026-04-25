@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Röda Ulven Surströmming — Кладовая частного шефа</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Language switcher */
+.lang-switch {
+  float: right;
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+.lang-switch a {
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: sans-serif;
+}
+.lang-switch a:hover { color: var(--accent); border-color: var(--accent-dim); text-decoration: none; }
+.lang-switch a.active { color: var(--accent); border-color: var(--accent); }
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <span class="lang-switch"><a href="../../items/surstromming.html">EN</a> <a href="#" class="active">RU</a></span>
+    <h1><a href="../index.html" style="color:var(--accent)">Кладовая частного шефа</a></h1>
+    <div class="subtitle">Кураторская коллекция премиальных консервов и деликатесов</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Кладовая</a>
+<span class="sep">›</span>
+<a href="../index.html#nordic">Скандинавские деликатесы</a>
+<span class="sep">›</span>
+<span>Röda Ulven Surströmming</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../../images/batch1_08.jpg" alt="Röda Ulven Surströmming">
+<div class="hero-text">
+<span class="category-badge">Скандинавские деликатесы</span>
+<h2>Röda Ulven Surströmming</h2>
+<p class="brief">Знаменитая шведская квашеная балтийская селёдка — самый ароматный деликатес в мире.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Röda Ulven Surströmming (Ферментированная балтийская сельдь)</h3>
+<h4>Что это такое</h4>
+<p>Surströmming — это ферментированная балтийская сельдь (<em>Clupea harengus membras</em>), и это самый поляризующий консервированный продукт в мире. Röda Ulven, уважаемый шведский производитель, следует традиционному методу: сельдь, пойманная весной, слегка солится (примерно 15–17% рассола, достаточно, чтобы выбрать <em>Halanaerobium</em> бактерии, подавляя порчу), а затем ферментируется в бочках в течение нескольких месяцев перед консервированием. Ферментация продолжается в банке, производя углекислый газ — отсюда характерные вздутые банки, которые являются нормальными и ожидаемыми, а не признаком порчи. Результат — частично переваренный, интенсивно аммиачный, глубоко умами продукт, который бросает вызов и вознаграждает в равной мере. Качество: рыба должна быть целой (не распадающейся в кашу), рассол должен быть мутным и шипучим, а аромат должен быть резким и аммиачным, но не гнилым или сернистым. Röda Ulven известен стабильным качеством в продуктовой категории, где стандарты сильно варьируются.</p>
+<h4>Пищевая ценность</h4>
+<p>Традиционная порция из 2–3 филе (примерно 40–60 г) содержит примерно <strong>70–100 ккал</strong>, <strong>8–12 г белка</strong>, <strong>3–5 г жира</strong> и незначительное количество углеводов. Содержание жира умеренное — балтийская сельдь меньше и стройнее, чем атлантическая сельдь — с значительным вкладом омега-3 (примерно 800 мг–1,5 г EPA/DHA на 100 г). Ферментация увеличивает <strong>биодоступный B12</strong> и производит <strong>пробиотические бактерии</strong> (в основном молочнокислые бактерии на ранних стадиях). Продукт также богат <strong>селеном</strong> и <strong>фосфором</strong>. Натрий значителен из-за рассола — ожидайте примерно 800–1200 мг на 100 г — поэтому это не подходит для диет с ограничением натрия. Процесс ферментации также производит некоторый <strong>гистамин</strong>, что может быть проблематично для чувствительных людей.</p>
+<h4>Подготовка и подача</h4>
+<p><strong>Это самый критический раздел обработки в этом руководстве. Читайте внимательно.</strong></p>
+<p><strong>Открытие банки</strong>: Surströmming необходимо открывать <strong>под водой</strong>, на улице или в очень хорошо проветриваемом помещении (желательно вдали от обеденной зоны). Газ ферментации под давлением будет брызгать рассол при прокалывании. Погрузите банку в ведро или таз с холодной водой, используйте открывалку или консервный нож, чтобы проколоть крышку, оставаясь под водой, и дайте газу выйти. Как только давление выровняется, полностью откройте банку под водой. Вода содержит большинство аэрозольных запахов. <strong>Не открывайте в помещении</strong>, особенно не в замкнутом кухонном пространстве. Запах пропитает ткани, вентиляционные системы и пористые поверхности на часы или дни.</p>
+<p><strong>Управление запахом</strong>: Открывайте как минимум за 20 метров от обеденной зоны, если на улице. Имейте ведро готовым, чтобы немедленно накрыть и транспортировать. Рассмотрите возможность предупреждения клиента заранее — это <strong>культурный опыт</strong>, а не скрытый сюрприз. Некоторые повара открывают банку за день до подачи в специальном, проветриваемом помещении и хранят открытую рыбу, погруженную в рассол, в герметичном контейнере, чтобы позволить некоторым из самых летучих соединений рассеяться. Это вопрос личных предпочтений и терпимости клиента.</p>
+<p><strong>Температура подачи</strong>: Подавайте <strong>охлажденным, но не ледяным</strong> — 8–10°C. Холод подавляет некоторые из самых агрессивных летучих ароматов, сохраняя текстуру плотной. Слейте рыбу из рассола (сохраните рассол, если вы энтузиаст surströmming; в противном случае выбросьте). Осторожно промойте филе под холодной водой, если интенсивность рассола слишком высока для вкуса вашего клиента — традиционалисты будут возражать, но для первого VIP-опыта промывание разумно.</p>
+<p><strong>Подача</strong>: Это лучше всего рассматривать как <strong>составной опыт DIY</strong>, а не как блюдо, поданное шефом. Расположите компоненты традиционно и дайте клиенту собрать. Положите 2–3 филе на тарелку или небольшую доску с гарнирами, расположенными вокруг них.</p>
+<p><strong>Чего НЕЛЬЗЯ делать</strong>: Не открывайте в помещении. Не нагревайте — приготовление surströmming высвобождает летучие соединения, которые еще более агрессивны. Не подавайте ничего не подозревающим гостям. Не сочетайте с вином, которое вам дорого — аромат уничтожит вашу способность ощущать тонкости. Не прикасайтесь к рассолу, а затем касайтесь своей одежды или лица. Не храните открытую surströmming в основном холодильнике, если она не находится в нескольких слоях герметичной упаковки; запах проникнет повсюду.</p>
+<h4>Традиционный и современный контекст употребления</h4>
+<p>На севере Швеции (особенно вокруг Высокого побережья, <em>Höga Kusten</em>) surströmming едят на позднелетних встречах (<em>surströmmingspremiär</em>) с пивом, аквавитом и громкими разговорами. Традиционная сборка — это <strong>&quot;surströmmingsklämma&quot;</strong>: складка тонкого хрустящего хлеба (<em>tunnbröd</em>), завернутая вокруг кусочка рыбы, ломтика вареного картофеля, сырых колец лука и ложки сметаны. Это едят руками, на улице и обычно в компании.</p>
+<p>Для VIP-клиента вопрос: <strong>принадлежит ли это к контексту высокой кухни?</strong> Честный ответ: <strong>редко как составная тарелка, но убедительно как культурный опыт.</strong> Если ваш клиент авантюрен, хорошо путешествовал и интересуется экстремальными кулинарными традициями, курс surströmming может стать незабываемым центром скандинавского обеда. Представьте это с церемонией: объясните традицию, откройте вместе (или до их прихода) и оформите это как <strong>участвующий театр</strong>. Подавайте это не как &quot;блюдо&quot;, а как <strong>событие в обеде</strong> — возможно, после основного блюда и перед сыром, с пивом и аквавитом, как своего рода шведский <em>digestif</em>.</p>
+<p>Если вам нужно интегрировать это в дегустационное меню, держите порцию небольшой (1–1,5 филе) и гарниры щедрыми. Оформите язык вокруг &quot;ферментированной сельди&quot; и &quot;балтийской традиции&quot;, а не подчеркивайте шоковую ценность.</p>
+<h4>Вкус и текстура</h4>
+<p><strong>Аромат</strong> — это определяющая характеристика: <strong>резкий, аммиачный и агрессивно пахнущий</strong>, как комбинация спелого сыра, гнилых яиц (в самые летучие моменты) и сильного чистящего раствора. Однако, пройдя мимо запаха (который является фронтальным и аэрозольным), <strong>реальный вкус</strong> удивительно сложен: <strong>глубоко соленый, почти сырный умами</strong>, с <strong>легкой сладостью</strong> от частично разложенных белков рыбы и <strong>долгим, почти ореховым ферментационным оттенком</strong>. Рассол соленый, шипучий и интенсивно аммиачный — это приобретенный вкус сам по себе и часто выбрасывается новичками.</p>
+<p><strong>Текстура</strong> рыбы — это сюрприз: мясо <strong>мягкое, почти кремовое</strong>, с легкой волокнистой структурой. Кожа <strong>нежная и съедобная</strong>, не жесткая. Кости очень маленькие и в основном растворяются в съедобности во время ферментации. Общее ощущение во рту <strong>маслянистое и податливое</strong>, ближе к мягкому паштету, чем к приготовленной рыбе. Это не &quot;гнилой&quot; текстуры — это контролируемая, ферментативно измененная текстура, которая намеренно мягкая.</p>
+<h4>Сочетания и состав</h4>
+<ul>
+<li><strong>Хлеб</strong>: <em>Tunnbröd</em> (тонкий, мягкий шведский лаваш) необходим — его мягкая сладость и гибкость являются традиционной оберткой. Хрустящий хлеб (<em>knäckebröd</em>) является альтернативой для более хрустящей конструкции. Темный ржаной хлеб слишком агрессивен.</li>
+<li><strong>Картофель</strong>: Маленькие, восковые новые картофели, отваренные и охлажденные, нарезанные на кружки. Крахмал и сладость являются критическим контрастом.</li>
+<li><strong>Лук</strong>: Сырой, тонко нарезанный красный или желтый лук — острота перекрывает насыщенность и обеспечивает текстурный контраст.</li>
+<li><strong>Сметана</strong>: Шведская <em>gräddfil</em> или густая сметана, с полным содержанием жира. Молочная кислота и холодный жир являются основными сбалансирующими агентами.</li>
+<li><strong>Помидоры</strong>: Некоторые шведы добавляют нарезанные помидоры; это добавляет влагу и кислотность, но не обязательно.</li>
+<li><strong>Напитки</strong>: Холодное лагерное или пильзнер (шведское или немецкое); ледяной аквавит (шведский <em>brännvin</em> с тмином или укропом); для вина не стоит беспокоиться о чем-то тонком — если вино требуется, очень холодный, простой Grüner Veltliner или Txakoli.</li>
+<li><strong>Идея блюда</strong>: <em>Surströmmingsklämma, Chef&#x27;s Presentation</em> — положите теплый круг <em>tunnbröd</em>, слой <em>gräddfil</em>, ломтик вареного нового картофеля, веер бумажно-тонкого сырого лука и половину филе surströmming. Сложите и подавайте немедленно. Разложите 2–3 таких порции на деревянной доске с небольшой миской дополнительной сметаны, лука и картофеля для самостоятельной сборки. Поставьте охлажденное пиво и замороженный стакан аквавита на каждую настройку. Примите беспорядок.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    Руководство частного шефа по премиум консервам и деликатесам
+  </div>
+</footer>
+</body>
+</html>

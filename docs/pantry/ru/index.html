@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Кладовая частного шефа</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Language switcher */
+.lang-switch {
+  float: right;
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+.lang-switch a {
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: sans-serif;
+}
+.lang-switch a:hover { color: var(--accent); border-color: var(--accent-dim); text-decoration: none; }
+.lang-switch a.active { color: var(--accent); border-color: var(--accent); }
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <span class="lang-switch"><a href="../index.html">EN</a> <a href="#" class="active">RU</a></span>
+    <h1><a href="./index.html" style="color:var(--accent)">Кладовая частного шефа</a></h1>
+    <div class="subtitle">Кураторская коллекция премиальных консервов и деликатесов</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="./index.html">Кладовая</a>
+</div></div>
+<main class="container">
+<section class="category-section" id="spanish">
+<h2>Испанские консервы и премиум морепродукты</h2>
+<div class="food-grid">
+
+<div class="food-card">
+  <a href="items/bluefin-tuna.html">
+    <img class="card-img" src="../images/batch2_03.jpg" alt="Herpac — филе голубого тунца" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Herpac — филе голубого тунца</div>
+      <div class="card-desc">Атлантический голубой тунец, пойманный способом альмадраба, филе в оливковом масле Arbequina EVOO из Барбате, Кадис.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/mackerel-roes.html">
+    <img class="card-img" src="../images/batch3_01.jpg" alt="Herpac — икра макрели" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Herpac — икра макрели</div>
+      <div class="card-desc">Икра атлантической скумбрии в оливковом масле. Солёная, кремовая, нежная.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/sea-urchin-roe.html">
+    <img class="card-img" src="../images/batch1_02.jpg" alt="Икра морского ежа" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Икра морского ежа</div>
+      <div class="card-desc">Галисийские гонады морского ежа — несколько брендов: La Brújula Nº91, Ramón Peña 1920, Rosa Lafuente, Los Peperetes, Porto-Muiños.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/stuffed-baby-squid.html">
+    <img class="card-img" src="../images/batch2_06.jpg" alt="Ramón Peña — фаршированные кальмарчики" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Ramón Peña — фаршированные кальмарчики</div>
+      <div class="card-desc">Chipirones rellenos в собственных чернилах. Классическая галисийская консерва.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/razor-clams.html">
+    <img class="card-img" src="../images/batch1_10.jpg" alt="Морские черенки / Navajas в рассоле" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Морские черенки / Navajas в рассоле</div>
+      <div class="card-desc">Галисийские морские черенки в чистом рассоле. Несколько брендов, включая Selección 1920.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/mussels.html">
+    <img class="card-img" src="../images/batch3_07.jpg" alt="Мидии" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Мидии</div>
+      <div class="card-desc">Mytilus galloprovincialis + Porto-Muiños Mejillón al Natural con Tronco de Wakame.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/oysters.html">
+    <img class="card-img" src="../images/batch1_12.jpg" alt="Устрицы в соусе винегрет из Альбариньо" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Устрицы в соусе винегрет из Альбариньо</div>
+      <div class="card-desc">Крупные галисийские устрицы в соусе на основе вина Альбариньо. Готовый к подаче деликатес.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/octopus-cream.html">
+    <img class="card-img" src="../images/batch1_03.jpg" alt="Sotavento — крем из осьминога" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Sotavento — крем из осьминога</div>
+      <div class="card-desc">Crema de Pulpo — нежный, намазываемый паштет из осьминога из Испании.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/spider-crab.html">
+    <img class="card-img" src="../images/batch1_16.jpg" alt="Мясо паука-краба" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Мясо паука-краба</div>
+      <div class="card-desc">Carne de Centollo al Natural от La Mar de Tazones, Астурия.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/snow-crab.html">
+    <img class="card-img" src="../images/batch2_07.jpg" alt="Мясо снежного краба" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Мясо снежного краба</div>
+      <div class="card-desc">Cangrejo de las Nieves al Natural — несколько премиальных испанских брендов.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/red-king-crab.html">
+    <img class="card-img" src="../images/batch2_12.jpg" alt="Мясо ног камчатского краба" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Мясо ног камчатского краба</div>
+      <div class="card-desc">Chatka Patas 100% — мясо ног камчатского краба в рассоле.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/sardines.html">
+    <img class="card-img" src="../images/batch2_13.jpg" alt="Ferromar — мелкие сардинки" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Ferromar — мелкие сардинки</div>
+      <div class="card-desc">Sardinillas en Aceite de Oliva — мелкие сардины в премиальном оливковом масле.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/baby-eels.html">
+    <img class="card-img" src="../images/batch1_17.jpg" alt="Мальки угря (Angulas)" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Мальки угря (Angulas)</div>
+      <div class="card-desc">Conservas de Cambados angulas в оливковом масле с перцем гиндилья.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/sturgeon.html">
+    <img class="card-img" src="../images/batch3_06.jpg" alt="El Capricho Santoña — осётр" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">El Capricho Santoña — осётр</div>
+      <div class="card-desc">Награждённый консервированный осётр в оливковом масле из Сантоньи.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/lobster-pate.html">
+    <img class="card-img" src="../images/batch3_02.jpg" alt="Agromar — паштет из лобстера" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Agromar — паштет из лобстера</div>
+      <div class="card-desc">Paté de Bogavante — роскошные рийеты из лобстера в оливковом масле.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/velvet-crab-cream.html">
+    <img class="card-img" src="../images/batch3_10.jpg" alt="La Venta — крем из бархатного краба" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">La Venta — крем из бархатного краба</div>
+      <div class="card-desc">Crema de Nécoras (1897) — крем из бархатного плавающего краба из Кантабрии.</div>
+    </div>
+  </a>
+</div>
+</div>
+</section>
+<section class="category-section" id="nordic">
+<h2>Скандинавские деликатесы</h2>
+<div class="food-grid">
+
+<div class="food-card">
+  <a href="items/limfjord-cockles.html">
+    <img class="card-img" src="../images/batch2_01.jpg" alt="Fangst — сердцевидки Лимфьорда" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Fangst — сердцевидки Лимфьорда</div>
+      <div class="card-desc">Датские сердцевидки из Лимфьорда, слегка подсоленные. Сладко-солёное совершенство.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/monkfish-liver.html">
+    <img class="card-img" src="../images/batch2_08.jpg" alt="Fangst — печень исландского морского чёрта" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Fangst — печень исландского морского чёрта</div>
+      <div class="card-desc">Havtaske Lever — слегка копчёная печень исландского морского чёрта. «Фуа-гра моря».</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/cod-liver-nordic.html">
+    <img class="card-img" src="../images/batch3_04.jpg" alt="Fangst — печень исландской трески" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Fangst — печень исландской трески</div>
+      <div class="card-desc">Torske Lever — слегка копчёная печень исландской трески в собственном масле.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/surstromming.html">
+    <img class="card-img" src="../images/batch1_08.jpg" alt="Röda Ulven Surströmming" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Röda Ulven Surströmming</div>
+      <div class="card-desc">Знаменитая шведская квашеная балтийская селёдка — самый ароматный деликатес в мире.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/pickled-fennel.html">
+    <img class="card-img" src="../images/batch2_18.jpg" alt="Маринованный фенхель с укропом" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Маринованный фенхель с укропом</div>
+      <div class="card-desc">Fennikel Syltet — фенхель скандинавского засола с укропом.</div>
+    </div>
+  </a>
+</div>
+</div>
+</section>
+<section class="category-section" id="polish">
+<h2>Польские / Восточноевропейские</h2>
+<div class="food-grid">
+
+<div class="food-card">
+  <a href="items/catfish-bbq.html">
+    <img class="card-img" src="../images/batch1_01.jpg" alt="Łosoś Ustka — сом в соусе барбекю" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Łosoś Ustka — сом в соусе барбекю</div>
+      <div class="card-desc">Польский сом (sum) в соусе барбекю. Готовая к употреблению рыбная консерва.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/pickled-herring.html">
+    <img class="card-img" src="../images/batch1_07.jpg" alt="Kiszone Śledzie Łódzkie" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Kiszone Śledzie Łódzkie</div>
+      <div class="card-desc">Польская маринованная/квашеная сельдь, по-лодзински.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/cod-liver-riga.html">
+    <img class="card-img" src="../images/batch2_02.jpg" alt="Riga Gold — печень трески" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Riga Gold — печень трески</div>
+      <div class="card-desc">Wątróbki z dorsza w tłuszczu własnym — печень трески в собственном жире. Латвийский бренд, исландское производство.</div>
+    </div>
+  </a>
+</div>
+</div>
+</section>
+<section class="category-section" id="french">
+<h2>Французские продукты</h2>
+<div class="food-grid">
+
+<div class="food-card">
+  <a href="items/thon-basquaise.html">
+    <img class="card-img" src="../images/batch2_16.jpg" alt="Jean de Luz — баскский тунец" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Jean de Luz — баскский тунец</div>
+      <div class="card-desc">Thon Basquaise aux Légumes Bio — альбакор с органическими овощами и перцем Эспелет.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/monkfish-fillets.html">
+    <img class="card-img" src="../images/batch2_17.jpg" alt="Jean de Luz — филе морского чёрта" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Jean de Luz — филе морского чёрта</div>
+      <div class="card-desc">Filet de Lotte au Naturel — морской чёрт в слегка подсоленной родниковой воде.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/pork-ratatouille.html">
+    <img class="card-img" src="../images/batch1_15.jpg" alt="Maison Rivière — свинина с рататуем" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Maison Rivière — свинина с рататуем</div>
+      <div class="card-desc">Sauté de porc et sa ratatouille — классическое французское тушёное блюдо в банке.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/pork-terrine.html">
+    <img class="card-img" src="../images/batch2_10.jpg" alt="Charcuterie Bobosse — свиной террин" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Charcuterie Bobosse — свиной террин</div>
+      <div class="card-desc">Terrine Bobossienne N°5 — ремесленный французский свиной террин.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/pork-liver-pate.html">
+    <img class="card-img" src="../images/batch3_05.jpg" alt="Паштет из свиной печени с солью Геранд" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Паштет из свиной печени с солью Геранд</div>
+      <div class="card-desc">Pasztet z wątróbki z solą z Guérande — франко-польский паштет из свиной печени.</div>
+    </div>
+  </a>
+</div>
+</div>
+</section>
+<section class="category-section" id="charcuterie">
+<h2>Мясные деликатесы, соусы, соленья и прочее</h2>
+<div class="food-grid">
+
+<div class="food-card">
+  <a href="items/sobrasada.html">
+    <img class="card-img" src="../images/batch1_06.jpg" alt="El Zagal Sobrasada de Mallorca" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">El Zagal Sobrasada de Mallorca</div>
+      <div class="card-desc">Традиционная мальоркинская собрасада — мягкая, намазываемая вяленая свинина с паприкой.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/baby-broad-beans.html">
+    <img class="card-img" src="../images/batch1_14.jpg" alt="Молодые бобы в оливковом масле" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Молодые бобы в оливковом масле</div>
+      <div class="card-desc">Habitas baby en aceite de oliva — нежные испанские бобы, идеальные как тапас.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/red-currant-jam.html">
+    <img class="card-img" src="../images/batch1_04.jpg" alt="Варенье из красной смородины" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Варенье из красной смородины</div>
+      <div class="card-desc">Konfitura z czerwonych porzeczek — ручная работа, польское фруктовое варенье.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/chimichurri.html">
+    <img class="card-img" src="../images/batch2_04.jpg" alt="Домашний соус чимичурри" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Домашний соус чимичурри</div>
+      <div class="card-desc">Аргентинский чимичурри — петрушка, чили, чеснок, орегано, оливковое масло, винный уксус.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/tamarind-chutney.html">
+    <img class="card-img" src="../images/batch1_18.jpg" alt="Shan — тамариндовый чатни" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Shan — тамариндовый чатни</div>
+      <div class="card-desc">Пакистанский/индийский сладко-кислый тамариндовый чатни. Острая приправа.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/mango-pickle.html">
+    <img class="card-img" src="../images/batch2_05.jpg" alt="Shan — пикули из манго и карелы" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Shan — пикули из манго и карелы</div>
+      <div class="card-desc">Пакистанские/индийские пикули из манго и горькой тыквы (карелы) в пряном масле.</div>
+    </div>
+  </a>
+</div>
+
+<div class="food-card">
+  <a href="items/kimchi.html">
+    <img class="card-img" src="../images/batch3_09.jpg" alt="Jongga — кимчи из пекинской капусты" loading="lazy">
+    <div class="card-body">
+      <div class="card-title">Jongga — кимчи из пекинской капусты</div>
+      <div class="card-desc">Классическое корейское кимчи из пекинской капусты. Острое, ферментированное, богатое умами.</div>
+    </div>
+  </a>
+</div>
+</div>
+</section>
+</main>
+
+<footer>
+  <div class="container">
+    Руководство частного шефа по премиум консервам и деликатесам
+  </div>
+</footer>
+</body>
+</html>

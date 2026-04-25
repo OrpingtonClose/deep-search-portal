@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Riga Gold — печень трески — Кладовая частного шефа</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Language switcher */
+.lang-switch {
+  float: right;
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+.lang-switch a {
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: sans-serif;
+}
+.lang-switch a:hover { color: var(--accent); border-color: var(--accent-dim); text-decoration: none; }
+.lang-switch a.active { color: var(--accent); border-color: var(--accent); }
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <span class="lang-switch"><a href="../../items/cod-liver-riga.html">EN</a> <a href="#" class="active">RU</a></span>
+    <h1><a href="../index.html" style="color:var(--accent)">Кладовая частного шефа</a></h1>
+    <div class="subtitle">Кураторская коллекция премиальных консервов и деликатесов</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Кладовая</a>
+<span class="sep">›</span>
+<a href="../index.html#polish">Польские / Восточноевропейские</a>
+<span class="sep">›</span>
+<span>Riga Gold — печень трески</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../../images/batch2_02.jpg" alt="Riga Gold — печень трески">
+<div class="hero-text">
+<span class="category-badge">Польские / Восточноевропейские</span>
+<h2>Riga Gold — печень трески</h2>
+<p class="brief">Wątróbki z dorsza w tłuszczu własnym — печень трески в собственном жире. Латвийский бренд, исландское производство.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Что Это</h3>
+<p><strong>Печень трески</strong> — питательный орган атлантической трески (<em>Gadus morhua</em>) — упакованная в собственном отжатом масле, <strong>латвийская деликатес, произведенный из исландской трески</strong>. Riga Gold завоевала репутацию одного из премиальных производителей консервов в Балтийском/Скандинавском регионах. В банке весом 121 г содержатся целые или почти целые доли печени трески, подвешенные в собственном золотистом жире, слегка посоленные, без консервантов или добавок, кроме соли.</p>
+<p><strong>Качество:</strong> Печень должна выглядеть как целые, упругие дольки или большие куски — не размолотые. Масло должно быть ярко-золотым, прозрачным и жидким при комнатной температуре. Аромат должен быть <strong>морским-масляным</strong>, слегка печеночным, но чистым, никогда не прогорклым или &quot;рыбным&quot; в негативном смысле. Riga Gold закупает продукцию на исландских рыболовных промыслах, и однородность между банками заметно высока. Мутное масло, серое печеночное вещество или любая зернистость сигнализируют о окислении или плохом обращении.</p>
+<h3>Пищевая Ценность</h3>
+<p>Это один из самых энергетически насыщенных продуктов, которые вы будете хранить в кладовой. На <strong>100 г</strong>: примерно <strong>620–650 ккал</strong>, <strong>4–5 г белка</strong>, <strong>66–70 г жира</strong>, из которых <strong>10–12 г насыщенных</strong>. Углеводы фактически <strong>0 г</strong>. Реальная порция для закуски составляет <strong>40–50 г</strong> (примерно 2 столовые ложки печени с маслом), что дает <strong>250–320 ккал</strong> и <strong>26–35 г жира</strong>.</p>
+<p>Пищевая ценность здесь заключается в микроэлементах: <strong>витамин A</strong> (ретинол) в необычайных количествах — одна порция 50 г может обеспечить 200–300% суточной нормы. <strong>Витамин D</strong> также в большом количестве. <strong>Омега-3 жирные кислоты</strong> (EPA/DHA) присутствуют в значительных количествах, хотя общее количество потребляемой печени обычно скромное. <strong>Холестерин</strong> высокий (~180 мг на 50 г). Натрий умеренный: <strong>~300–400 мг</strong> на 100 г. Рассматривайте это как <strong>дополнительную роскошь</strong> — небольшие порции, интенсивное питание.</p>
+<h3>Подготовка и Подача</h3>
+<p><strong>Подавайте охлажденным до легкого охлаждения, никогда не нагревайте.</strong> Печень уже приготовлена во время консервирования; повторный нагрев разрушает нежную структуру дольки и выгоняет летучие ароматические соединения.</p>
+<p>1. <strong>Откройте банку осторожно.</strong> Масло — это жидкое золото — сохраните каждую каплю. Если банка хранилась в прохладном месте, жир мог начать застывать в мягкий крем. Это нормально; дайте постоять при комнатной температуре 15–20 минут, пока не вернется в жидкое состояние.</p>
+<p>2. <strong>Аккуратно поднимите печень.</strong> Используйте маленькую ложку или смещенный шпатель. Дольки хрупкие и могут сломаться при нажатии. Если они уже раскололись в пути, рассматривайте банку как &quot;намазку&quot;, а не как &quot;долговую&quot; презентацию.</p>
+<p>3. <strong>Используйте масло.</strong> Не сливайте его. Масло печени трески является неотъемлемой частью опыта и несет в себе большую часть вкуса. Ложкой выложите его на тарелку или хлеб рядом с печенью.</p>
+<p>4. <strong>Что НЕЛЬЗЯ делать:</strong> Не готовьте, не запекайте, не жарьте. Не смешивайте в мусс, если это не оговорено — текстура имеет значение. Не сочетайте с сильными специями (кумин, карри, чили), которые затмят нежный морской-масляный вкус. Не подавайте с сладкими гарнирами (варенья, горчица); легкая горечь печени нуждается в кислоте и соли, а не в сахаре.</p>
+<p><strong>Подача для VIP-сервиса:</strong> На охлажденной тарелке или небольшом сланце разместите одну или две целые дольки печени сбоку. Выложите небольшую лужицу масла вокруг них, но не сверху. Добавьте геометрическую горку <strong>тончайших ломтиков сырого белого лука</strong> (или шалота, если хотите более мягкий вкус) и несколько <strong>половинок корнишонов</strong>. Небольшая горка <strong>хлопьев соли Maldon</strong> на краю позволяет гостю приправить по вкусу. Подавайте с <strong>тонкими, темными ржаными крекерами</strong> или <strong>шведским крекером</strong> (knäckebröd), стоящими вертикально в небольшом подставке. Украсьте <strong>укропом или эстрагоном</strong>, никогда петрушкой (слишком травяной). Рассмотрите возможность добавления маленькой кнели <strong>хренового крема</strong> или <strong>горчицы Дижон</strong> в качестве дополнительного акцента.</p>
+<h3>Традиционный и Современный Контекст Питания</h3>
+<p>В Латвии, Эстонии и по всему Балтийскому региону печень трески на черном хлебе с луком является <strong>стандартным завтраком или ужином</strong> — ответ региона на фуа-гра, демократично доступный и повсеместно распространенный. Это также элемент <strong>праздничной закуски</strong> (закуска), особенно на Новый год и Пасху.</p>
+<p>Для VIP-клиента это ваш <strong>балтийский фуа-гра</strong> — позиционируйте его именно так. Он обладает той же маслянистостью, богатством, витаминной плотностью и моделью &quot;маленькая порция, большое воздействие&quot;. Подавайте его как амюз-буш на ложечке для демитассы с кусочком соленого огурца и ржаным крошкой, или как часть <strong>скандинавской тарелки закусок</strong> с копченой рыбой, террином из оленины и ферментированными овощами. Постсоветское происхождение добавляет глубину нарратива, если клиент ценит рассказы о терруаре.</p>
+<h3>Вкус и Текстура</h3>
+<p><strong>Вкус:</strong> Исключительно насыщенный и <strong>морской-масляный</strong> — вкус холодной, чистой воды Северной Атлантики, преобразованный через органическое мясо. На заднем плане присутствует легкая, приятная горечь (характерная для всей качественной печени), сбалансированная соленым засолом. Масло имеет тонкий ореховый, почти поджаренный вкус при комнатной температуре. Оно <strong>не рыбное</strong> в дешевом смысле; оно <strong>океаническое</strong> так же, как хорошие устрицы — вкус глубины и холода.</p>
+<p><strong>Текстура:</strong> Шелковистая, <strong>пудинговая</strong>, растворяющаяся на языке с почти отсутствием жевания. Внешняя часть дольки немного тверже, переходя в центр, который чистый как бархат. Само масло жидкое и обволакивающее, оставляющее блестящую пленку на нёбе, что глубоко удовлетворяет. Это не текстурированная еда в смысле сопротивления или хруста; это еда <strong>с отдачей и таянием</strong>.</p>
+<h3>Сочетания и Композиция</h3>
+<ul>
+<li><strong>Хлеб:</strong> Темный ржаной, шведский крекер или латвийский <em>rudzu maize</em> (ржаной хлеб на закваске). Хлеб должен быть достаточно прочным, чтобы поддерживать масло, не растворяясь, но достаточно тонким, чтобы не доминировать в порции. Легко поджарьте; масло не требуется и избыточно.</li>
+<li><strong>Кислота и Соль:</strong> Корнишоны, маринованный лук, ферментированный огурец, каперсы или капля лимона (используйте умеренно). Кислота разрезает жир; соль усиливает морские ноты.</li>
+<li><strong>Лук:</strong> Сырой белый лук, тончайший; зеленый лук; или мелко нарезанный шалот. Острота обновляет вкус между укусами.</li>
+<li><strong>Острота:</strong> Мягкий хреновый крем или капля сильной горчицы Дижон. Не васаби — слишком агрессивно.</li>
+<li><strong>Вино / Спиртные Напитки:</strong> <strong>Ледяная водка</strong> (русская, польская или балтийская крафтовая) — абсолютно классическое сочетание — нейтральность и холод спирта пронизывают жир. Если вино: <strong>охлажденный финский или мансанильный херес</strong> идеально подходит — диалог солености необычайный. <strong>Очень сухое, минеральное шампанское</strong> или <strong>Pet-Nat</strong> подходит для праздничных случаев. Полностью избегайте белых вин в дубе и полнотелых красных.</li>
+<li><strong>Овощи:</strong> Простые, холодные, хрустящие: кружки огурца, половинки редиса, сердцевины сельдерея. Никаких приготовленных овощей — они загрязняют чистоту.</li>
+<li><strong>Идея конкретного блюда:</strong> <em>Балтийская Троица</em> — на длинной прямоугольной тарелке разместите три небольшие порции в ряд: (1) печень трески Riga Gold на ржаном крекере с корнишоном и укропом; (2) холодно-копченый лосось на ржаном хлебе с крем-фреш и лососевой икрой; (3) маринованная сельдь на ржаном хлебе с сыром луком и сметаной. Соедините три линии тонкой линии укропного масла. Подавайте с замороженной рюмкой аквавита или водки. Это полное повествование о традициях балтийского консервирования в одном блюде.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    Руководство частного шефа по премиум консервам и деликатесам
+  </div>
+</footer>
+</body>
+</html>

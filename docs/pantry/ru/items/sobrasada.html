@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>El Zagal Sobrasada de Mallorca — Кладовая частного шефа</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Language switcher */
+.lang-switch {
+  float: right;
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+.lang-switch a {
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: sans-serif;
+}
+.lang-switch a:hover { color: var(--accent); border-color: var(--accent-dim); text-decoration: none; }
+.lang-switch a.active { color: var(--accent); border-color: var(--accent); }
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <span class="lang-switch"><a href="../../items/sobrasada.html">EN</a> <a href="#" class="active">RU</a></span>
+    <h1><a href="../index.html" style="color:var(--accent)">Кладовая частного шефа</a></h1>
+    <div class="subtitle">Кураторская коллекция премиальных консервов и деликатесов</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Кладовая</a>
+<span class="sep">›</span>
+<a href="../index.html#charcuterie">Мясные деликатесы, соусы, соленья и прочее</a>
+<span class="sep">›</span>
+<span>El Zagal Sobrasada de Mallorca</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../../images/batch1_06.jpg" alt="El Zagal Sobrasada de Mallorca">
+<div class="hero-text">
+<span class="category-badge">Мясные деликатесы, соусы, соленья и прочее</span>
+<h2>El Zagal Sobrasada de Mallorca</h2>
+<p class="brief">Традиционная мальоркинская собрасада — мягкая, намазываемая вяленая свинина с паприкой.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>El Zagal Sobrasada de Mallorca</h3>
+<p><strong>Что это такое</strong></p>
+<p>Собрасада — это культовая намазываемая вяленая колбаса с Майорки, защищенная под IGP Sobrasada de Mallorca. El Zagal — это уважаемый ремесленный производитель, работающий в рамках этой категории. Основой служат жирные свиные лопатка и грудинка, грубо измельченные, смешанные с сладкой и острой копченой паприкой (пиментон), солью и черным перцем. Колбаса набивается в натуральные оболочки, завязывается и проходит медленное созревание от трех до шести месяцев в влажном средиземноморском воздухе острова. Качество определяется: глубоким вишневым внутренним цветом, который поддается легкому нажиму, тонкой, слегка пыльной натуральной оболочкой без цветения нежелательной плесени и ароматом, насыщенным паприкой, с задним планом свиного аромата — не резким, не прогорклым. Текстура при нарезке мягкая, почти как паштет, с видимыми жировыми прожилками, которые легко размазываются по теплому хлебу.</p>
+<p><strong>Пищевая ценность</strong></p>
+<p>Типичная порция в 30 г является калорийной: примерно 120–140 ккал, 11–13 г жиров (примерно 40% насыщенных из свиного жира, остальное — мононенасыщенные), 4–5 г белка и 1 г углеводов. Содержание натрия значительное — 300–400 мг на порцию из-за соли для вяления. Замечательные минералы: железо (1–1.5 мг), цинк (в следовых количествах) и B12 из свинины. Это роскошная приправа — маленькие порции удовлетворяют. Не нужно предостерегать клиента от нее, но стоит построить подачу вокруг нее с кислотностью и овощами, чтобы сбалансировать жировую нагрузку.</p>
+<p><strong>Приготовление и подача</strong></p>
+<p>Принесите до комнатной температуры (18–20°C / 64–68°F) за 30 минут до подачи. Разрежьте оболочку и выложите внутренность; не нарезайте кружочками, как сухую салями. Для канапе намажьте 15 г на поджаренный хлеб из закваски или coca de vidre (майорская лепешка). Для составной тарелки сформируйте кнель из собрасады и слегка обожгите поверхность, чтобы растопить паприковый жир — это усиливает аромат. Чего НЕЛЬЗЯ делать: не нагревайте агрессивно или в микроволновке; паприка становится горькой при температуре выше 60°C. Не подавайте холодным из холодильника; жир застывает, и намазываемость теряется. Не выбрасывайте оболочку — ее можно мелко нарезать и использовать для приготовления винегрета из собрасады или обжарить до хрустящей корочки для украшения.</p>
+<p><strong>Традиционный и современный контекст употребления</strong></p>
+<p>На Майорке собрасаду едят на завтрак с хлебом и медом (sobrasada amb mel) или жарят с яйцами. На VIP-столах подавайте ее как роскошную намазку, а не как деревенскую закуску. Представьте ее как часть средиземноморской завтракной тарелки с мембрильо и свежим козьим сыром, или как предвкушение перед ужином: кнель собрасады на теплой поджаренной тосте с каплей меда из цветков апельсина и хлопьями соли Maldon.</p>
+<p><strong>Вкус и текстура</strong></p>
+<p>Первое впечатление — это дымный теплый вкус паприки — земляной, слегка сладкий, с медленно нарастающим покалыванием капсаицина, если использовалась острая смесь пиментон. Жир шелковистый, обволакивает язык, не оставляя жирности. Задний план — это вяленая свинина: чистая, ферментированная, напоминающая хорошо выдержанный чоризо, но мягче, более податливая. Текстура плотная и намазываемая, с редкими кусочками постного мяса, создающими контраст с расплавленной жировой матрицей.</p>
+<p><strong>Сочетания и состав</strong></p>
+<ul>
+<li><strong>Хлеб</strong>: Поджаренный хлеб из закваски, coca de vidre или тонкая ficelle. Хлеб должен иметь корочку и жевательную текстуру, чтобы выдерживать жир.</li>
+<li><strong>Кислота</strong>: Уксус херес, маринованный шалот или варенье из красной смородины, представленное в этом разделе — собрасада и смородина создают великолепный сладко-солоноватый мост.</li>
+<li><strong>Молочные продукты</strong>: Свежий молодой козий сыр (formatge de cabra), манчего курадо или центр бурраты. Молочная кислинка хорошо сочетается с паприковым жиром.</li>
+<li><strong>Морепродукты</strong>: Да. Тонкий слой собрасады под жареным гребешком или креветкой работает великолепно — паприка и свиной жир усиливают сладость ракообразных. Попробуйте масло собрасады (1:1 с размягченным маслом), намазанное на жареных лангустинах.</li>
+<li><strong>Вино</strong>: Сухое херес Amontillado, молодой майорский Callet или охлажденный Txakolina.</li>
+<li><strong>Конкретное блюдо</strong>: Кростини с собрасадой, взбитым козьим сыром с медом и маринованной красной смородиной. Или перцы пикильо, фаршированные собрасадой, запеченные до тех пор, пока жир не растопится в стенках перца.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    Руководство частного шефа по премиум консервам и деликатесам
+  </div>
+</footer>
+</body>
+</html>

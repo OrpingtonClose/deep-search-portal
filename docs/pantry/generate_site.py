@@ -170,76 +170,51 @@ CHARCUTERIE_SECTION_MARKERS = {
 }
 
 
+ALL_MARKERS = {}
+ALL_MARKERS.update(SLUG_TO_SECTION_MAP)
+ALL_MARKERS.update(NORDIC_SECTION_MARKERS)
+ALL_MARKERS.update(POLISH_SECTION_MARKERS)
+ALL_MARKERS.update(FRENCH_SECTION_MARKERS)
+ALL_MARKERS.update(CHARCUTERIE_SECTION_MARKERS)
+
+# Pre-compute header line positions for reliable matching
+_header_positions = []
+for m in re.finditer(r'^(#{1,4}) .+', guide_text, re.MULTILINE):
+    _header_positions.append((m.start(), m.group()))
+
+
+def _find_header_pos(marker_text):
+    """Find the position of a header line containing marker_text."""
+    needle = marker_text.lower()
+    for pos, header_line in _header_positions:
+        if needle in header_line.lower():
+            return pos
+    return -1
+
+
+def _extract_section(start_pos):
+    """Extract text from start_pos to the next header of equal or higher level."""
+    header_line_end = guide_text.index('\n', start_pos)
+    header_line = guide_text[start_pos:header_line_end]
+    level = len(header_line) - len(header_line.lstrip('#'))
+    for pos, hdr in _header_positions:
+        if pos <= start_pos:
+            continue
+        hdr_level = len(hdr) - len(hdr.lstrip('#'))
+        if hdr_level <= level:
+            return guide_text[start_pos:pos].strip()
+    return guide_text[start_pos:].strip()
+
+
 def find_section(slug):
     """Find the guide section for a food item."""
-    # Try Spanish section markers
-    if slug in SLUG_TO_SECTION_MAP:
-        marker = SLUG_TO_SECTION_MAP[slug]
-        for sec in sections:
-            if marker.lower() in sec[:100].lower():
-                return sec.strip()
-
-    # Try Nordic markers (### headers)
-    if slug in NORDIC_SECTION_MARKERS:
-        marker = NORDIC_SECTION_MARKERS[slug]
-        # Find ### section
-        pattern = re.compile(r'(### ' + re.escape(marker[:20]) + r'.*?)(?=\n### |\n# |\Z)', re.DOTALL | re.IGNORECASE)
-        # More flexible search
-        idx = guide_text.lower().find(marker.lower()[:20])
-        if idx > 0:
-            # Find the ### header before this
-            header_start = guide_text.rfind('\n### ', max(0, idx-200), idx+50)
-            if header_start < 0:
-                header_start = guide_text.rfind('\n### ', max(0, idx-500), idx+50)
-            if header_start >= 0:
-                # Find next ### or # header
-                next_header = guide_text.find('\n### ', header_start + 5)
-                next_h1 = guide_text.find('\n# ', header_start + 5)
-                next_h2 = guide_text.find('\n## ', header_start + 5)
-                ends = [e for e in [next_header, next_h1, next_h2] if e > 0]
-                end = min(ends) if ends else len(guide_text)
-                return guide_text[header_start:end].strip()
-
-    # Try Polish section markers
-    if slug in POLISH_SECTION_MARKERS:
-        marker = POLISH_SECTION_MARKERS[slug]
-        for sec in sections:
-            if marker.lower()[:15] in sec[:100].lower():
-                return sec.strip()
-
-    # Try French section markers
-    if slug in FRENCH_SECTION_MARKERS:
-        marker = FRENCH_SECTION_MARKERS[slug]
-        idx = guide_text.lower().find(marker.lower()[:20])
-        if idx > 0:
-            header_start = guide_text.rfind('\n### ', max(0, idx-200), idx+50)
-            if header_start < 0:
-                header_start = guide_text.rfind('\n## ', max(0, idx-500), idx+50)
-            if header_start >= 0:
-                next_header = guide_text.find('\n### ', header_start + 5)
-                next_h1 = guide_text.find('\n# ', header_start + 5)
-                next_h2 = guide_text.find('\n## ', header_start + 5)
-                ends = [e for e in [next_header, next_h1, next_h2] if e > 0]
-                end = min(ends) if ends else len(guide_text)
-                return guide_text[header_start:end].strip()
-
-    # Try Charcuterie section markers (### headers)
-    if slug in CHARCUTERIE_SECTION_MARKERS:
-        marker = CHARCUTERIE_SECTION_MARKERS[slug]
-        idx = guide_text.lower().find(marker.lower()[:20])
-        if idx > 0:
-            header_start = guide_text.rfind('\n### ', max(0, idx-200), idx+50)
-            if header_start < 0:
-                header_start = guide_text.rfind('\n## ', max(0, idx-500), idx+50)
-            if header_start >= 0:
-                next_header = guide_text.find('\n### ', header_start + 5)
-                next_h1 = guide_text.find('\n# ', header_start + 5)
-                next_h2 = guide_text.find('\n## ', header_start + 5)
-                ends = [e for e in [next_header, next_h1, next_h2] if e > 0]
-                end = min(ends) if ends else len(guide_text)
-                return guide_text[header_start:end].strip()
-
-    return None
+    marker = ALL_MARKERS.get(slug)
+    if not marker:
+        return None
+    pos = _find_header_pos(marker.lstrip('#').strip())
+    if pos < 0:
+        return None
+    return _extract_section(pos)
 
 
 def md_to_html(md_text):
@@ -269,20 +244,11 @@ def md_to_html(md_text):
         if stripped.startswith('---'):
             continue
 
-        if stripped.startswith('- **'):
+        if stripped.startswith('- **') or stripped.startswith('- '):
             if not in_list:
                 html_parts.append('<ul>')
                 in_list = True
-            # Bold item in list
-            content = stripped[2:]
-            content = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', content)
-            content = re.sub(r'\*(.+?)\*', r'<em>\1</em>', content)
-            html_parts.append(f'<li>{content}</li>')
-        elif stripped.startswith('- '):
-            if not in_list:
-                html_parts.append('<ul>')
-                in_list = True
-            content = stripped[2:]
+            content = html.escape(stripped[2:])
             content = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', content)
             content = re.sub(r'\*(.+?)\*', r'<em>\1</em>', content)
             html_parts.append(f'<li>{content}</li>')
@@ -294,8 +260,7 @@ def md_to_html(md_text):
             if in_list:
                 html_parts.append('</ul>')
                 in_list = False
-            # Regular paragraph
-            content = stripped
+            content = html.escape(stripped)
             content = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', content)
             content = re.sub(r'\*(.+?)\*', r'<em>\1</em>', content)
             html_parts.append(f'<p>{content}</p>')

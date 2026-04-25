@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Snow Crab Meat — The Private Chef&#x27;s Pantry</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <h1><a href="../index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
+    <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Pantry</a>
+<span class="sep">›</span>
+<a href="../index.html#spanish">Spanish Conservas &amp; Premium Tinned Seafood</a>
+<span class="sep">›</span>
+<span>Snow Crab Meat</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../images/batch2_07.jpg" alt="Snow Crab Meat">
+<div class="hero-text">
+<span class="category-badge">Spanish Conservas &amp; Premium Tinned Seafood</span>
+<h2>Snow Crab Meat</h2>
+<p class="brief">Cangrejo de las Nieves al Natural — multiple premium Spanish brands.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>What It Is</h3>
+<p>Snow crab (<em>Chionoecetes opilio</em> or <em>C. bairdi</em> — the label &quot;cangrejo de las nieves&quot; in Spanish conservas may refer to either true snow crab or, more commonly in the European market, to processed leg meat from North Atlantic fisheries, often Canadian or Greenlandic). Multiple Spanish canneries source this meat, packing it &quot;al natural&quot; in light brine or vacuum-sealed without liquid. Quality markers: long, intact leg-fiber strands, clean white-to-pale-pink color, no ammonia smell (a sign of age), minimal glazing or ice in frozen pre-processed lots.</p>
+<p>Important note: Much &quot;snow crab&quot; conserva in Europe is previously frozen meat, repacked by Spanish houses. The quality depends heavily on the raw material&#x27;s freeze-thaw history. Source from producers who specify fresh-cooked packing.</p>
+<h3>Nutritional Profile</h3>
+<p>Per 100g (drained):</p>
+<ul>
+<li>Calories: ~90–110 kcal</li>
+<li>Protein: 18–22g</li>
+<li>Fat: 1–2g</li>
+<li>Carbohydrates: ~0g</li>
+<li>B12, selenium, zinc: excellent</li>
+<li>Sodium: ~350–500mg (natural/brine)</li>
+</ul>
+<h3>Preparation &amp; Service</h3>
+<p>Serve <strong>well-chilled</strong> — 6–10°C/43–50°F — for cold presentations, or at <strong>cool room temperature</strong> for salads. Drain carefully. The strands are longer and more cohesive than spider crab; they can be gently teased apart with a fork but do not shred aggressively. If using in a warm dish, add at the very last moment off the heat — the meat is already cooked and will become stringy and dry with reheating.</p>
+<p><strong>What NOT to do:</strong> Do not heat in a microwave — it turns rubbery and weeps moisture. Do not pair with heavy, oily sauces that overwhelm the delicate sweetness.</p>
+<h3>Traditional &amp; Modern Eating Context</h3>
+<p>Snow crab is not native to Spanish waters, so this is an import-as-luxury product, often served at high-end <em>marisquerías</em> and hotels. The conserva format makes it accessible for composed dishes. For VIP service, present it as a refined &quot;crab cocktail&quot; or as a filling for delicate items where its long strands can be showcased.</p>
+<h3>Flavor &amp; Texture</h3>
+<p>The texture is the longest-stranded of common crab meats — fine, parallel filaments that separate into silken threads. It is less dense than king crab and more subtly flavored. The taste is sweet and mild, with a faint nuttiness and a clean, almost neutral marine finish. It is the &quot;white meat&quot; of crab — delicate, agreeable, and a canvas for other flavors. The best lots have a faint fresh-seawater brightness; lesser lots can be bland or slightly metallic.</p>
+<h3>Pairings &amp; Composition</h3>
+<ul>
+<li><strong>Wines:</strong> Champagne, Chablis, or Albariño</li>
+<li><strong>Bases:</strong> Cucumber cups, endive boats, delicate lettuce, blini</li>
+<li><strong>Sauces:</strong> Classic Marie Rose (lightened with yogurt), light vinaigrette, citrus gel, or simply lemon and butter</li>
+<li><strong>Dish idea:</strong> <em>Cangrejo en barquitas de endibia</em> — long strands of snow crab lightly dressed with lemon crème fraîche, spooned into endive leaves, topped with dill and salmon roe. A passed canapé or a composed first course.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    A Private Chef's Guide to Premium Tinned &amp; Jarred Goods
+  </div>
+</footer>
+</body>
+</html>

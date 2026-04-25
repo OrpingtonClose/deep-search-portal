@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>El Zagal Sobrasada de Mallorca — The Private Chef&#x27;s Pantry</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <h1><a href="../index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
+    <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Pantry</a>
+<span class="sep">›</span>
+<a href="../index.html#charcuterie">Charcuterie, Sauces, Pickles &amp; Other</a>
+<span class="sep">›</span>
+<span>El Zagal Sobrasada de Mallorca</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../images/batch1_06.jpg" alt="El Zagal Sobrasada de Mallorca">
+<div class="hero-text">
+<span class="category-badge">Charcuterie, Sauces, Pickles &amp; Other</span>
+<h2>El Zagal Sobrasada de Mallorca</h2>
+<p class="brief">Traditional Mallorcan sobrasada — soft, spreadable cured pork with paprika.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>El Zagal Sobrasada de Mallorca</h3>
+<p><strong>What it is</strong></p>
+<p>Sobrasada is the iconic spreadable cured sausage of Mallorca, protected under IGP Sobrasada de Mallorca. El Zagal is a respected artisan producer working within that designation. The base is fatty pork shoulder and belly, coarsely ground, mixed with sweet and hot smoked paprika (pimentón), salt, and black pepper. The sausage is stuffed into natural casings, tied, and undergoes a slow curing of three to six months in the island&#x27;s humid Mediterranean air. Quality markers: a deep vermilion interior that yields to gentle pressure, a thin, slightly dusty natural casing with no bloom of unwanted mold, and a paprika-forward aroma with backend pork funk—not acrid, not rancid. The texture when sliced open is unctuous, almost pâté-like, with visible fat marbling that smears cleanly across warm bread.</p>
+<p><strong>Nutritional profile</strong></p>
+<p>A typical 30g serving is energy-dense: approximately 120–140 kcal, 11–13g fat (roughly 40% saturated from pork fat, remainder monounsaturated), 4–5g protein, and 1g carbohydrate. Sodium is significant at 300–400mg per serving due to curing salt. Notable minerals: iron (1–1.5mg), zinc (trace), and B12 from pork. This is a luxury condiment—small portions satisfy. No need to warn the client off it, but build the board around it with acidity and vegetables to balance the fat load.</p>
+<p><strong>Preparation &amp; Service</strong></p>
+<p>Bring to cool room temperature (18–20°C / 64–68°F) 30 minutes before service. Slice the casing open and spoon the interior out; do not slice coins like a dry salami. For a canapé, smear 15g onto grilled sourdough or coca de vidre (Mallorcan flatbread). For a composed plate, quenelle the sobrasada and torch the surface lightly to render the paprika fat—this intensifies the aroma. What NOT to do: do not heat aggressively or microwave; the paprika turns bitter above 60°C. Do not serve fridge-cold; the fat congeals and the spreadability is lost. Do not discard the casing—it can be finely diced and rendered into a sobrasada vinaigrette or fried crisp for garnish.</p>
+<p><strong>Traditional &amp; Modern Eating Context</strong></p>
+<p>In Mallorca, sobrasada is eaten at breakfast with bread and honey (sobrasada amb mel), or pan-fried with eggs. On VIP tables, treat it as a luxury spread rather than a rustic grab. Present it as part of a Mediterranean breakfast board with membrillo and fresh goat cheese, or as a pre-dinner amuse: a quenelle of sobrasada on a warm buttered toast point with a single drop of orange blossom honey and a flake of Maldon salt.</p>
+<p><strong>Flavor &amp; Texture</strong></p>
+<p>The first impression is smoky paprika warmth—earthy, slightly sweet, with a slow-building capsaicin tingle if a hot pimentón blend was used. The fat is silky, coating the tongue without greasiness. The backend is cured pork funk: clean, fermented, reminiscent of a well-aged chorizo but softer, more yielding. The texture is dense and spreadable, with occasional nibs of lean meat providing contrast to the molten fat matrix.</p>
+<p><strong>Pairings &amp; Composition</strong></p>
+<ul>
+<li><strong>Bread</strong>: Grilled sourdough, coca de vidre, or a thin ficelle. The bread must have char and chew to stand up to the fat.</li>
+<li><strong>Acid</strong>: Sherry vinegar, pickled shallots, or the red currant jam elsewhere in this section—sobrasada and currant is a knockout sweet-savory bridge.</li>
+<li><strong>Dairy</strong>: Fresh young goat cheese (formatge de cabra), manchego curado, or a burrata center. The lactic tang cuts through the paprika fat.</li>
+<li><strong>Seafood crossover</strong>: Yes. A thin smear of sobrasada under a grilled scallop or prawn works brilliantly—the paprika and pork fat amplify the crustacean sweetness. Try sobrasada butter (1:1 with softened butter) dolloped on grilled langoustines.</li>
+<li><strong>Wine</strong>: A dry Amontillado sherry, a youthful Mallorcan Callet, or a chilled Txakolina.</li>
+<li><strong>Specific dish</strong>: Sobrasada crostini with whipped honey goat cheese and pickled red currant. Or sobrasada-stuffed piquillo peppers, roasted until the fat renders into the pepper walls.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    A Private Chef's Guide to Premium Tinned &amp; Jarred Goods
+  </div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pork Liver Pâté with Guérande Salt — The Private Chef&#x27;s Pantry</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <h1><a href="../index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
+    <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Pantry</a>
+<span class="sep">›</span>
+<a href="../index.html#french">French Products</a>
+<span class="sep">›</span>
+<span>Pork Liver Pâté with Guérande Salt</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../images/batch3_05.jpg" alt="Pork Liver Pâté with Guérande Salt">
+<div class="hero-text">
+<span class="category-badge">French Products</span>
+<h2>Pork Liver Pâté with Guérande Salt</h2>
+<p class="brief">Pasztet z wątróbki z soli z Guérande — Franco-Polish pork liver pâté.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Pork Liver Pâté with Guérande Salt (Pasztet z Wątróbki z Soli z Guérande)</h3>
+<p><strong>What it is</strong></p>
+<p>A Polish-French crossover pâté: the Polish _pasztet_ tradition—ground pork liver and meat bound with bread, egg, and allspice—made with _fleur de sel_ or _sel gris_ from the Guérande salt marshes of Brittany. The Guérande salt is not merely a seasoning choice; it is a quality marker that replaces standard table salt with a mineral-rich, slightly damp grey sea salt that seasons more deeply and leaves a faint marine echo. Typical composition: pork liver (30–40 %), ground pork shoulder or belly, onion sautéed in lard or butter, a bread roll soaked in milk (the classic Polish _bulka_ binder), eggs, marjoram, black pepper, allspice, bay, and juniper. Sold in glass jars or earthenware terrines.</p>
+<p><strong>Nutritional profile</strong></p>
+<p>Per 100 g: approximately 240–280 kcal, 12–16 g protein, 18–22 g fat (saturated 6–9 g), 3–6 g carbohydrates (from the bread binder), minimal sugars. Key nutrients: very high in vitamin A (retinol from liver, often exceeding 200 % DV per 100 g), heme iron (≈ 4–6 mg), zinc, and B12. The Guérande salt contributes trace magnesium and calcium not found in refined salt. A 60 g serving delivers roughly 150–170 kcal and 8–10 g protein.</p>
+<p><strong>Preparation &amp; Service</strong></p>
+<p>Serve cool, never warm. Polish _pasztet_ is traditionally eaten cold or at cool room temperature, sliced or spread. If the pâté arrives in a jar, chill it thoroughly, then run a knife around the edge and invert. If it is in a terrine, slice with a knife dipped in hot water.</p>
+<p>Do not heat in the jar—it will separate and weep fat. Do not spread on hot toast straight from the toaster; the fat will melt and the texture collapses. Let the toast cool to warm before applying. For a clean slice, work with a cold pâté and a thin, sharp blade.</p>
+<p><strong>Traditional &amp; Modern Eating Context</strong></p>
+<p>In Poland, _pasztet_ is a Christmas and Easter staple, served at _ś niadanie_ (breakfast) with _chrzan_ (horseradish), _ogórki kiszone_ (fermented cucumbers), and dark rye bread. For a VIP client, present it as a continental charcuterie course: two thin slices of the pâté, a spoonful of lingonberry or redcurrant compote, a tuft of micro-cress, and a warm _brioche_ slice on the side. The Guérande salt gives you a French narrative to justify its place on a refined board.</p>
+<p><strong>Flavor &amp; Texture</strong></p>
+<p>The liver flavor is present but moderated by the pork meat and the sweet allspice-mace-marjoram complex that defines Polish _pasztet_. The Guérande salt dissolves unevenly—some crystals remain intact—so the palate gets occasional bright saline sparks against the deep umami of liver and pork. The texture is smooth but not silken; the bread binder gives it a slight, pleasant graininess, denser than a French _mousse de foie_ but lighter than a coarse _terrine de campagne_. The finish is long, warm from the spice, and faintly maritime from the salt.</p>
+<p><strong>Pairings &amp; Composition</strong></p>
+<p>Wines: a chilled Pinot Noir from Sancerre or a light Czech or Austrian Blaufränkisch for the Polish bridge; or a dry Polish _cydr_ (apple cider) for authenticity. Breads: dark sourdough rye (_chleb żytni_), _pumpernickel_, or a toasted _brioche_ if you want French lift. Accompaniments: horseradish cream, _mizeria_ (cucumber in sour cream), pickled mushrooms, lingonberry jam, or cornichons. Composed dish idea: _Pasztet en croûte mini_—encase a small baton of the pâté in butter puff pastry with a thin layer of caramelized onion, bake until golden, and serve with a _sauce diable_ sharpened with horseradish. Or modern: a &quot;deconstructed _pasztet_&quot;—a quenelle of the pâté, a sphere of horseradish cream, a rectangle of toasted dark rye, and a gel of reduced _barszcz_ (beet broth) on the plate.</p>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    A Private Chef's Guide to Premium Tinned &amp; Jarred Goods
+  </div>
+</footer>
+</body>
+</html>

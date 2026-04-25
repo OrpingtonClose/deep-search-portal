@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Maison Rivière Pork with Ratatouille — The Private Chef&#x27;s Pantry</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <h1><a href="../index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
+    <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Pantry</a>
+<span class="sep">›</span>
+<a href="../index.html#french">French Products</a>
+<span class="sep">›</span>
+<span>Maison Rivière Pork with Ratatouille</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../images/batch1_15.jpg" alt="Maison Rivière Pork with Ratatouille">
+<div class="hero-text">
+<span class="category-badge">French Products</span>
+<h2>Maison Rivière Pork with Ratatouille</h2>
+<p class="brief">Sauté de porc et sa ratatouille — classic French canned ready-meal stew.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Maison Rivière Sautéed Pork with Ratatouille</h3>
+<p><strong>What it is</strong></p>
+<p>A 400 g jar of Southwestern _plat cuisiné_: diced pre-cooked pork sauté (27.5 %, French origin) embedded in a slow-simmered ratatouille of zucchini (26 %), cubed tomato (21 %), eggplant (7 %), onions (5.5 %), tomato concentrate, red and green peppers (2 % each), extra-virgin olive oil, sunflower oil, garlic, herbs (thyme, marjoram, savory, rosemary), and a touch of potato starch and sugar for body and balance. Maison Rivière is an artisan _conserverie_ based in the Southwest, historically known for _cassoulet_, _confit_, and _bocaux_ of the _terroir_. No preservatives, no colorants.</p>
+<p><strong>Nutritional profile</strong></p>
+<p>Per 100 g: 335 kJ / 80 kcal, fat 4.5 g (saturated 1 g), carbohydrates 4.3 g (sugars 3.1 g, fiber 1.1 g), protein 5.1 g, salt 0.68 g. The pork contributes heme iron and zinc; the vegetable matrix delivers potassium and modest lycopene from the cooked tomatoes. A 250 g serving (half the jar) provides roughly 200 kcal, 13 g protein, and a meaningful portion of vegetables.</p>
+<p><strong>Preparation &amp; Service</strong></p>
+<p>Warm it gently. The jar instructions suggest 20 minutes in a bain-marie or 10 minutes in a saucepan over low heat. Do not microwave in the jar; the temperature differential will crack the glass. Do not blast on high heat—the eggplant will disintegrate into mush and the pork will tighten.</p>
+<p>For service: spoon into a warmed shallow bowl over a small pool of _pistou_ (basil-garlic-olive oil paste) or alongside a _gratin dauphinois_. The starch in the jar gives the sauce enough body to cling to the protein; you should not need to reduce it further. If the client prefers a lighter plate, serve over butter-steamed zucchini ribbons with a spoonful of the warmed ratatouille-pork ragout on top.</p>
+<p><strong>Traditional &amp; Modern Eating Context</strong></p>
+<p>In the Southwest, this is a working lunch from the _conserverie_: heated and eaten with bread and a glass of _vin de pays_. For VIP presentation, serve it as a _parmentier de lot-eet-garonne_: layer the warmed pork-ratatouille mixture in a small cast-iron cocotte, pipe a _duchesse_ potato crust on top, and pass under the salamander until golden.</p>
+<p><strong>Flavor &amp; Texture</strong></p>
+<p>The pork is in small, yielding cubes—more vegetable-forward than a meat stew. The ratatouille is soft, sweet, and aromatic, with clear notes of thyme and slow-cooked tomato. The peppers have melted into the sauce but left their bright vegetal signature. The texture is a rustic _mijoté_: not refined, not rustic-chic, but honest. The olive oil comes through cleanly on the finish.</p>
+<p><strong>Pairings &amp; Composition</strong></p>
+<p>Wines: a Cahors malbec, a Marcillac, or a young Madiran. Breads: _ficelle_ or a chewy _pain de mie_ for sauce-mopping. Composed dish idea: _Cocotte Rivière_—warm the contents, fold in a handful of cooked _lingots_ or _coco de Paimpol_ beans, top with breadcrumbs toasted in duck fat, and gratinate. Or modern: reduce the liquid slightly and use as a filling for a savory _tarte tatin_ with caramelized shallot and goat cheese.</p>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    A Private Chef's Guide to Premium Tinned &amp; Jarred Goods
+  </div>
+</footer>
+</body>
+</html>

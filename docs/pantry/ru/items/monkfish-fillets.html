@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jean de Luz — филе морского чёрта — Кладовая частного шефа</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Language switcher */
+.lang-switch {
+  float: right;
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+.lang-switch a {
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: sans-serif;
+}
+.lang-switch a:hover { color: var(--accent); border-color: var(--accent-dim); text-decoration: none; }
+.lang-switch a.active { color: var(--accent); border-color: var(--accent); }
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <span class="lang-switch"><a href="../../items/monkfish-fillets.html">EN</a> <a href="#" class="active">RU</a></span>
+    <h1><a href="../index.html" style="color:var(--accent)">Кладовая частного шефа</a></h1>
+    <div class="subtitle">Кураторская коллекция премиальных консервов и деликатесов</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Кладовая</a>
+<span class="sep">›</span>
+<a href="../index.html#french">Французские продукты</a>
+<span class="sep">›</span>
+<span>Jean de Luz — филе морского чёрта</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../../images/batch2_17.jpg" alt="Jean de Luz — филе морского чёрта">
+<div class="hero-text">
+<span class="category-badge">Французские продукты</span>
+<h2>Jean de Luz — филе морского чёрта</h2>
+<p class="brief">Filet de Lotte au Naturel — морской чёрт в слегка подсоленной родниковой воде.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Jean de Luz Monkfish Fillets (Filet de Lotte au Naturel)</h3>
+<p><strong>Что это такое</strong></p>
+<p>270 г банка филе лотта (_Lophius piscatorius_), консервированного au naturel в слегка подсоленной родниковой воде. В банке содержится 70 % лотта, 29 % воды и 1 % органической соли. Ничего больше. Лотта ловится на линию в Восточной Атлантике и обрабатывается вручную в ателье Сен-Жан-де-Люз. Одна банка равна примерно 2.5 стандартным консервам по объему, а формат с закручивающейся крышкой позволяет повторно запечатывать: хранится в холодильнике две недели после открытия.</p>
+<p><strong>Пищевая ценность</strong></p>
+<p>На 100 г (осушенного): примерно 65–75 ккал, 13–15 г белка, 1–1.5 г жира (практически ноль насыщенных), ноль углеводов. Лотта особенно богата фосфором (≈ 200 мг на 100 г), калием (≈ 400 мг), селеном (≈ 35–40 мкг) и витамином B12 (≈ 1 мкг, покрывающим значительную часть суточной нормы). Очень низкое содержание натрия даже с учетом рассола. Порция в 120 г (осушенная) содержит примерно 18 г белка менее чем на 100 ккал.</p>
+<p><strong>Приготовление и подача</strong></p>
+<p>Это самая нейтральная, универсальная рыбная консерва, с которой вы будете работать. Осторожно слейте филе — не сжимайте — и обсушите на чистом льняном или бумажном полотенце. Рыба уже приготовлена; ваша задача — разогреть или переработать, не высушивая.</p>
+<p>Для теплой подачи: обжарьте осушенные филе на очень небольшом количестве масла или утиного жира, по 90 секунд с каждой стороны на среднем огне, просто чтобы карамелизовать поверхность. Завершите лимонным соком и нарезанной петрушкой. Для холодной подачи: разломайте филе в _salade niçoise_ или составной морской _verrine_ с авокадо, дольками грейпфрута и укропом. Не жарьте во фритюре; постное мясо станет жестким. Не варите в супе; добавьте в последний момент.</p>
+<p><strong>Традиционный и современный контекст употребления</strong></p>
+<p>В портовых городах лотта au naturel подается холодной с _mayonnaise maison_ и отварным картофелем или разламывается в _gratin de lotte_. Для взыскательного клиента подайте обжаренные филе на _fondue de poireaux_ с beurre blanc, приправленным уксусом из сидра, или холодными как _timbale_ с нарезанным авокадо, кровяным апельсином и легким _ré moulade_.</p>
+<p><strong>Вкус и текстура</strong></p>
+<p>Лотта часто называется &quot;лобстером для бедных&quot; за свое плотное, мясистое мясо хвоста и легкую сладость. Консервированная au naturel, она не теряет своей плотности. Вкус чистый, слегка сладкий, без грязных нот, которые могут появиться у более дешевой белой рыбы в банке. Текстура плотная, слегка эластичная и держит чистую крошку. Рассол тонкий — это не соленый продукт.</p>
+<p><strong>Сочетания и композиция</strong></p>
+<p>Вина: Muscadet-sur-Lie, Sancerre blanc или хрустящий Albariño. Соусы: beurre blanc, _sauce gribiche_ или легкая крем-с соус с шафраном. Овощи: лук-порей, фенхель, сельдерей или вялый шпинат. Идея составного блюда: &quot;Lotte en blanc&quot; — обжаренное филе, _velouté_ из сельдерея, обжаренные лисички и _persillade_ из петрушки и каперсов. Или холодное: разломайте в тартар с нарезанными корнишонами, шалотом, горчицей и крем-фреш, подавайте с _gaufrettes_ или тостами.</p>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    Руководство частного шефа по премиум консервам и деликатесам
+  </div>
+</footer>
+</body>
+</html>

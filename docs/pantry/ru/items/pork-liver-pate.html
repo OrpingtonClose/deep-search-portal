@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Паштет из свиной печени с солью Геранд — Кладовая частного шефа</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Language switcher */
+.lang-switch {
+  float: right;
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+.lang-switch a {
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: sans-serif;
+}
+.lang-switch a:hover { color: var(--accent); border-color: var(--accent-dim); text-decoration: none; }
+.lang-switch a.active { color: var(--accent); border-color: var(--accent); }
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <span class="lang-switch"><a href="../../items/pork-liver-pate.html">EN</a> <a href="#" class="active">RU</a></span>
+    <h1><a href="../index.html" style="color:var(--accent)">Кладовая частного шефа</a></h1>
+    <div class="subtitle">Кураторская коллекция премиальных консервов и деликатесов</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Кладовая</a>
+<span class="sep">›</span>
+<a href="../index.html#french">Французские продукты</a>
+<span class="sep">›</span>
+<span>Паштет из свиной печени с солью Геранд</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../../images/batch3_05.jpg" alt="Паштет из свиной печени с солью Геранд">
+<div class="hero-text">
+<span class="category-badge">Французские продукты</span>
+<h2>Паштет из свиной печени с солью Геранд</h2>
+<p class="brief">Pasztet z wątróbki z solą z Guérande — франко-польский паштет из свиной печени.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Pork Liver Pâté with Guérande Salt (Pasztet z Wątróbki z Soli z Guérande)</h3>
+<p><strong>Что это такое</strong></p>
+<p>Польско-французский кроссовер паштет: традиция польского _pasztet_ — свиная печень и мясо, связанное хлебом, яйцом и душистым перцем — сделано с _fleur de sel_ или _sel gris_ из соляных болот Гюранд в Бретани. Соль Гюранд не просто выбор приправы; это маркер качества, который заменяет стандартную столовую соль минералосодержащей, слегка влажной серой морской солью, которая глубже приправляет и оставляет легкий морской оттенок. Типичный состав: свиная печень (30–40 %), свиная лопатка или живот, лук, обжаренный в сале или масле, булочка, замоченная в молоке (классическая польская связка _bulka_), яйца, майоран, черный перец, душистый перец, лавровый лист и можжевельник. Продается в стеклянных банках или керамических терринах.</p>
+<p><strong>Пищевая ценность</strong></p>
+<p>На 100 г: примерно 240–280 ккал, 12–16 г белка, 18–22 г жира (насыщенных 6–9 г), 3–6 г углеводов (из хлебной связки), минимальное количество сахаров. Ключевые питательные вещества: очень высокое содержание витамина A (ретинол из печени, часто превышает 200 % суточной нормы на 100 г), гемовое железо (≈ 4–6 мг), цинк и B12. Соль Гюранд добавляет следы магния и кальция, которые отсутствуют в рафинированной соли. Порция в 60 г обеспечивает примерно 150–170 ккал и 8–10 г белка.</p>
+<p><strong>Приготовление и подача</strong></p>
+<p>Подавайте охлажденным, никогда не теплым. Польский _pasztet_ традиционно едят холодным или при прохладной комнатной температуре, нарезанным или намазанным. Если паштет приходит в банке, охладите его тщательно, затем проведите ножом по краю и переверните. Если он в террине, нарежьте ножом, опущенным в горячую воду.</p>
+<p>Не разогревайте в банке — он отделится и выделит жир. Не намазывайте на горячий тост сразу из тостера; жир растает, и текстура разрушится. Дайте тосту остыть до теплого перед намазыванием. Для чистого нарезания работайте с холодным паштетом и тонким острым лезвием.</p>
+<p><strong>Традиционный и современный контекст употребления</strong></p>
+<p>В Польше _pasztet_ — это рождественская и пасхальная основа, подается на _śniadanie_ (завтрак) с _chrzan_ (хреном), _ogórki kiszone_ (ферментированными огурцами) и темным ржаным хлебом. Для VIP-клиента представьте его как континентальную закуску: два тонких ломтика паштета, ложка клюквенного или красносмородинового компота, пучок микрогречки и теплый ломтик _brioche_ на стороне. Соль Гюранд дает вам французский нарратив, чтобы оправдать его место на изысканной тарелке.</p>
+<p><strong>Вкус и текстура</strong></p>
+<p>Вкус печени присутствует, но смягчен свининой и сладким комплексом душистого перца, мускатного ореха и майорана, который определяет польский _pasztet_. Соль Гюранд растворяется неравномерно — некоторые кристаллы остаются целыми — так что на языке возникают случайные яркие соленые всплески на фоне глубокого умами печени и свинины. Текстура гладкая, но не шелковистая; хлебная связка придает ей легкую, приятную зернистость, более плотную, чем французская _mousse de foie_, но легче, чем грубая _terrine de campagne_. Послевкусие долгое, теплое от специй и слегка морское от соли.</p>
+<p><strong>Сочетания и композиция</strong></p>
+<p>Вина: охлажденный Пино Нуар из Сансера или легкий чешский или австрийский Блауфранкиш для польского моста; или сухой польский _cydr_ (яблочный сидр) для аутентичности. Хлеб: темный ржаной хлеб на закваске (_chleb żytni_), _pumpernickel_ или поджаренный _brioche_, если хотите французского подъема. Гарниры: крем из хрена, _mizeria_ (огурец в сметане), маринованные грибы, клюквенное варенье или корнишоны. Идея составного блюда: _Pasztet en croûte mini_ — заверните небольшой батон паштета в слоеное тесто с тонким слоем карамелизированного лука, запекайте до золотистого цвета и подавайте с _sauce diable_, приправленным хреном. Или современное: &quot;де конструкция _pasztet_&quot; — _quenelle_ паштета, сфера крема из хрена, прямоугольник поджаренного темного ржаного хлеба и гель из уменьшенного _barszcz_ (свекольного бульона) на тарелке.</p>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    Руководство частного шефа по премиум консервам и деликатесам
+  </div>
+</footer>
+</body>
+</html>

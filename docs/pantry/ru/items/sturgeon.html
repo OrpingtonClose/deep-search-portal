@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>El Capricho Santoña — осётр — Кладовая частного шефа</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Language switcher */
+.lang-switch {
+  float: right;
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+.lang-switch a {
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: sans-serif;
+}
+.lang-switch a:hover { color: var(--accent); border-color: var(--accent-dim); text-decoration: none; }
+.lang-switch a.active { color: var(--accent); border-color: var(--accent); }
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <span class="lang-switch"><a href="../../items/sturgeon.html">EN</a> <a href="#" class="active">RU</a></span>
+    <h1><a href="../index.html" style="color:var(--accent)">Кладовая частного шефа</a></h1>
+    <div class="subtitle">Кураторская коллекция премиальных консервов и деликатесов</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Кладовая</a>
+<span class="sep">›</span>
+<a href="../index.html#spanish">Испанские консервы и премиум морепродукты</a>
+<span class="sep">›</span>
+<span>El Capricho Santoña — осётр</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../../images/batch3_06.jpg" alt="El Capricho Santoña — осётр">
+<div class="hero-text">
+<span class="category-badge">Испанские консервы и премиум морепродукты</span>
+<h2>El Capricho Santoña — осётр</h2>
+<p class="brief">Награждённый консервированный осётр в оливковом масле из Сантоньи.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Что это такое</h3>
+<p>Стерлядь (<em>Acipenser sturio</em> или фермерская <em>A. gueldenstaedtii</em> / <em>A. baerii</em>), обработанная El Capricho, премиум консервным производством в Сантоña (Кантабрия). Стерлядь в испанских консервах — редкость: рыба не является коренной для атлантических вод Иберии в коммерческих количествах, поэтому это либо импортированная фермерская стерлядь, либо случайный улов, обработанный с такой же заботой, как и тунец и анчоусы этого дома. Продукт обычно представляет собой филе или мясо живота стерляди, упакованное в оливковом масле. Показатели качества: бледное, почти слоновое или розоватое мясо, плотная текстура, отсутствие сильного &quot;грязного&quot; вкуса (признак плохой обработки стерляди), чистое масло.</p>
+<h3>Пищевая ценность</h3>
+<p>На 100 г (с маслом):</p>
+<ul>
+<li>Калории: ~180–220 ккал</li>
+<li>Белки: 16–20 г</li>
+<li>Жиры: 12–16 г (стерлядь — умеренно жирная рыба, плюс масло)</li>
+<li>Омега-3: ~1.0–1.5 г</li>
+<li>B12, селен, фосфор: хорошо</li>
+<li>Натрий: ~350–450 мг</li>
+</ul>
+<h3>Приготовление и подача</h3>
+<p>Подавайте при <strong>прохладной комнатной температуре</strong> — 16–18°C/61–64°F. Мясо стерляди плотное и выигрывает от того, что его немного подогревают от холодильной температуры, чтобы его тонкие ароматы могли проявиться. Осторожно слейте, сохраняя масло. Мясо можно нарезать или оставить кусками в зависимости от формата банки. <strong>Не перегревайте при подогреве</strong> — кратковременная водяная баня приемлема, но стерлядь может стать сухой. Лучше всего подавать как аналог &quot;белого тунца&quot;: в толстых кусках, возможно, слегка обжаренных с одной стороны для контраста.</p>
+<h3>Традиционный и современный контекст употребления</h3>
+<p>У стерляди нет глубокого традиционного контекста консервов в Испании — это инновационный или нишевый продукт класса люкс. Для VIP-подачи представьте это как предмет для разговора: &quot;Ответ Испании на белый тунец, от древней рыбы, которая также дает нам икру.&quot; Новизна является частью ценности. Относитесь к этому с таким же уважением, как к филе тунца Herpac.</p>
+<h3>Вкус и текстура</h3>
+<p>Текстура плотная и мясистая — более плотная, чем у тунца, с тонким зерном, которое хорошо держится. Она почти напоминает по своей субстанции птицу. Вкус мягкий и чистый, с легкой сладостью и тонкой, приятной землянистостью (стерлядь питается бентосными организмами, и легкая нота &quot;русла реки&quot; характерна и желательна). Здесь отсутствует сильный посторонний вкус, который может проявляться у плохо обработанной стерляди. Оливковое масло дополняет, не маскируя, а послевкусие долгое, чистое и слегка ореховое.</p>
+<h3>Сочетания и состав</h3>
+<ul>
+<li><strong>Вина:</strong> Белый Бургундия, выдержанный Годельо или легкий Пино Нуар</li>
+<li><strong>Основы:</strong> Картофель, корень сельдерея, сельдерей, пюре из белой фасоли</li>
+<li><strong>Кислоты:</strong> Лимон, легкий вержус, ягоды каперсов</li>
+<li><strong>Ароматы:</strong> Укроп, шервиль, мягкая горчица</li>
+<li><strong>Идея блюда:</strong> <em>Esturión con crema de apionabo</em> — толстые ломтики стерляди на теплой креме из корня сельдерея, заправленные упаковочным маслом, ягодами каперсов и несколькими веточками укропа. Мост между землей и морем.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    Руководство частного шефа по премиум консервам и деликатесам
+  </div>
+</footer>
+</body>
+</html>

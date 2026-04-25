@@ -315,6 +315,22 @@ header .subtitle {
   font-style: italic;
 }
 
+/* Language switcher */
+.lang-switch {
+  float: right;
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+.lang-switch a {
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: sans-serif;
+}
+.lang-switch a:hover { color: var(--accent); border-color: var(--accent-dim); text-decoration: none; }
+.lang-switch a.active { color: var(--accent); border-color: var(--accent); }
+
 /* Breadcrumb */
 .breadcrumb {
   padding: 16px 0;
@@ -490,10 +506,11 @@ def page_head(title, extra_css="", base_path="."):
 <body>
 """
 
-def page_header(base_path="."):
+def page_header(base_path=".", ru_path="ru/index.html"):
     return f"""
 <header>
   <div class="container">
+    <span class="lang-switch"><a href="#" class="active">EN</a> <a href="{ru_path}">RU</a></span>
     <h1><a href="{base_path}/index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
     <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
   </div>
@@ -562,9 +579,10 @@ def generate_detail_pages():
         section_md = find_section(slug)
         section_html = md_to_html(section_md)
 
+        ru_detail_path = f"../ru/items/{slug}.html"
         parts = [
             page_head(f"{name} — The Private Chef's Pantry", base_path=".."),
-            page_header(".."),
+            page_header("..", ru_detail_path),
             '<div class="breadcrumb"><div class="container">',
             '<a href="../index.html">Pantry</a>',
             f'<span class="sep">›</span>',

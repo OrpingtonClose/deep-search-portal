@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Herpac Mackerel Roes — The Private Chef&#x27;s Pantry</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <h1><a href="../index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
+    <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Pantry</a>
+<span class="sep">›</span>
+<a href="../index.html#spanish">Spanish Conservas &amp; Premium Tinned Seafood</a>
+<span class="sep">›</span>
+<span>Herpac Mackerel Roes</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../images/batch3_01.jpg" alt="Herpac Mackerel Roes">
+<div class="hero-text">
+<span class="category-badge">Spanish Conservas &amp; Premium Tinned Seafood</span>
+<h2>Herpac Mackerel Roes</h2>
+<p class="brief">Atlantic chub mackerel roe sacs in extra-virgin olive oil. Briny, creamy, delicate.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>What It Is</h3>
+<p>The roe sacs of Atlantic chub mackerel (<em>Scomber colias</em>), harvested at peak season when the sacs are full but not yet breaking down. A delicacy within Spanish conserva culture that sits somewhere between tarama and fresh bottarga in identity. Herpac packs them whole in EVOO to preserve the fragile membrane. Quality markers: intact sacs, pale orange-rose color, no sulfurous odor, oil remains clear.</p>
+<h3>Nutritional Profile</h3>
+<p>Per 100g (with oil):</p>
+<ul>
+<li>Calories: ~190–230 kcal</li>
+<li>Protein: 14–18g</li>
+<li>Fat: 14–17g (significant contribution from the roe's phospholipids and the oil)</li>
+<li>Omega-3: ~1.0–1.5g</li>
+<li>Choline, B12, iodine: very high</li>
+<li>Sodium: ~400–500mg</li>
+</ul>
+<h3>Preparation &amp; Service</h3>
+<p>These are delicate. Open carefully to avoid piercing the sacs. Serve very lightly chilled — 12°C/54°F — so the oil is thick but not cloudy. The roe can be presented whole as a "hero" element, or split gently with a spoon to reveal the granular interior. Use the oil to dress the plate. <strong>Do not rinse.</strong> <strong>Do not heat.</strong> Heat will rupture the membrane and cause the roe to weep, turning gritty.</p>
+<h3>Traditional &amp; Modern Eating Context</h3>
+<p>In Cádiz and Huelva, <em>huevas de caballa</em> are eaten simply: a sac on a plate with bread and a cold <em>tinto de verano</em>. For a refined service, plate one or two whole sacs per person alongside a smear of whipped salted cod brandade or on a base of thinly sliced, buttered brioche toast.</p>
+<h3>Flavor &amp; Texture</h3>
+<p>The membrane is tender-snappy, giving way to a mass of fine, individual eggs that are smaller and more delicate than salmon roe. The texture is creamy-granular, almost like fine polenta. The flavor is briny upfront, then distinctly <em>liver-like</em> — minerally, with a note of iodine and a faint bitterness that reads as sophistication rather than spoilage. The olive oil softens the finish into something almost nutty.</p>
+<h3>Pairings &amp; Composition</h3>
+<ul>
+<li><strong>Wines:</strong> Fino sherry, crisp Albariño, or a young Godello</li>
+<li><strong>Breads:</strong> Lightly toasted brioche or <em>pan de cristal</em></li>
+<li><strong>Acids:</strong> Lemon zest (not juice), pickled shallot, caper berries</li>
+<li><strong>Dish idea:</strong> <em>Huevas sobre crema de puerros</em> — one whole roe sac resting on a warm (not hot) leek cream, finished with the packing oil, micro-celery, and a thread of reduced Pedro Ximénez.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    A Private Chef's Guide to Premium Tinned &amp; Jarred Goods
+  </div>
+</footer>
+</body>
+</html>

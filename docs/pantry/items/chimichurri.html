@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Artisanal Chimichurri Sauce — The Private Chef&#x27;s Pantry</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <h1><a href="../index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
+    <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Pantry</a>
+<span class="sep">›</span>
+<a href="../index.html#charcuterie">Charcuterie, Sauces, Pickles &amp; Other</a>
+<span class="sep">›</span>
+<span>Artisanal Chimichurri Sauce</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../images/batch2_04.jpg" alt="Artisanal Chimichurri Sauce">
+<div class="hero-text">
+<span class="category-badge">Charcuterie, Sauces, Pickles &amp; Other</span>
+<h2>Artisanal Chimichurri Sauce</h2>
+<p class="brief">Argentine-style chimichurri — parsley, chili, garlic, oregano, EVOO, wine vinegar.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Artisanal Chimichurri Sauce</h3>
+<p><strong>What it is</strong></p>
+<p>Chimichurri is the essential herb sauce of the Argentine asado, though versions exist across the Río de la Plata region. A proper artisanal chimichurri is an uncooked emulsion of finely chopped flat-leaf parsley, garlic, dried oregano, red pepper flakes (ají molido or peperoncino), red wine vinegar, and neutral or olive oil. There are two schools: chimichurri verde (fresh, parsley-dominant) and chimichurri rojo (with added paprika and tomato). For versatile pantry use, the green version is more adaptable. Quality markers: the parsley should still read as vibrantly green, not oxidized to olive drab; the garlic should be present but not burning; the vinegar should be sharp but balanced by the oil; the texture should be coarse, almost relish-like, not a smooth puree.</p>
+<p><strong>Nutritional profile</strong></p>
+<p>A 30g serving contains 60–80 kcal, 6–8g fat (mostly from olive oil, monounsaturated), 0–1g protein, 1–2g carbohydrate, and under 1g fiber. The garlic and parsley contribute allicin, vitamin K, and flavonoids. The vinegar adds negligible calories. Sodium is moderate if salt is included in the recipe. This is essentially a healthful fat delivery system with potent aromatic compounds.</p>
+<p><strong>Preparation & Service</strong></p>
+<p>Chimichurri is served at cool room temperature. If it has separated in storage, stir to re-emulsify; do not blend again, which bruises the parsley and turns the color murky. For service, spoon into a small bowl and let it sit for 10 minutes at room temp to wake the aromatics. As a marinade, apply 2–3 hours before grilling; as a finishing sauce, spoon over the protein after resting. What NOT to do: do not heat chimichurri as a cooking sauce—the raw garlic will turn acrid and the parsley will go bitter. Do not use a blender for the initial preparation; hand-chopping or a very brief pulse in a food processor preserves texture. Do not substitute curly parsley; the flavor is too mild and the texture too fibrous.</p>
+<p><strong>Traditional & Modern Eating Context</strong></p>
+<p>Traditionally, chimichurri is the constant companion to grilled beef—vacío, entraña, bife de chorizo. It is passed around the parrilla in a communal bowl and spooned generously. For a VIP table, use it more judiciously. A teaspoon alongside a perfectly grilled ribeye is sufficient; let the meat be the star and the chimichurri the accent. Alternatively, use it as a vibrant finishing sauce for grilled vegetables, a dressing for grain salads, or a dip for crusty bread.</p>
+<p><strong>Flavor & Texture</strong></p>
+<p>The initial hit is sharp vinegar and raw garlic—pungent, aggressive, alive. Then the grassy, slightly bitter parsley washes through, followed by the warm, slow-building heat of red pepper. The oregano provides an earthy, almost mentholated backbone. The oil carries everything and provides a slick, coating mouthfeel. The texture is chunky and rustic; each bite delivers flecks of herb, slivers of garlic, and flakes of chili.</p>
+<p><strong>Pairings & Composition</strong></p>
+<ul>
+<li><strong>Proteins</strong>: Grilled beef (the classic), but also lamb chops, pork shoulder, chicken thighs, and robust fish like swordfish or bluefin. The acidity tenderizes perception and cuts through fat.</li>
+<li><strong>Seafood</strong>: Excellent with grilled octopus, prawns, or even raw oysters if thinned with extra lemon. The garlic-vinegar profile amplifies brine.</li>
+<li><strong>Vegetables</strong>: Grilled eggplant, roasted sweet potatoes, charred spring onions. Also as a dressing for a farro or quinoa salad with roasted peppers.</li>
+<li><strong>Cross-reference with charcuterie</strong>: A spoonful next to sobrasada creates an herbal-paprika dialogue. Next to cured pork loin or chorizo, it acts as a palate cleanser.</li>
+<li><strong>Wine</strong>: Malbec (the obvious choice), but also Bonarda, a tannic Cabernet Franc, or a chilled amber wine.</li>
+<li><strong>Specific dish</strong>: Grilled prawns with chimichurri and a side of the habitas baby. Or a deconstructed asado plate: sliced ribeye, chimichurri, grilled onion, and a quenelle of red currant jam for sweet-acid contrast.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    A Private Chef's Guide to Premium Tinned &amp; Jarred Goods
+  </div>
+</footer>
+</body>
+</html>

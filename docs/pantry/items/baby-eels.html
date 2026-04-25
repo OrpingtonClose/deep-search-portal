@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Baby Eels (Angulas) — The Private Chef&#x27;s Pantry</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <h1><a href="../index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
+    <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Pantry</a>
+<span class="sep">›</span>
+<a href="../index.html#spanish">Spanish Conservas &amp; Premium Tinned Seafood</a>
+<span class="sep">›</span>
+<span>Baby Eels (Angulas)</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../images/batch1_17.jpg" alt="Baby Eels (Angulas)">
+<div class="hero-text">
+<span class="category-badge">Spanish Conservas &amp; Premium Tinned Seafood</span>
+<h2>Baby Eels (Angulas)</h2>
+<p class="brief">Conservas de Cambados angulas in olive oil with guindilla chili.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>What It Is</h3>
+<p><em>Angulas</em> are the juvenile form of the European eel (<em>Anguilla anguilla</em>), a delicacy of extraordinary rarity and price. Wild <em>angulas</em> are now critically endangered and largely banned from commercial sale in many contexts; what is available in conserva form may be either very limited legal catch or, in some cases, the surimi-based imitation known as <em>gulas</em>. However, premium conservas from houses like Conservas de Cambados (if sourcing verified wild or sustainably farmed juveniles) are genuine. The product is tiny, worm-like white elvers, packed in olive oil with a guindilla chili for gentle heat. Quality markers: pure white color, uniform thin diameter (2–3mm), firm texture, clean smell with no fishiness or ammonia, chili intact and not broken down.</p>
+<p><strong>Critical sourcing note:</strong> Verify provenance. True <em>angulas</em> command prices of €500+/kg. If the price is modest, it is likely <em>gulas</em> (fish-paste imitation). For a private chef serving a VIP, transparency is essential — know what you are buying and represent it honestly.</p>
+<h3>Nutritional Profile</h3>
+<p>Per 100g (with oil):</p>
+<ul>
+<li>Calories: ~220–280 kcal (high due to olive oil content)</li>
+<li>Protein: 12–16g</li>
+<li>Fat: 18–22g (significant oil contribution; the eels themselves are moderately fatty)</li>
+<li>Omega-3: ~0.8–1.2g</li>
+<li>Vitamin A, calcium: present (the tiny bones are consumed)</li>
+<li>Sodium: ~400–600mg</li>
+</ul>
+<h3>Preparation &amp; Service</h3>
+<p>Serve at <strong>cool room temperature</strong> — 16–18°C/61–64°F. The oil should be fluid. These are traditionally eaten with a fork, not a spoon — the ritual matters. Do not heat. The eels are already at optimal tenderness; any heat will toughen them and cause the delicate proteins to seize. Drain most of the oil, but leave enough to coat the plate. The chili is a garnish and a flavoring; remove it if the client dislikes heat, or chop it finely and distribute for gentle warmth.</p>
+<p><strong>What NOT to do:</strong> Do not confuse with <em>gulas</em> and treat them as a casual ingredient. If using true <em>angulas</em>, they are the centerpiece, not a garnish. Do not mix with strong flavors that will mask their subtlety.</p>
+<h3>Traditional &amp; Modern Eating Context</h3>
+<p>In the Basque Country and Navarra, <em>angulas a la bilbaína</em> — sautéed with garlic, oil, and chili — is a classic winter dish, outrageously expensive and served at special occasions. The conserva version captures this in ready-to-eat form. For VIP service, present simply: a small portion in a warmed ceramic dish, perhaps with a soft-poached egg on the side or a smear of garlic confit beneath. The traditional accompaniments are minimal: bread, a glass of txakoli, reverence.</p>
+<h3>Flavor &amp; Texture</h3>
+<p>The texture is the entire point: delicate, slightly springy, with a faint resistance that gives way to a soft, almost creamy interior. They are tiny — the eating experience is about repetition and subtle accumulation. The flavor is remarkably mild and clean for such a prized ingredient — sweet, faintly nutty, with a whisper of the river-marine transition habitat they inhabit. The olive oil carries them, and the chili adds a slow, building warmth that never overwhelms.</p>
+<h3>Pairings &amp; Composition</h3>
+<ul>
+<li><strong>Wines:</strong> Txakoli (the classic pairing — effervescent, crisp, Basque)</li>
+<li><strong>Breads:</strong> <em>Txigorto</em> (toasted corn bread) or very light <em>coca</em></li>
+<li><strong>Eggs:</strong> A soft-poached or fried egg alongside is canonical — the yolk mingles with the oil</li>
+<li><strong>Garlic:</strong> Garlic chips or very soft garlic confit</li>
+<li><strong>Dish idea:</strong> <em>Angulas con huevo</em> — a small ceramic cazuela with the <em>angulas</em> and their oil, a side plate with one perfectly soft-poached egg, and a piece of toasted corn bread. The client breaks the egg over the eels. Minimalism as luxury.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    A Private Chef's Guide to Premium Tinned &amp; Jarred Goods
+  </div>
+</footer>
+</body>
+</html>

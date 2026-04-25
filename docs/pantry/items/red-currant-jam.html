@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Red Currant Jam — The Private Chef&#x27;s Pantry</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <h1><a href="../index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
+    <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Pantry</a>
+<span class="sep">›</span>
+<a href="../index.html#charcuterie">Charcuterie, Sauces, Pickles &amp; Other</a>
+<span class="sep">›</span>
+<span>Red Currant Jam</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../images/batch1_04.jpg" alt="Red Currant Jam">
+<div class="hero-text">
+<span class="category-badge">Charcuterie, Sauces, Pickles &amp; Other</span>
+<h2>Red Currant Jam</h2>
+<p class="brief">Konfitura z czerwonych porzeczek — hand-labeled Polish fruit preserve.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Red Currant Jam / Confiture (Konfitura z czerwonych porzeczek)</h3>
+<p><strong>What it is</strong></p>
+<p>Polish red currant confiture is a preserve of remarkable clarity and discipline. Unlike over-reduced commercial jams, a good konfitura is cooked briefly to set the natural pectin while preserving the currant's sharp, almost cranberrylic acidity. The best versions use a 1:1 or 1:0.8 ratio of fruit to sugar, sometimes with a vanilla pod or a sprig of elderflower. Quality markers: a translucent ruby color, visible whole or half currants suspended in a soft set that trembles rather than holds rigid, and an aroma that is tart first, sweet second, with no caramelized depth that would mask the fruit.</p>
+<p><strong>Nutritional profile</strong></p>
+<p>A 20g serving (about a tablespoon) contains 35–45 kcal, 0g fat, 0g protein, and 9–11g carbohydrate, nearly all from sugars. The fiber is negligible at this portion. Vitamin C is present but diminished from cooking; the real nutritional note is the polyphenol and anthocyanin content from the red skins. This is a sugar-forward condiment—use it as a flavoring agent, not a fruit serving.</p>
+<p><strong>Preparation & Service</strong></p>
+<p>Serve at cool room temperature. Cold straight from refrigeration dulls the volatile aromatics. Spoon into a small ceramic pot or ramekin; do not spread it yourself unless building a specific canapé. The texture should be loose enough to drip slowly from a spoon. If your jar has set too firm, warm gently in a bain-marie until it relaxes—never microwave, which causes hot spots and flavor degradation. What NOT to do: do not pair this with already-sweet components without a salty or fatty bridge. Do not use it as a glaze for meat without cutting it with vinegar or mustard; the sugar will scorch.</p>
+<p><strong>Traditional & Modern Eating Context</strong></p>
+<p>In Poland, red currant jam accompanies fresh twaróg (farmer's cheese) or cream cheese on breakfast bread, or fills Danish-style pastries. It is rarely eaten with meat traditionally, though modern Polish chefs have broken that boundary. For a VIP client, present it as part of a cheese course—specifically with aged goat gouda or ewe's milk cheese—or as a condiment on a breakfast board with cultured butter and brioche. It also shines as a counterpoint to pork and duck.</p>
+<p><strong>Flavor & Texture</strong></p>
+<p>The attack is bright, mouthwatering acidity—cranberry-like but more refined, with a winey, almost cassis undertone. The sweetness is clean and subservient, never cloying. The seeds provide a subtle, pleasant crunch. The texture is a soft gel that breaks under pressure, releasing a thin, syrupy juice that spreads across the palate and cleanses it.</p>
+<p><strong>Pairings & Composition</strong></p>
+<ul>
+<li><strong>Charcuterie</strong>: The essential bridge item. Red currant jam with sobrasada is extraordinary—the tart fruit cuts the paprika fat. Also superb with duck rillettes, pork terrines, or a coarse pâté de campagne.</li>
+<li><strong>Cheese</strong>: Aged goat gouda, manchego, ewe's milk tomme, or a bloomy-rind chaource. Avoid very fresh cheeses that will weep.</li>
+<li><strong>Seafood</strong>: Surprisingly effective with oily fish—try a small dab alongside smoked mackerel or eel. The acid and sugar echo traditional sweet-sour fish preparations.</li>
+<li><strong>Game</strong>: Venison, duck, or quail. Use as a condiment on the plate or thin with red wine vinegar as a pan sauce enrichment.</li>
+<li><strong>Dessert</strong>: Swirled into Greek yogurt, atop panna cotta, or as a filling for thumbprint cookies with brown butter.</li>
+<li><strong>Wine</strong>: Off-dry Riesling, young Pinot Noir, or a sparkling rosé.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    A Private Chef's Guide to Premium Tinned &amp; Jarred Goods
+  </div>
+</footer>
+</body>
+</html>

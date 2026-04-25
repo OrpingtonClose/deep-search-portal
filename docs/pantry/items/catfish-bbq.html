@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Łosoś Ustka Catfish in Barbecue Sauce — The Private Chef&#x27;s Pantry</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <h1><a href="../index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
+    <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Pantry</a>
+<span class="sep">›</span>
+<a href="../index.html#polish">Polish / Eastern European</a>
+<span class="sep">›</span>
+<span>Łosoś Ustka Catfish in Barbecue Sauce</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../images/batch1_01.jpg" alt="Łosoś Ustka Catfish in Barbecue Sauce">
+<div class="hero-text">
+<span class="category-badge">Polish / Eastern European</span>
+<h2>Łosoś Ustka Catfish in Barbecue Sauce</h2>
+<p class="brief">Polish wels catfish (sum) in barbecue sauce. Ready-to-eat canned fish.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>What It Is</h3>
+<p><strong>Wels catfish (<em>Silurus glanis</em>, "sum" in Polish)</strong> — one of Europe's largest freshwater predators, farmed in Polish aquaculture and wild-caught in the Vistula basin — preserved in a sweet-smoky barbecue sauce by <strong>Łosoś Fish Processing</strong>, a cannery founded in Ustka in 1954 and now operating from Słupsk. The 110g tin (also available in jar) is a working-class pantry icon that has migrated into Polish bistro and retro-nostalgia menus.</p>
+<p><strong>Quality markers:</strong> The fish should be pale ivory to light grey, in clean flakes or chunks, not mush. The sauce is tomato-based with visible specks of paprika, onion, and a restrained sweetness; avoid any tin with metallic off-aromas or sauce separation that smells fermented. Łosoś holds IFS and BRC certification; their barbecue line uses no preservatives, relying solely on retort thermal processing.</p>
+<h3>Nutritional Profile</h3>
+<p>A 110g tin drained yields approximately <strong>140–170 kcal</strong>, with <strong>12–15g protein</strong>, <strong>4–8g fat</strong> (mix of fish oil and sauce oil), and <strong>8–12g carbohydrates</strong> from the sauce. Sodium runs <strong>600–900mg</strong> depending on batch. Catfish delivers respectable <strong>selenium</strong> and <strong>phosphorus</strong>; the sauce adds little micronutrient value beyond some <strong>lycopene</strong> from the tomato base. Not a fatty-fish omega-3 powerhouse, but a solid lean-protein pantry item.</p>
+<h3>Preparation &amp; Service</h3>
+<p><strong>Do not heat aggressively.</strong> This is a fully retorted product; the fish has already seen enough thermal abuse.</p>
+<p>1. <strong>Open carefully.</strong> The sauce can surge. Drain off excess barbecue sauce into a ramekin — do not discard immediately; you may want it for the plate.</p>
+<p>2. <strong>Assess the fish.</strong> Gently lift chunks with a fork. If the pieces are too large for elegant service, break along natural flake lines. Do not mash.</p>
+<p>3. <strong>Temperature:</strong> Room temperature (18–20°C / 65–68°F) is ideal. If the tin has been in a cold larder, let it sit 20 minutes before opening. The sauce thickens unpleasantly when chilled, and the fish tightens.</p>
+<p>4. <strong>What NOT to do:</strong> Do not rinse. Do not try to crisp or sear the fish — it is already cooked to the edge of disintegration. Do not reduce the sauce separately; it is too sweet and will burn. Do not pair with delicate herbs that will be obliterated by the smoke-paprika intensity.</p>
+<p><strong>Plating for VIP service:</strong> Serve in a shallow warmed earthenware bowl with a quenelle of dense, cold sour cream or skyr offset to the side. Scatter thinly shaved pickled red onion and a chiffonade of dill over the fish, not under it. Offer dark rye toasts (rugbrød-style or Polish <em>chleb żytni</em>) on the side, barely rubbed with raw garlic.</p>
+<h3>Traditional &amp; Modern Eating Context</h3>
+<p>In Poland this is <strong>prosto z puszki</strong> — straight from the tin, onto buttered bread, eaten at a kitchen table with a beer after work. It is fisherman food, student food, midnight food.</p>
+<p>For a discerning client, frame it as <strong>Baltic pantry terroir</strong> — the Eastern European answer to conservas culture. Serve it as the third item on a three-spread board, between cured pork and pickled vegetables, or as a composed tartine with fermented cucumber and celery root remoulade. It pairs beautifully with the current fashion for post-Soviet nostalgia dining, but only if executed with precision; sloppy presentation makes it look like desperation catering.</p>
+<h3>Flavor &amp; Texture</h3>
+<p><strong>Flavor:</strong> Sweet-smoke front, then a mild, almost neutral freshwater fish note, finishing with a paprika-and-onion warmth that lingers on the palate. The sauce dominates; the catfish is a vehicle. There is no skin bitterness, no river-mud taint in a quality tin — just clean, slightly sweet protein.</p>
+<p><strong>Texture:</strong> Soft, short flakes that separate with minimal pressure. The sauce coats rather than pools. It is not mushy if handled gently, but it will never offer resistance. Think canned tuna in texture, but slightly more gelatinous from the catfish's higher connective-tissue content.</p>
+<h3>Pairings &amp; Composition</h3>
+<ul>
+<li><strong>Breads:</strong> Dense sour rye, dark Lithuanian bread, or a coarse-grained Polish <em>chleb razowy</em>. Toast lightly; the fish needs a structural counterpoint.</li>
+<li><strong>Acid:</strong> Pickled red onion, fermented cucumber (ogórek kiszony), quick-pickled shallots. The sweetness of the sauce demands sharpness.</li>
+<li><strong>Fats:</strong> Crème fraîche, sour cream, or whipped butter cut with horseradish. Not olive oil — it clashes with the paprika.</li>
+<li><strong>Alliums:</strong> Raw spring onion, thin-sliced; avoid roasted garlic, which sweetens further.</li>
+<li><strong>Wine:</strong> A chilled Polish or Czech pilsner is canonical. If wine is required, a light-bodied, high-acid red like a young Blaufränkisch or a chilled Trousseau from the Jura. No oak.</li>
+<li><strong>Specific dish idea:</strong> <em>Sum na chlebie żytnim</em> — open-faced dark rye toast, thin layer of horseradish cream, catfish flakes arranged loosely, pickled onion rings, dill. Serve as a canapé with a shot of ice-cold Żubrówka or a dry Polish vodka.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    A Private Chef's Guide to Premium Tinned &amp; Jarred Goods
+  </div>
+</footer>
+</body>
+</html>

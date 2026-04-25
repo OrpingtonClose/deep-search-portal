@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agromar Lobster Pâté — The Private Chef&#x27;s Pantry</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <h1><a href="../index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
+    <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Pantry</a>
+<span class="sep">›</span>
+<a href="../index.html#spanish">Spanish Conservas &amp; Premium Tinned Seafood</a>
+<span class="sep">›</span>
+<span>Agromar Lobster Pâté</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../images/batch3_02.jpg" alt="Agromar Lobster Pâté">
+<div class="hero-text">
+<span class="category-badge">Spanish Conservas &amp; Premium Tinned Seafood</span>
+<h2>Agromar Lobster Pâté</h2>
+<p class="brief">Paté de Bogavante — luxurious lobster rillettes in olive oil.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>What It Is</h3>
+<p>Agromar, an Asturian conserva house, produces a lobster pâté using <em>bogavante</em> — the European lobster (<em>Homarus gammarus</em>), distinct from the North American <em>H. americanus</em> and generally considered sweeter and more delicate. The pâté is a blended preparation of cooked lobster meat, lobster tomalley and coral (if included), butter or cream, and seasonings, packed in jars. It sits somewhere between a French rillette and a smooth pâté in texture. Quality markers: pale coral-pink color, smooth but not completely homogenized texture (small lobster fibers visible), clean sweet aroma, no off-odors or excessive fishiness.</p>
+<h3>Nutritional Profile</h3>
+<p>Per 100g:</p>
+<ul>
+<li>Calories: ~220–280 kcal</li>
+<li>Protein: 12–16g</li>
+<li>Fat: 18–24g (significant butter/cream and possibly added fats)</li>
+<li>Carbohydrates: 1–3g</li>
+<li>B12, zinc, selenium: good</li>
+<li>Sodium: ~450–650mg</li>
+<li>Cholesterol: notably present (shellfish + butter/cream)</li>
+</ul>
+<h3>Preparation &amp; Service</h3>
+<p>Serve <strong>chilled for spread applications, or at cool room temperature for more fluid, sauce-like use.</strong> If using as a pâté on toast, 10–12°C/50–54°F is ideal — it holds its shape but is spreadable. If incorporating into a warm sauce or pasta, add off the heat and fold in gently; direct boiling will break the emulsion and cause separation. <strong>Do not microwave</strong> — uneven heating ruins the texture.</p>
+<h3>Traditional &amp; Modern Eating Context</h3>
+<p>Lobster pâté is not deeply traditional in Spain — it is a modern luxury conserva product for the gourmet market. In Asturias, lobster is eaten simply boiled, or in <em>arroz con bogavante</em>. The pâté is for canapés, starters, and indulgent snacking. For VIP service, use it as a rich, unctuous element in a composed dish: a quenelle on a plate, a swirl in a bisque, or a filling for delicate pastries.</p>
+<h3>Flavor &amp; Texture</h3>
+<p>The texture is creamy-smooth with a subtle fibrous undertone — you know it is lobster, not generic "fish pâté." The mouthfeel is rich and coating, with the butter or cream providing a luxurious, lingering quality. The flavor is distinctly lobster: sweet, briny, with the particular nutty-caramel note of cooked European lobster and, if the tomalley is included, a deeper, almost liver-like richness that adds complexity. The finish is long and savory, demanding bread or a neutral base to balance.</p>
+<h3>Pairings &amp; Composition</h3>
+<ul>
+<li><strong>Wines:</strong> Champagne, Chablis Premier Cru, or a structured Albariño</li>
+<li><strong>Bases:</strong> Brioche toast, blini, puff pastry shells, endive leaves, cucumber rounds</li>
+<li><strong>Acids:</strong> Lemon, light vinegar, cornichon</li>
+<li><strong>Aromatics:</strong> Chives, tarragon, cayenne (very light)</li>
+<li><strong>Dish idea:</strong> <em>Quenelle de bogavante</em> — a neat quenelle of lobster pâté on a warm blini, topped with a single piece of pickled fennel and a few salmon roe pearls. A two-bite amuse that reads as four-star luxury.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    A Private Chef's Guide to Premium Tinned &amp; Jarred Goods
+  </div>
+</footer>
+</body>
+</html>

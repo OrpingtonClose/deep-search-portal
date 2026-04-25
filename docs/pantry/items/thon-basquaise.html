@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jean de Luz Basque Tuna — The Private Chef&#x27;s Pantry</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <h1><a href="../index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
+    <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Pantry</a>
+<span class="sep">›</span>
+<a href="../index.html#french">French Products</a>
+<span class="sep">›</span>
+<span>Jean de Luz Basque Tuna</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../images/batch2_16.jpg" alt="Jean de Luz Basque Tuna">
+<div class="hero-text">
+<span class="category-badge">French Products</span>
+<h2>Jean de Luz Basque Tuna</h2>
+<p class="brief">Thon Basquaise aux Légumes Bio — albacore with organic vegetables and Espelette pepper.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Jean de Luz Basque Tuna with Organic Vegetables (Thon Basquaise aux Légumes Bio)</h3>
+<p><strong>What it is</strong></p>
+<p>A fully composed _plat cuisiné_ in a 380 g jar, built around 39 % line-caught albacore (_Thunnus alalunga_, called _germon_ in the Basque ports), simmered with organic tomatoes (25 %), onions (10 %), red and green peppers (10 % each), organic extra-virgin olive oil (5 %), garlic, Espelette pepper AOP, and a touch of organic tomato powder for depth. Jean de Luz is a micro-cannery founded in 2003 in Saint-Jean-de-Luz, the last restored cannery in a port that once hosted seventeen. They buy at the local auction and work entirely by hand; the jar often carries the name of the boat that landed the fish. No additives, no colorants, no preservatives.</p>
+<p><strong>Nutritional profile</strong></p>
+<p>Per 100 g: approximately 115–130 kcal, 10–12 g protein, 6–8 g fat (mostly EVOO and fish oil), 4–5 g carbohydrates (from vegetables), minimal sugars. Key minerals: selenium from the tuna, potassium from the vegetable melange, modest sodium (~300–400 mg). A typical serving of 150 g delivers roughly 18 g protein and stays under 200 kcal.</p>
+<p><strong>Preparation & Service</strong></p>
+<p>Serve warm, never boiling hot. Open the jar, spoon the contents into a small copper or stainless sauté pan, and warm gently over low heat for 4–5 minutes until the sauce loosens and the kitchen smells of tomato and piment. Do not add extra oil—the EVOO in the jar is already balanced to the fish. Do not rinse. Do not blast with heat; the peppers will turn bitter and the tuna will tighten into chalk.</p>
+<p>For a composed plate: warm first, then plate over a thin layer of steamed white rice or small _pâtes_ (malloreddus or orzo). Garnish with a single raw thread of Espelette pepper and a drop of excellent sherry vinegar. If serving from the jar as a casual lunch, simply warm and eat with a baguette torn by hand.</p>
+<p><strong>Traditional & Modern Eating Context</strong></p>
+<p>In the Basque Country, _thon basquaise_ is a home-cooking staple, served with rice or pasta at the _table d'hôte_. For a VIP client, treat it as a refined _mise en conserve_: warm it, plate it in a shallow warmed bowl over a smear of _sauce verte_ (parsley, spinach, olive oil, raw garlic), and finish with a crisped pad of white rice or a _quenelle_ of buttery _pommes purée_. It reads as rustic luxury.</p>
+<p><strong>Flavor & Texture</strong></p>
+<p>The tuna is in firm flakes, not shreds—albacore holds its structure better than skipjack. The sauce is bright, slightly sweet from ripe tomatoes, with a capsicum backbone and a warm hum (not a sting) from Espelette. The olive oil carries a green pepperiness that cuts the richness. Texture is yielding but not mushy; the peppers retain a slight collapsible resistance.</p>
+<p><strong>Pairings & Composition</strong></p>
+<p>Wines: a young Irouléguy rouge (Tannat/Cab Franc blend) or a Txakoli for acidity. Breads: _pain de campagne_ or a sourdough _baguette tradition_. Composed dish idea: _Thon basquaise en croûte de riz_—press sushi rice into a ring mold, top with the warmed tuna-vegetable mixture, and crown with a soft-poached egg and a shaving of cured Ibérico. Another idea: fold it, barely warmed, through hand-cut _pappardelle_ with extra EVOO and toasted breadcrumbs.</p>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    A Private Chef's Guide to Premium Tinned &amp; Jarred Goods
+  </div>
+</footer>
+</body>
+</html>

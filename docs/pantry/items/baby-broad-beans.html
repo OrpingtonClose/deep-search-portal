@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Baby Broad Beans in Olive Oil — The Private Chef&#x27;s Pantry</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <h1><a href="../index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
+    <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Pantry</a>
+<span class="sep">›</span>
+<a href="../index.html#charcuterie">Charcuterie, Sauces, Pickles &amp; Other</a>
+<span class="sep">›</span>
+<span>Baby Broad Beans in Olive Oil</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../images/batch1_14.jpg" alt="Baby Broad Beans in Olive Oil">
+<div class="hero-text">
+<span class="category-badge">Charcuterie, Sauces, Pickles &amp; Other</span>
+<h2>Baby Broad Beans in Olive Oil</h2>
+<p class="brief">Habitas baby en aceite de oliva — tender Spanish legumes, perfect as a tapa.</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Baby Broad Beans (Habitas Baby) in Olive Oil</h3>
+<p><strong>What it is</strong></p>
+<p>Habitas baby are tender, miniature broad beans (Vicia faba), harvested young before the skins toughen and the starch accumulates. Packed in good Spanish olive oil—often from the same region, Extremadura or Andalucía—these are a pantry staple of tapas bars. Quality markers: beans should be pale jade green, intact, with no splitting or greying. The oil should be bright, grassy, and clean-smelling with no rancidity. Some producers add a whisper of garlic, mint, or bay; plain is preferable for versatility. These are not dried favas rehydrated; they are blanched fresh beans, peeled if larger, and preserved in oil.</p>
+<p><strong>Nutritional profile</strong></p>
+<p>A 40g drained serving delivers approximately 60–80 kcal, 3–4g fat (from olive oil), 4–5g protein, 6–8g carbohydrate, and 3–4g fiber. Broad beans are notably high in folate, manganese, and potassium. They contain L-dopa, a precursor to dopamine, which has no culinary relevance but is worth knowing if a client asks about unique nutritional properties. The oil adds polyphenols and monounsaturated fat.</p>
+<p><strong>Preparation & Service</strong></p>
+<p>Drain the beans from the oil but do not rinse—reserve the oil, it is now flavored and valuable. Serve at cool room temperature or very slightly chilled (15°C / 59°F). If the beans have been refrigerated, let them sit out for 15 minutes; cold suppresses their sweetness. For a composed plate, arrange in a small heap and drizzle the reserved oil over the top. A brief toss with fresh lemon juice and flaky salt is all they need. What NOT to do: do not heat aggressively. These are already cooked; a gentle warm-through in a pan is acceptable but sautéing hard will turn them mealy. Do not discard the oil—use it for dressing a salad or finishing grilled vegetables.</p>
+<p><strong>Traditional & Modern Eating Context</strong></p>
+<p>In Spain, habitas are served straight from the jar with a fork and a glass of manzanilla, often with jamón draped over the top. For a VIP client, elevate the presentation without overworking them. A small ceramic bowl with the beans glistening in their oil, a twist of lemon, and a shaving of aged manchego on the side is restrained and elegant. Alternatively, use them as a bed for grilled octopus or sea bass—the oil from the beans becomes the sauce.</p>
+<p><strong>Flavor & Texture</strong></p>
+<p>The flavor is delicate: fresh green sweetness, a hint of bitterness from the skins if unpeeled (the baby ones usually have tender enough skins to leave on), and a nutty, almost chestnut-like undertone. The olive oil carries grassy, peppery notes. The texture is yielding but not mushy—each bean holds its shape but collapses gently under pressure from the tongue. There is a slight starchiness that coats the palate pleasantly.</p>
+<p><strong>Pairings & Composition</strong></p>
+<ul>
+<li><strong>Charcuterie</strong>: Excellent alongside jamón ibérico or lomo—the fat of the ham and the bean's starch are classic. The sobrasada's paprika fat also works, creating a red-green color contrast.</li>
+<li><strong>Seafood</strong>: Ideal with grilled prawns, anchovies, or octopus. The bean's mildness does not compete with delicate seafood.</li>
+<li><strong>Acid</strong>: Lemon juice, sherry vinegar, or the red currant jam for a surprising sweet-tart pop against the earthy beans.</li>
+<li><strong>Dairy</strong>: Aged manchego, pecorino, or a sheep's milk ricotta.</li>
+<li><strong>Wine</strong>: Albariño, Godello, or a dry Fino sherry.</li>
+<li><strong>Specific dish</strong>: Habitas baby with grilled prawns, chorizo crumbles, and a drizzle of the reserved bean oil. Or a salad of habitas, shaved fennel, mint, and manchego with lemon-chimichurri dressing.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    A Private Chef's Guide to Premium Tinned &amp; Jarred Goods
+  </div>
+</footer>
+</body>
+</html>

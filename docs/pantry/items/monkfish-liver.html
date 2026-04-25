@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fangst Icelandic Monkfish Liver — The Private Chef&#x27;s Pantry</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --link: #c9a84c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 24px 0;
+  background: var(--surface);
+}
+header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  padding: 16px 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.breadcrumb a { color: var(--text-muted); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
+
+/* Category section */
+.category-section { margin: 40px 0; }
+.category-section h2 {
+  font-size: 1.3rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+/* Food grid */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.food-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.food-card a { color: inherit; display: block; }
+.food-card a:hover { text-decoration: none; }
+.food-card .card-img {
+  width: 100%;
+  aspect-ratio: 3/4;
+  object-fit: cover;
+  display: block;
+  background: #1c2128;
+}
+.food-card .card-body {
+  padding: 14px 16px;
+}
+.food-card .card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+.food-card .card-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Detail page */
+.detail-hero {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 40px;
+  margin: 40px 0;
+  align-items: start;
+}
+.detail-hero img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.detail-hero .hero-text h2 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  font-weight: 400;
+  margin-bottom: 12px;
+}
+.detail-hero .hero-text .brief {
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.detail-hero .hero-text .category-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.detail-content {
+  max-width: 800px;
+  margin: 0 auto 60px;
+  padding: 0 24px;
+}
+.detail-content h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 400;
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content h4 {
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+.detail-content p {
+  margin: 12px 0;
+  color: var(--text);
+}
+.detail-content ul {
+  margin: 12px 0 12px 24px;
+}
+.detail-content li {
+  margin: 6px 0;
+  color: var(--text);
+}
+.detail-content strong { color: var(--text); }
+.detail-content em { color: var(--text-muted); font-style: italic; }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  background: var(--surface);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .detail-hero {
+    grid-template-columns: 1fr;
+  }
+  .food-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; }
+}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="container">
+    <h1><a href="../index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
+    <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
+  </div>
+</header>
+
+<div class="breadcrumb"><div class="container">
+<a href="../index.html">Pantry</a>
+<span class="sep">›</span>
+<a href="../index.html#nordic">Nordic &amp; Scandinavian Specialties</a>
+<span class="sep">›</span>
+<span>Fangst Icelandic Monkfish Liver</span>
+</div></div>
+<main>
+<div class="container">
+<div class="detail-hero">
+<img src="../images/batch2_08.jpg" alt="Fangst Icelandic Monkfish Liver">
+<div class="hero-text">
+<span class="category-badge">Nordic &amp; Scandinavian Specialties</span>
+<h2>Fangst Icelandic Monkfish Liver</h2>
+<p class="brief">Havtaske Lever — lightly smoked Icelandic monkfish liver. &#x27;Foie gras of the sea.&#x27;</p>
+</div>
+</div>
+</div>
+<div class="detail-content">
+<h3>Fangst Icelandic Monkfish Liver (Havtaske Lever) – Lightly Smoked, in Own Oil</h3>
+<p>#### What it is</p>
+<p>Monkfish liver—<em>ankimo</em> in Japan, <em>havtaske lever</em> in Iceland—is the <strong>foie gras of the sea</strong>, and Fangst's Icelandic iteration is among the most refined tinned versions available. Monkfish (<em>Lophius piscatorius</em>) from the cold North Atlantic develop livers that are exceptionally high in fat, with a clean, almost sweet flavor profile thanks to the fish's diet of crustaceans and smaller fish. Fangst lightly cold-smokes the livers over Icelandic birch or oak, then packs them in their own rendered oil. The smoking is a whisper, not a shout—just enough to add dimension without masking the liver's intrinsic sweetness. Quality markers: intact lobes with minimal fragmentation, a pale coral-to-ochre color, oil that is clear and golden (not dark or murky), and an aroma that is smoky-creamy with no trace of ammonia or fishiness.</p>
+<p>#### Nutritional profile</p>
+<p>A typical serving of 50–60g (roughly half a tin) contains approximately <strong>140–170 kcal</strong>, <strong>8–10g protein</strong>, and <strong>12–15g fat</strong>, the majority of which is <strong>monounsaturated and polyunsaturated</strong> with a strong omega-3 presence (EPA/DHA combined roughly 1.5–2.5g per 100g). This is one of the richest natural sources of <strong>vitamin A</strong> (retinol) and <strong>vitamin D</strong>—a 50g serving can deliver well over 100% DV of both. Also notable: high <strong>B12</strong>, <strong>selenium</strong>, and <strong>phosphorus</strong>. The fat-soluble vitamins mean this should be treated as a rich, occasional delicacy rather than a daily staple.</p>
+<p>#### Preparation & Service</p>
+<p>Serve at <strong>cool room temperature</strong>—16–18°C. The texture is key here: too cold and the fat congeals, becoming waxy and mute; too warm and it loses its delicate set, becoming oily and loose. Remove the tin from refrigeration 30–45 minutes before service. Gently lift the lobe(s) from the oil with a thin spatula or the back of a spoon; the oil clinging to the liver is welcome—do not blot it aggressively.</p>
+<p><strong>Plating</strong>: Slice the lobe into 5–6mm medallions with a knife dipped in hot water (this prevents the delicate tissue from dragging). Arrange 2–3 medallions per portion on a chilled plate. Spoon a small amount of the smoky, liver-scented oil around the plate. A flake of Maldon salt on top is the only finishing touch needed.</p>
+<p><strong>What NOT to do</strong>: Do not heat this product—no pan-searing, no torching, no warm plates. Do not pair with aggressive accompaniments like caper berries, cornichons, or strong mustards; the smoke is already doing the work of cutting the richness. Do not serve fridge-cold.</p>
+<p>#### Traditional & Modern Eating Context</p>
+<p>In Iceland, monkfish liver is traditionally poached fresh and served simply with rye bread and potatoes, or pickled. The tinned, smoked version is a relatively recent luxury iteration. For a VIP client, treat this as you would <strong>torchon of foie gras</strong> or <strong>canned ventresca tuna belly</strong>. It belongs in a composed first course or as part of a <strong>canned seafood plateau</strong> (a Nordic answer to Spanish <em>conservas</em> service). It can also be the luxurious centerpiece of a smørrebrød, or perched on a warm blini with crème fraîche and chives.</p>
+<p>#### Flavor & Texture</p>
+<p>The texture is <strong>silken-custardy</strong>, yielding and unctuous, with a density that coats the palate without clinging. The flavor is <strong>rich, sweet, and faintly marine</strong>—there is none of the metallic bitterness you sometimes find in chicken or duck liver. The smoke adds a <strong>dry, woody top note</strong> that reads almost like toasted hazelnut. The finish is <strong>clean and lingering</strong>, with a backnote of clean ocean and a subtle iodine warmth. The oil itself is a flavor bomb—smoky, savory, and slightly sweet—save it for dressing potatoes or finishing soups.</p>
+<p>#### Pairings & Composition</p>
+<ul>
+<li><strong>Bread</strong>: Toasted brioche or milk bread (the sweetness echoes the liver); Danish rugbrød for a Nordic-authentic contrast; warm, thin buckwheat blini for a French-Nordic bridge.</li>
+<li><strong>Vegetables</strong>: Pickled fennel (see below), shaved raw celery root, lightly dressed frisée, microgreens.</li>
+<li><strong>Sauces</strong>: A light lemon crème fraîche; a drizzle of the tin's own oil; a whisper of yuzu kosho for heat-citrus.</li>
+<li><strong>Wines</strong>: Aged Sauternes or late-harvest Riesling (classic foie gras pairing); oxidative Jura vin jaune; a smoky Mezcal for non-wine service.</li>
+<li><strong>Dish idea</strong>: <em>Nordic Foie Gras</em>—medallions of monkfish liver on toasted brioche, a quenelle of sour apple compote, a ribbon of pickled fennel, and a scattering of dill fronds. Finish with a few grains of smoked salt and a thread of the tin oil.</li>
+</ul>
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    A Private Chef's Guide to Premium Tinned &amp; Jarred Goods
+  </div>
+</footer>
+</body>
+</html>

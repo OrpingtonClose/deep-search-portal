@@ -104,16 +104,16 @@ FOODS = [
 ]
 
 # ── Read the full markdown guide ────────────────────────────────────
-GUIDE_PATH = os.path.join(os.path.dirname(PANTRY_DIR), "..", "attachments",
-    "55bed200-7682-4fc7-8a94-6f60f94d51d8", "gourmet_tinned_goods_guide.md")
-# Use the attachment path
-GUIDE_PATH = "/home/ubuntu/attachments/55bed200-7682-4fc7-8a94-6f60f94d51d8/gourmet_tinned_goods_guide.md"
+GUIDE_PATH = os.environ.get(
+    "PANTRY_GUIDE_PATH",
+    os.path.join(PANTRY_DIR, "gourmet_tinned_goods_guide.md"),
+)
 
 with open(GUIDE_PATH, "r", encoding="utf-8") as f:
     guide_text = f.read()
 
-# Split guide into sections by ## headers
-sections = re.split(r'\n(?=## \d)', guide_text)
+# Split guide into sections by ## numbered headers AND # category headers
+sections = re.split(r'\n(?=## \d|# [A-Z])', guide_text)
 
 # Build a lookup: slug -> markdown content
 # We'll match food items to their guide sections
@@ -255,7 +255,7 @@ def md_to_html(md_text):
         stripped = line.strip()
 
         # Skip top-level ## header (we handle that in the page)
-        if stripped.startswith('## ') or stripped.startswith('### '):
+        if stripped.startswith('## ') or stripped.startswith('### ') or stripped.startswith('#### '):
             if in_list:
                 html_parts.append('</ul>')
                 in_list = False

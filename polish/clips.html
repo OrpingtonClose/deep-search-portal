@@ -157,71 +157,92 @@
 
 <script>
 (async function () {
+  const grid = document.getElementById('grid');
+  const empty = document.getElementById('empty');
+  const meta = document.getElementById('meta');
+  const rendered = new Set();  // phrase indices already in the DOM
+  let refreshTimer = null;
+
+  function buildCard(p) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.dataset.i = p.i;
+    const vWrap = document.createElement('div');
+    vWrap.className = 'v';
+    const video = document.createElement('video');
+    video.src = p.yt_url;
+    video.controls = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
+    vWrap.appendChild(video);
+    const body = document.createElement('div');
+    body.className = 'body';
+    const num = document.createElement('div');
+    num.className = 'num';
+    num.textContent = `#${p.i}`;
+    const pl = document.createElement('div');
+    pl.className = 'pl';
+    pl.textContent = p.polish;
+    const ru = document.createElement('div');
+    ru.className = 'ru';
+    ru.textContent = p.russian || '';
+    const links = document.createElement('div');
+    links.className = 'links';
+    const a1 = document.createElement('a');
+    a1.href = `example.html?i=${p.i}`;
+    a1.textContent = 'open in gallery';
+    links.appendChild(a1);
+    if (p.yt_source_url) {
+      const a2 = document.createElement('a');
+      a2.href = p.yt_source_url;
+      a2.target = '_blank';
+      a2.rel = 'noopener noreferrer';
+      a2.textContent = 'youtube source';
+      links.appendChild(a2);
+    }
+    const a3 = document.createElement('a');
+    a3.href = `index.html?i=${p.i}`;
+    a3.textContent = 'educational clip';
+    links.appendChild(a3);
+    body.appendChild(num);
+    body.appendChild(pl);
+    if (p.russian) body.appendChild(ru);
+    body.appendChild(links);
+    card.appendChild(vWrap);
+    card.appendChild(body);
+    return card;
+  }
+
   async function load() {
     const r = await fetch('phrases.json?_=' + Date.now(), { cache: 'no-cache' });
     const phrases = await r.json();
     const verified = phrases.filter(p => p.yt_url);
-    document.getElementById('meta').textContent =
-      `${verified.length}/${phrases.length} verified`;
-    const grid = document.getElementById('grid');
-    grid.innerHTML = '';
+    meta.textContent = `${verified.length}/${phrases.length} verified`;
     if (verified.length === 0) {
-      document.getElementById('empty').style.display = 'block';
-      return;
+      empty.style.display = 'block';
+      return { verified: 0, total: phrases.length };
     }
-    document.getElementById('empty').style.display = 'none';
+    empty.style.display = 'none';
+    // Append only newly-verified phrases; never destroy already-mounted videos.
     for (const p of verified) {
-      const card = document.createElement('div');
-      card.className = 'card';
-      const vWrap = document.createElement('div');
-      vWrap.className = 'v';
-      const video = document.createElement('video');
-      video.src = p.yt_url;
-      video.controls = true;
-      video.preload = 'metadata';
-      video.playsInline = true;
-      vWrap.appendChild(video);
-      const body = document.createElement('div');
-      body.className = 'body';
-      const num = document.createElement('div');
-      num.className = 'num';
-      num.textContent = `#${p.i}`;
-      const pl = document.createElement('div');
-      pl.className = 'pl';
-      pl.textContent = p.polish;
-      const ru = document.createElement('div');
-      ru.className = 'ru';
-      ru.textContent = p.russian || '';
-      const links = document.createElement('div');
-      links.className = 'links';
-      const a1 = document.createElement('a');
-      a1.href = `example.html?i=${p.i}`;
-      a1.textContent = 'open in gallery';
-      links.appendChild(a1);
-      if (p.yt_source_url) {
-        const a2 = document.createElement('a');
-        a2.href = p.yt_source_url;
-        a2.target = '_blank';
-        a2.rel = 'noopener noreferrer';
-        a2.textContent = 'youtube source';
-        links.appendChild(a2);
-      }
-      const a3 = document.createElement('a');
-      a3.href = `index.html?i=${p.i}`;
-      a3.textContent = 'educational clip';
-      links.appendChild(a3);
-      body.appendChild(num);
-      body.appendChild(pl);
-      if (p.russian) body.appendChild(ru);
-      body.appendChild(links);
-      card.appendChild(vWrap);
-      card.appendChild(body);
-      grid.appendChild(card);
+      if (rendered.has(p.i)) continue;
+      grid.appendChild(buildCard(p));
+      rendered.add(p.i);
     }
+    return { verified: verified.length, total: phrases.length };
   }
-  await load();
-  // Auto-refresh every 60s while pipeline runs
-  setInterval(load, 60_000);
+
+  const initial = await load();
+  // Auto-refresh while pipeline still has unverified phrases.
+  if (initial.verified < initial.total) {
+    refreshTimer = setInterval(async () => {
+      const r = await load();
+      if (r.verified >= r.total && refreshTimer !== null) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+      }
+    }, 60_000);
+  }
 })();
 </script>
 </body>

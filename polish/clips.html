@@ -198,9 +198,9 @@
       a1.href = `example.html?i=${p.i}`;
       a1.textContent = 'open in gallery';
       links.appendChild(a1);
-      if (p.yt_source) {
+      if (p.yt_source_url) {
         const a2 = document.createElement('a');
-        a2.href = p.yt_source;
+        a2.href = p.yt_source_url;
         a2.target = '_blank';
         a2.rel = 'noopener noreferrer';
         a2.textContent = 'youtube source';

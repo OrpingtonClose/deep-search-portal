@@ -117,7 +117,7 @@ async def _forward_streaming(
             timeout=httpx.Timeout(UPSTREAM_TIMEOUT, connect=30.0),
         ) as resp:
             if resp.status_code != 200:
-                error_body = await resp.aread()
+                error_body = (await resp.aread()).decode("utf-8", errors="replace")
                 log.error(f"[{req_id}] Upstream error: {resp.status_code} — {error_body[:500]}")
                 error_chunk = make_sse_chunk(
                     content=f"[Kimi server error: HTTP {resp.status_code}]",

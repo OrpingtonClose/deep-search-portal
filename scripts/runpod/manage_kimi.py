@@ -179,8 +179,8 @@ def _build_startup_cmd() -> str:
         f'echo "Download complete"; '
         f'else echo "Model already cached"; fi',
         # Find the GGUF file
-        f'GGUF_FILE=$(find {MODEL_DIR} -name "*.gguf" -not -name "mmproj*" | head -1)',
-        f'MMPROJ_FILE=$(find {MODEL_DIR} -name "mmproj*.gguf" | head -1)',
+        f'GGUF_FILE=$(find {MODEL_DIR} -name "*.gguf" -not -name "mmproj*" | sort | head -1)',
+        f'MMPROJ_FILE=$(find {MODEL_DIR} -name "mmproj*.gguf" | sort | head -1)',
         # Install llama.cpp if not present
         'if ! command -v llama-server > /dev/null 2>&1; then '
         'echo "Installing llama.cpp..." && '

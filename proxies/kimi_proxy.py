@@ -103,9 +103,8 @@ async def _forward_streaming(
     """Forward a streaming request to the RunPod Kimi server."""
     body_copy = {**body}
     body_copy["stream"] = True
-    # llama-server uses whatever model name it has; override isn't needed
-    # but keep the original for response rewriting
-    original_model = body_copy.get("model", MODEL_ID)
+    created = int(time.time())
+    cmpl_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
     client = http_client()
     try:
@@ -120,7 +119,9 @@ async def _forward_streaming(
                 log.error(f"[{req_id}] Upstream error: {resp.status_code} — {error_body[:500]}")
                 error_chunk = make_sse_chunk(
                     content=f"[Kimi server error: HTTP {resp.status_code}]",
-                    model=MODEL_ID,
+                    request_id=cmpl_id,
+                    created=created,
+                    model_id=MODEL_ID,
                     finish_reason="stop",
                 )
                 yield error_chunk
@@ -156,7 +157,9 @@ async def _forward_streaming(
                 "[Kimi K2.6 Heretic server is offline. "
                 "Start it with: python scripts/runpod/manage_kimi.py start]"
             ),
-            model=MODEL_ID,
+            request_id=cmpl_id,
+            created=created,
+            model_id=MODEL_ID,
             finish_reason="stop",
         )
         yield "data: [DONE]\n\n"
@@ -165,7 +168,9 @@ async def _forward_streaming(
         log.error(f"[{req_id}] Upstream timeout after {UPSTREAM_TIMEOUT}s")
         yield make_sse_chunk(
             content="[Kimi server timeout — model may still be loading]",
-            model=MODEL_ID,
+            request_id=cmpl_id,
+            created=created,
+            model_id=MODEL_ID,
             finish_reason="stop",
         )
         yield "data: [DONE]\n\n"
@@ -174,7 +179,9 @@ async def _forward_streaming(
         log.error(f"[{req_id}] Forward error: {traceback.format_exc()}")
         yield make_sse_chunk(
             content=f"[Kimi proxy error: {e}]",
-            model=MODEL_ID,
+            request_id=cmpl_id,
+            created=created,
+            model_id=MODEL_ID,
             finish_reason="stop",
         )
         yield "data: [DONE]\n\n"

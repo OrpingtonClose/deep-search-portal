@@ -103,6 +103,7 @@ All other models exist only in staging.
 | Knowledge Engine | 9850 | `knowledge-engine` |
 | Tier Chooser Proxy | 9900 | `litellm` |
 | Heretic Proxy | 9950 | `heretic-proxy` |
+| Kimi Proxy | 9960 | `kimi-proxy` |
 | Miro Proxy | 9951 | `miro-proxy` |
 | SearXNG | 8888 | `searxng` |
 

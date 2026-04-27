@@ -152,6 +152,14 @@ modelSpecs:
     preset:
       endpoint: Swarm Deep Search
       model: swarm-miroflow
+  - name: prod-kimi-heretic
+    label: Kimi K2.6 Heretic
+    description: Kimi K2.6 abliterated (uncensored) — self-hosted 1T MoE on RunPod via
+      GGUF. Native tool-calling and swarm capability. On-demand GPU pod.
+    group: Experimental
+    preset:
+      endpoint: Kimi Heretic
+      model: kimi-k26-heretic
   - name: prod-thinking-chat
     label: Mistral Thinking
     description: Mistral Large with visible reasoning. Good for step-by-step explanations.
@@ -723,3 +731,21 @@ endpoints:
     - frequency_penalty
     - presence_penalty
     modelDisplayLabel: Strands Agent
+  - name: Kimi Heretic
+    apiKey: not-needed
+    baseURL: http://host.docker.internal:9960/v1
+    models:
+      default:
+      - kimi-k26-heretic
+      fetch: true
+    titleConvo: true
+    titleModel: mistral-large-thinking
+    titleEndpoint: Mistral Thinking
+    titleMethod: completion
+    summarize: false
+    maxContextTokens: 32768
+    dropParams:
+    - stop
+    - user
+    - frequency_penalty
+    - presence_penalty

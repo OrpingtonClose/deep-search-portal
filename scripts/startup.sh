@@ -88,7 +88,7 @@ wait_for_health() {
 # --- Signal trapping for clean shutdown ---
 cleanup() {
     echo "Shutting down services..."
-    for session in deepagents-proxy miro-proxy heretic-proxy tier-chooser mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng strands-agent; do
+    for session in deepagents-proxy miro-proxy heretic-proxy kimi-proxy tier-chooser mcp-exa mcp-firecrawl xai-native-proxy godmode-proxy swarm-proxy miroflow-sprint persistent-research deep-research thinking-proxy knowledge-engine search-dispatcher mcp-searxng litellm cftunnel searxng strands-agent; do
         screen -S "$session" -X quit 2>/dev/null || true
     done
     # Stop LibreChat Docker stack
@@ -314,6 +314,19 @@ elif ! pgrep -f "heretic_proxy.py" > /dev/null; then
     screen -dmS heretic-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && HERETIC_PROXY_PORT=9950 python3 heretic_proxy.py 2>&1 | tee /var/log/heretic_proxy.log"
     echo "Heretic Proxy starting..."
     wait_for_health "http://localhost:9950/health" "Heretic Proxy" 15
+fi
+
+# --- Kimi Proxy (Kimi K2.6 Heretic — self-hosted GGUF on RunPod) ---
+# Only starts if KIMI_RUNPOD_URL is set (the pod must be provisioned separately
+# via scripts/runpod/manage_kimi.py). Proxy works even if the pod is stopped —
+# it returns a helpful error message telling the user to start the pod.
+KIMI_RUNPOD_URL="${KIMI_RUNPOD_URL:-}"
+if [ -n "$KIMI_RUNPOD_URL" ] && ! pgrep -f "kimi_proxy.py" > /dev/null; then
+    screen -dmS kimi-proxy bash -c "set -a; source /opt/.env 2>/dev/null; set +a; cd /opt/deep-search-portal/proxies && KIMI_PROXY_PORT=9960 KIMI_RUNPOD_URL=${KIMI_RUNPOD_URL} python3 kimi_proxy.py 2>&1 | tee /var/log/kimi_proxy.log"
+    echo "Kimi Proxy starting (upstream: ${KIMI_RUNPOD_URL})..."
+    wait_for_health "http://localhost:9960/health" "Kimi Proxy" 15
+elif [ -z "$KIMI_RUNPOD_URL" ]; then
+    echo "INFO: Skipping Kimi Proxy — KIMI_RUNPOD_URL not set (run scripts/runpod/manage_kimi.py to provision)"
 fi
 
 # --- Miro Proxy (MiroThinker-style deep research on GLM Heretic + tools) ---

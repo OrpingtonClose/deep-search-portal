@@ -149,6 +149,9 @@ async def _forward_streaming(
                 else:
                     yield f"{line}\n"
 
+            # Stream ended without [DONE] — send it ourselves
+            yield "data: [DONE]\n\n"
+
     except httpx.ConnectError:
         log.error(f"[{req_id}] Cannot connect to Kimi server — pod may be stopped")
         yield make_sse_chunk(

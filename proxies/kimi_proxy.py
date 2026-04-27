@@ -46,7 +46,9 @@ log = setup_logging("kimi-proxy", LOG_DIR)
 # --- Configuration ---
 # The RunPod pod endpoint URL. Get it from: python manage_kimi.py endpoint
 # Format: https://<pod-id>-8000.proxy.runpod.net/v1
-UPSTREAM_BASE = os.getenv("KIMI_RUNPOD_URL", "").rstrip("/")
+_raw_upstream = os.getenv("KIMI_RUNPOD_URL", "").rstrip("/")
+UPSTREAM_BASE = _raw_upstream                       # includes /v1 for API calls
+UPSTREAM_ROOT = _raw_upstream.removesuffix("/v1")    # without /v1 for health checks
 LISTEN_PORT = env_int("KIMI_PROXY_PORT", 9960, minimum=1)
 UPSTREAM_TIMEOUT = env_int("KIMI_UPSTREAM_TIMEOUT", 300, minimum=10)
 
@@ -78,7 +80,7 @@ async def _check_upstream() -> dict:
     try:
         client = http_client()
         resp = await client.get(
-            f"{UPSTREAM_BASE}/health",
+            f"{UPSTREAM_ROOT}/health",
             timeout=10.0,
         )
         if resp.status_code == 200:
@@ -126,7 +128,6 @@ async def _forward_streaming(
                 )
                 yield error_chunk
                 yield "data: [DONE]\n\n"
-                tracker.finish(req_id)
                 return
 
             async for line in resp.aiter_lines():
@@ -148,8 +149,6 @@ async def _forward_streaming(
                 else:
                     yield f"{line}\n"
 
-            tracker.finish(req_id)
-
     except httpx.ConnectError:
         log.error(f"[{req_id}] Cannot connect to Kimi server — pod may be stopped")
         yield make_sse_chunk(
@@ -163,7 +162,6 @@ async def _forward_streaming(
             finish_reason="stop",
         )
         yield "data: [DONE]\n\n"
-        tracker.finish(req_id)
     except httpx.TimeoutException:
         log.error(f"[{req_id}] Upstream timeout after {UPSTREAM_TIMEOUT}s")
         yield make_sse_chunk(
@@ -174,7 +172,6 @@ async def _forward_streaming(
             finish_reason="stop",
         )
         yield "data: [DONE]\n\n"
-        tracker.finish(req_id)
     except Exception as e:
         log.error(f"[{req_id}] Forward error: {traceback.format_exc()}")
         yield make_sse_chunk(
@@ -185,6 +182,7 @@ async def _forward_streaming(
             finish_reason="stop",
         )
         yield "data: [DONE]\n\n"
+    finally:
         tracker.finish(req_id)
 
 

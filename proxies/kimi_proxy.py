@@ -126,7 +126,7 @@ async def _forward_streaming(
                 )
                 yield error_chunk
                 yield "data: [DONE]\n\n"
-                tracker.finish(req_id, error=True)
+                tracker.finish(req_id)
                 return
 
             async for line in resp.aiter_lines():
@@ -163,7 +163,7 @@ async def _forward_streaming(
             finish_reason="stop",
         )
         yield "data: [DONE]\n\n"
-        tracker.finish(req_id, error=True)
+        tracker.finish(req_id)
     except httpx.TimeoutException:
         log.error(f"[{req_id}] Upstream timeout after {UPSTREAM_TIMEOUT}s")
         yield make_sse_chunk(
@@ -174,7 +174,7 @@ async def _forward_streaming(
             finish_reason="stop",
         )
         yield "data: [DONE]\n\n"
-        tracker.finish(req_id, error=True)
+        tracker.finish(req_id)
     except Exception as e:
         log.error(f"[{req_id}] Forward error: {traceback.format_exc()}")
         yield make_sse_chunk(
@@ -185,7 +185,7 @@ async def _forward_streaming(
             finish_reason="stop",
         )
         yield "data: [DONE]\n\n"
-        tracker.finish(req_id, error=True)
+        tracker.finish(req_id)
 
 
 async def _forward_json(body: dict, req_id: str) -> JSONResponse:
@@ -201,7 +201,7 @@ async def _forward_json(body: dict, req_id: str) -> JSONResponse:
             timeout=httpx.Timeout(UPSTREAM_TIMEOUT, connect=30.0),
         )
         if resp.status_code != 200:
-            tracker.finish(req_id, error=True)
+            tracker.finish(req_id)
             return JSONResponse(
                 status_code=resp.status_code,
                 content={"error": {"message": f"Upstream error: {resp.text[:500]}", "type": "upstream_error"}},
@@ -212,7 +212,7 @@ async def _forward_json(body: dict, req_id: str) -> JSONResponse:
         return JSONResponse(content=result)
 
     except httpx.ConnectError:
-        tracker.finish(req_id, error=True)
+        tracker.finish(req_id)
         return JSONResponse(
             status_code=503,
             content={
@@ -223,7 +223,7 @@ async def _forward_json(body: dict, req_id: str) -> JSONResponse:
             },
         )
     except Exception as e:
-        tracker.finish(req_id, error=True)
+        tracker.finish(req_id)
         return JSONResponse(
             status_code=502,
             content={"error": {"message": str(e), "type": "proxy_error"}},

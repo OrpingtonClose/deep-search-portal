@@ -138,7 +138,7 @@ async def _forward_streaming(
                     data_str = line[6:].strip()
                     if data_str == "[DONE]":
                         yield "data: [DONE]\n\n"
-                        break
+                        return
                     # Rewrite model name to our canonical ID
                     try:
                         chunk = json.loads(data_str)

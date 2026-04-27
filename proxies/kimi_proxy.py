@@ -317,7 +317,7 @@ async def chat_completions(request: Request):
     # Utility requests — forward directly (llama-server handles them fine)
     # Real chat — also forward directly (no agentic loop needed here;
     # Kimi's native tool-calling happens inside llama-server)
-    if body.get("stream", True):
+    if body.get("stream", False):
         gen = _forward_streaming(body, req_id)
         return StreamingResponse(gen, media_type="text/event-stream")
     else:

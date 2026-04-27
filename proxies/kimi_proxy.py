@@ -311,7 +311,7 @@ async def chat_completions(request: Request):
 
     log.info(
         f"[{req_id}] Request: model={body.get('model')}, "
-        f"messages={len(messages)}, stream={body.get('stream', True)}"
+        f"messages={len(messages)}, stream={body.get('stream', False)}"
     )
 
     # Utility requests — forward directly (llama-server handles them fine)

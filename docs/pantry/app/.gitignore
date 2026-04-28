@@ -1,0 +1,4 @@
+pantry.db
+__pycache__/
+pantry.db-shm
+pantry.db-wal

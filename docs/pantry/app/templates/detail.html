@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}{{ name }} — {{ ui.site_title }}{% endblock %}
+
+{% block ru_link %}{{ prefix }}/ru/items/{{ slug }}.html{% endblock %}
+{% block en_link %}{{ prefix }}/items/{{ slug }}.html{% endblock %}
+
+{% block breadcrumb %}
+<div class="breadcrumb"><div class="container">
+  {% if lang == 'en' %}
+  <a href="{{ request.url_for('index_en') }}">{{ ui.breadcrumb_home }}</a>
+  {% else %}
+  <a href="{{ request.url_for('index_ru') }}">{{ ui.breadcrumb_home }}</a>
+  {% endif %}
+  <span class="sep">&rsaquo;</span>
+  {% if lang == 'en' %}
+  <a href="{{ request.url_for('index_en') }}#{{ category_slug }}">{{ category_name }}</a>
+  {% else %}
+  <a href="{{ request.url_for('index_ru') }}#{{ category_slug }}">{{ category_name }}</a>
+  {% endif %}
+  <span class="sep">&rsaquo;</span>
+  <span>{{ name }}</span>
+</div></div>
+{% endblock %}
+
+{% block content %}
+<main>
+  <div class="container">
+    <div class="detail-hero">
+      <img src="{{ prefix }}/images/{{ image }}" alt="{{ name }}">
+      <div class="hero-text">
+        <span class="category-badge">{{ category_name }}</span>
+        <h2>{{ name }}</h2>
+        <p class="brief">{{ brief }}</p>
+      </div>
+    </div>
+  </div>
+  <div class="detail-content">
+    {% if guide_html %}
+    {{ guide_html | safe }}
+    {% else %}
+    <p><em>{{ ui.no_description }}</em></p>
+    {% endif %}
+  </div>
+</main>
+{% endblock %}

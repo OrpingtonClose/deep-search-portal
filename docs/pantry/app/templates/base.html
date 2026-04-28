@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ lang }}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>El Capricho Santoña Sturgeon — The Private Chef&#x27;s Pantry</title>
+<title>{% block title %}{{ ui.site_title }}{% endblock %}</title>
 <style>
 :root {
   --bg: #0d1117;
@@ -28,7 +28,6 @@ a:hover { text-decoration: underline; }
 
 .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
 
-/* Header */
 header {
   border-bottom: 1px solid var(--border);
   padding: 24px 0;
@@ -46,8 +45,6 @@ header .subtitle {
   margin-top: 4px;
   font-style: italic;
 }
-
-/* Language switcher */
 .lang-switch {
   float: right;
   font-size: 0.85rem;
@@ -63,7 +60,6 @@ header .subtitle {
 .lang-switch a:hover { color: var(--accent); border-color: var(--accent-dim); text-decoration: none; }
 .lang-switch a.active { color: var(--accent); border-color: var(--accent); }
 
-/* Breadcrumb */
 .breadcrumb {
   padding: 16px 0;
   font-size: 0.85rem;
@@ -74,7 +70,6 @@ header .subtitle {
 .breadcrumb a:hover { color: var(--accent); }
 .breadcrumb .sep { margin: 0 8px; opacity: 0.5; }
 
-/* Category section */
 .category-section { margin: 40px 0; }
 .category-section h2 {
   font-size: 1.3rem;
@@ -85,7 +80,6 @@ header .subtitle {
   margin-bottom: 24px;
 }
 
-/* Food grid */
 .food-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -131,7 +125,6 @@ header .subtitle {
   overflow: hidden;
 }
 
-/* Detail page */
 .detail-hero {
   display: grid;
   grid-template-columns: 400px 1fr;
@@ -202,7 +195,6 @@ header .subtitle {
 .detail-content strong { color: var(--text); }
 .detail-content em { color: var(--text-muted); font-style: italic; }
 
-/* Footer */
 footer {
   border-top: 1px solid var(--border);
   padding: 24px 0;
@@ -212,7 +204,6 @@ footer {
   background: var(--surface);
 }
 
-/* Responsive */
 @media (max-width: 768px) {
   .detail-hero {
     grid-template-columns: 1fr;
@@ -223,71 +214,31 @@ footer {
   }
   header h1 { font-size: 1.3rem; }
 }
+{% block extra_css %}{% endblock %}
 </style>
 </head>
 <body>
-
-
 <header>
   <div class="container">
-    <span class="lang-switch"><a href="#" class="active">EN</a> <a href="../ru/items/sturgeon.html">RU</a></span>
-    <h1><a href="../index.html" style="color:var(--accent)">The Private Chef's Pantry</a></h1>
-    <div class="subtitle">A Curated Collection of Premium Tinned &amp; Jarred Goods</div>
+    <span class="lang-switch">
+      {% if lang == 'en' %}
+        <a href="#" class="active">EN</a> <a href="{% block ru_link %}{{ request.url_for('index_ru') }}{% endblock %}">RU</a>
+      {% else %}
+        <a href="{% block en_link %}{{ request.url_for('index_en') }}{% endblock %}">EN</a> <a href="#" class="active">RU</a>
+      {% endif %}
+    </span>
+    {% if lang == 'en' %}
+    <h1><a href="{{ request.url_for('index_en') }}" style="color:var(--accent)">{{ ui.site_title }}</a></h1>
+    {% else %}
+    <h1><a href="{{ request.url_for('index_ru') }}" style="color:var(--accent)">{{ ui.site_title }}</a></h1>
+    {% endif %}
+    <div class="subtitle">{{ ui.subtitle }}</div>
   </div>
 </header>
-
-<div class="breadcrumb"><div class="container">
-<a href="../index.html">Pantry</a>
-<span class="sep">›</span>
-<a href="../index.html#spanish">Spanish Conservas &amp; Premium Tinned Seafood</a>
-<span class="sep">›</span>
-<span>El Capricho Santoña Sturgeon</span>
-</div></div>
-<main>
-<div class="container">
-<div class="detail-hero">
-<img src="../images/batch3_10.jpg" alt="El Capricho Santoña Sturgeon">
-<div class="hero-text">
-<span class="category-badge">Spanish Conservas &amp; Premium Tinned Seafood</span>
-<h2>El Capricho Santoña Sturgeon</h2>
-<p class="brief">Award-winning tinned sturgeon in olive oil from Santoña.</p>
-</div>
-</div>
-</div>
-<div class="detail-content">
-<h3>What It Is</h3>
-<p>Sturgeon (<em>Acipenser sturio</em> or farmed <em>A. gueldenstaedtii</em> / <em>A. baerii</em>), processed by El Capricho, a premium conserva house in Santoña (Cantabria). Sturgeon in Spanish conserva is a rarity — the fish is not native to Iberian Atlantic waters in commercial quantities, so this represents either imported farmed sturgeon or occasional bycatch, processed with the same care as the house&#x27;s tuna and anchovy lines. The product is typically sturgeon loin or belly meat, packed in olive oil. Quality markers: pale, almost ivory-to-pink flesh, firm texture, no strong &quot;muddy&quot; flavor (a sign of poor sturgeon handling), clean oil.</p>
-<h3>Nutritional Profile</h3>
-<p>Per 100g (with oil):</p>
-<ul>
-<li>Calories: ~180–220 kcal</li>
-<li>Protein: 16–20g</li>
-<li>Fat: 12–16g (sturgeon is a moderately fatty fish, plus the oil)</li>
-<li>Omega-3: ~1.0–1.5g</li>
-<li>B12, selenium, phosphorus: good</li>
-<li>Sodium: ~350–450mg</li>
-</ul>
-<h3>Preparation &amp; Service</h3>
-<p>Serve at <strong>cool room temperature</strong> — 16–18°C/61–64°F. Sturgeon meat is dense and benefits from being allowed to warm slightly from refrigerator temperature so its subtle flavors can emerge. Drain gently, reserving the oil. The flesh can be sliced or left in pieces depending on the tin format. <strong>Do not overcook if warming</strong> — a brief bain-marie is acceptable, but sturgeon can become dry. It is best treated as a &quot;white tuna&quot; analogue: presented in thick pieces, perhaps barely seared on one side for contrast.</p>
-<h3>Traditional &amp; Modern Eating Context</h3>
-<p>Sturgeon has no deep traditional conserva context in Spain — this is an innovation or a niche luxury product. For VIP service, present it as a conversation piece: &quot;Spain&#x27;s answer to white tuna, from the ancient fish that also gives us caviar.&quot; The novelty is part of the value. Treat it with the same reverence as the Herpac tuna loin.</p>
-<h3>Flavor &amp; Texture</h3>
-<p>The texture is firm and meaty — denser than tuna, with a fine grain that holds together well. It is almost poultry-like in its substance. The flavor is mild and clean, with a faint sweetness and a subtle, pleasant earthiness (sturgeon feed on benthic organisms, and a slight &quot;riverbed&quot; note is characteristic and desirable). There is none of the strong off-flavor that poor sturgeon can exhibit. The olive oil complements without masking, and the finish is long, clean, and faintly nutty.</p>
-<h3>Pairings &amp; Composition</h3>
-<ul>
-<li><strong>Wines:</strong> White Burgundy, aged Godello, or a light Pinot Noir</li>
-<li><strong>Bases:</strong> Potato, celery root, salsify, white bean purée</li>
-<li><strong>Acids:</strong> Lemon, light verjus, caper berries</li>
-<li><strong>Aromatics:</strong> Dill, chervil, gentle mustard</li>
-<li><strong>Dish idea:</strong> <em>Esturión con crema de apionabo</em> — thick slices of sturgeon over a warm celery root cream, dressed with the packing oil, caper berries, and a few sprigs of dill. A bridge between land and sea.</li>
-</ul>
-</div>
-</main>
-
+{% block breadcrumb %}{% endblock %}
+{% block content %}{% endblock %}
 <footer>
-  <div class="container">
-    A Private Chef's Guide to Premium Tinned &amp; Jarred Goods
-  </div>
+  <div class="container">{{ ui.footer }}</div>
 </footer>
 </body>
 </html>

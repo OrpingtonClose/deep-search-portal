@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block title %}{{ ui.site_title }}{% endblock %}
+
+{% block ru_link %}{{ request.url_for('index_ru') }}{% endblock %}
+{% block en_link %}{{ request.url_for('index_en') }}{% endblock %}
+
+{% block breadcrumb %}
+<div class="breadcrumb"><div class="container">
+  {% if lang == 'en' %}
+  <a href="{{ request.url_for('index_en') }}">{{ ui.breadcrumb_home }}</a>
+  {% else %}
+  <a href="{{ request.url_for('index_ru') }}">{{ ui.breadcrumb_home }}</a>
+  {% endif %}
+</div></div>
+{% endblock %}
+
+{% block content %}
+<main class="container">
+{% for cat_slug, cat_name in categories %}
+  {% if cat_slug in cat_foods %}
+  <section class="category-section" id="{{ cat_slug }}">
+    <h2>{{ cat_name }}</h2>
+    <div class="food-grid">
+    {% for food in cat_foods[cat_slug] %}
+      <div class="food-card">
+        {% if lang == 'en' %}
+        <a href="{{ request.url_for('detail_en', slug=food['slug']) }}">
+          <img class="card-img" src="{{ prefix }}/images/{{ food['image'] }}" alt="{{ food['name_en'] }}" loading="lazy">
+          <div class="card-body">
+            <div class="card-title">{{ food['name_en'] }}</div>
+            <div class="card-desc">{{ food['brief_en'] }}</div>
+          </div>
+        </a>
+        {% else %}
+        <a href="{{ request.url_for('detail_ru', slug=food['slug']) }}">
+          <img class="card-img" src="{{ prefix }}/images/{{ food['image'] }}" alt="{{ food['name_ru'] }}" loading="lazy">
+          <div class="card-body">
+            <div class="card-title">{{ food['name_ru'] }}</div>
+            <div class="card-desc">{{ food['brief_ru'] }}</div>
+          </div>
+        </a>
+        {% endif %}
+      </div>
+    {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+{% endfor %}
+</main>
+{% endblock %}

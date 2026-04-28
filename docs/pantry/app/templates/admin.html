@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pantry Admin</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #c9a84c;
+  --accent-dim: #8b7328;
+  --danger: #da3633;
+  --danger-dim: #8b1a18;
+  --success: #238636;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  min-height: 100vh;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 16px 0;
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+}
+header .container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+header h1 { font-size: 1.4rem; color: var(--accent); font-weight: 500; }
+header nav a {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin-left: 16px;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+header nav a:hover { color: var(--accent); border-color: var(--accent-dim); text-decoration: none; }
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 0;
+}
+.toolbar h2 { font-size: 1.1rem; color: var(--text); font-weight: 500; }
+
+.btn {
+  display: inline-block;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  text-decoration: none;
+  transition: all 0.15s;
+}
+.btn:hover { text-decoration: none; }
+.btn-primary {
+  background: var(--success);
+  color: #fff;
+  border-color: var(--success);
+}
+.btn-primary:hover { opacity: 0.9; }
+.btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--danger-dim);
+}
+.btn-danger:hover { background: var(--danger-dim); color: #fff; }
+.btn-secondary {
+  background: var(--surface);
+  color: var(--text);
+}
+.btn-secondary:hover { border-color: var(--accent-dim); }
+
+/* Table */
+.food-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 40px;
+}
+.food-table th {
+  text-align: left;
+  padding: 10px 12px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.food-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+  vertical-align: middle;
+}
+.food-table tr:hover { background: rgba(201, 168, 76, 0.04); }
+.food-table .thumb {
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+}
+.food-table .actions { white-space: nowrap; }
+.food-table .actions a,
+.food-table .actions button {
+  margin-right: 8px;
+}
+.food-table .category-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  background: var(--accent-dim);
+  color: var(--bg);
+  font-size: 0.7rem;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+/* Form */
+.form-container {
+  max-width: 800px;
+  margin: 0 auto 60px;
+}
+.form-group {
+  margin-bottom: 20px;
+}
+.form-group label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+.form-group input[type="text"],
+.form-group select,
+.form-group textarea {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.9rem;
+  font-family: inherit;
+  transition: border-color 0.15s;
+}
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.form-group textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+.form-group .hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+.form-section {
+  margin: 32px 0 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.95rem;
+  color: var(--accent);
+  font-weight: 500;
+}
+.form-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 32px;
+}
+.image-preview {
+  margin-top: 8px;
+}
+.image-preview img {
+  max-width: 200px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+/* Delete confirm */
+.delete-form { display: inline; }
+.delete-form button {
+  background: none;
+  border: 1px solid var(--danger-dim);
+  color: var(--danger);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+.delete-form button:hover { background: var(--danger-dim); color: #fff; }
+
+footer {
+  border-top: 1px solid var(--border);
+  padding: 16px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  background: var(--surface);
+  margin-top: 40px;
+}
+
+@media (max-width: 768px) {
+  .form-row { grid-template-columns: 1fr; }
+  .food-table { font-size: 0.8rem; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="container">
+    <h1>Pantry Admin</h1>
+    <nav>
+      <a href="{{ prefix }}/">View Site</a>
+      <a href="{{ prefix }}/ru/">View Site (RU)</a>
+    </nav>
+  </div>
+</header>
+
+{% if mode == 'list' %}
+<div class="container">
+  <div class="toolbar">
+    <h2>Food Items ({{ foods | length }})</h2>
+    <a href="{{ prefix }}/admin/add" class="btn btn-primary">+ Add Item</a>
+  </div>
+  <table class="food-table">
+    <thead>
+      <tr>
+        <th></th>
+        <th>Name (EN)</th>
+        <th>Name (RU)</th>
+        <th>Category</th>
+        <th>Image</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for food in foods %}
+      <tr>
+        <td>{{ loop.index }}</td>
+        <td><strong>{{ food['name_en'] }}</strong></td>
+        <td>{{ food['name_ru'] or '—' }}</td>
+        <td><span class="category-tag">{{ food['category'] }}</span></td>
+        <td>
+          {% if food['image'] %}
+          <img class="thumb" src="{{ prefix }}/images/{{ food['image'] }}" alt="">
+          {% else %}
+          —
+          {% endif %}
+        </td>
+        <td class="actions">
+          <a href="{{ prefix }}/admin/edit/{{ food['slug'] }}" class="btn btn-secondary" style="font-size:0.8rem;padding:4px 10px;">Edit</a>
+          <form class="delete-form" method="post" action="{{ prefix }}/admin/delete/{{ food['slug'] }}" onsubmit="return confirm('Delete ' + {{ food['name_en'] | tojson }} + '?')">
+            <button type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% elif mode == 'add' or mode == 'edit' %}
+<div class="container">
+  <div class="toolbar">
+    <h2>{% if mode == 'add' %}Add New Item{% else %}Edit: {{ food.name_en }}{% endif %}</h2>
+    <a href="{{ prefix }}/admin" class="btn btn-secondary">Back to List</a>
+  </div>
+  <div class="form-container">
+    <form method="post" enctype="multipart/form-data"
+      action="{% if mode == 'add' %}{{ prefix }}/admin/add{% else %}{{ prefix }}/admin/edit/{{ food.slug }}{% endif %}">
+
+      {% if mode == 'add' %}
+      <div class="form-group">
+        <label>Slug (URL identifier)</label>
+        <input type="text" name="slug" required placeholder="e.g. smoked-salmon" pattern="[a-z0-9\-]+" title="Lowercase letters, numbers, and hyphens only">
+        <div class="hint">Used in the URL: /items/your-slug.html</div>
+      </div>
+      {% endif %}
+
+      <div class="form-section">English</div>
+      <div class="form-group">
+        <label>Name (English) *</label>
+        <input type="text" name="name_en" required value="{{ food.name_en if food else '' }}">
+      </div>
+      <div class="form-group">
+        <label>Brief Description (English)</label>
+        <textarea name="brief_en" rows="3">{{ food.brief_en if food else '' }}</textarea>
+      </div>
+      <div class="form-group">
+        <label>Full Guide Section (English, Markdown)</label>
+        <textarea name="guide_section_en" rows="8">{{ food.guide_section_en if food else '' }}</textarea>
+        <div class="hint">Supports markdown: **bold**, *italic*, - list items, ### headers</div>
+      </div>
+
+      <div class="form-section">Russian</div>
+      <div class="form-group">
+        <label>Name (Russian)</label>
+        <input type="text" name="name_ru" value="{{ food.name_ru if food else '' }}">
+      </div>
+      <div class="form-group">
+        <label>Brief Description (Russian)</label>
+        <textarea name="brief_ru" rows="3">{{ food.brief_ru if food else '' }}</textarea>
+      </div>
+      <div class="form-group">
+        <label>Full Guide Section (Russian, Markdown)</label>
+        <textarea name="guide_section_ru" rows="8">{{ food.guide_section_ru if food else '' }}</textarea>
+      </div>
+
+      <div class="form-section">Category & Image</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Category *</label>
+          <select name="category" required>
+            {% for slug, name in categories %}
+            <option value="{{ slug }}" {% if food and food.category == slug %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Image (select existing)</label>
+          <select name="image">
+            <option value="">— Select —</option>
+            {% for img in images %}
+            <option value="{{ img }}" {% if food and food.image == img %}selected{% endif %}>{{ img }}</option>
+            {% endfor %}
+          </select>
+          {% if food and food.image %}
+          <div class="image-preview">
+            <img src="{{ prefix }}/images/{{ food.image }}" alt="Current image">
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Or upload a new image</label>
+        <input type="file" name="uploaded_image" accept="image/*" style="color:var(--text-muted)">
+        <div class="hint">Uploaded images are saved to the images directory</div>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">{% if mode == 'add' %}Add Item{% else %}Save Changes{% endif %}</button>
+        <a href="{{ prefix }}/admin" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+<footer>
+  <div class="container">Pantry Admin — Database-backed food gallery management</div>
+</footer>
+</body>
+</html>

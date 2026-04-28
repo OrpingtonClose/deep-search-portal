@@ -280,7 +280,7 @@ footer {
         </td>
         <td class="actions">
           <a href="{{ prefix }}/admin/edit/{{ food['slug'] }}" class="btn btn-secondary" style="font-size:0.8rem;padding:4px 10px;">Edit</a>
-          <form class="delete-form" method="post" action="{{ prefix }}/admin/delete/{{ food['slug'] }}" onsubmit="return confirm('Delete {{ food['name_en'] }}?')">
+          <form class="delete-form" method="post" action="{{ prefix }}/admin/delete/{{ food['slug'] }}" onsubmit="return confirm('Delete ' + {{ food['name_en'] | tojson }} + '?')">
             <button type="submit">Delete</button>
           </form>
         </td>

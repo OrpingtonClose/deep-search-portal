@@ -272,9 +272,12 @@ async def admin_add_submit(
 
     if uploaded_image and uploaded_image.filename:
         img_data = await uploaded_image.read()
-        img_path = IMAGES_DIR / uploaded_image.filename
+        safe_filename = Path(uploaded_image.filename).name
+        if not safe_filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        img_path = IMAGES_DIR / safe_filename
         img_path.write_bytes(img_data)
-        image = uploaded_image.filename
+        image = safe_filename
 
     max_order = db.execute("SELECT COALESCE(MAX(sort_order), 0) FROM foods").fetchone()[0]
 
@@ -329,9 +332,12 @@ async def admin_edit_submit(
 
     if uploaded_image and uploaded_image.filename:
         img_data = await uploaded_image.read()
-        img_path = IMAGES_DIR / uploaded_image.filename
+        safe_filename = Path(uploaded_image.filename).name
+        if not safe_filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        img_path = IMAGES_DIR / safe_filename
         img_path.write_bytes(img_data)
-        image = uploaded_image.filename
+        image = safe_filename
 
     db.execute(
         "UPDATE foods SET name_en=?, name_ru=?, category=?, image=?, brief_en=?, brief_ru=?, "

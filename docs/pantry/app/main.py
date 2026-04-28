@@ -6,8 +6,8 @@ import html as html_mod
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Form, Request, HTTPException, UploadFile, File
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -200,6 +200,155 @@ async def render_detail(request: Request, slug: str, lang: str):
             "prefix": ROOT_PATH,
         },
     )
+
+
+IMAGES_DIR = PANTRY_DIR / "images"
+
+ALL_CATEGORIES = [
+    ("spanish", "Spanish Conservas & Premium Tinned Seafood"),
+    ("nordic", "Nordic & Scandinavian Specialties"),
+    ("polish", "Polish / Eastern European"),
+    ("french", "French Products"),
+    ("charcuterie", "Charcuterie, Sauces, Pickles & Other"),
+]
+
+
+# ── Admin routes ─────────────────────────────────────────────────────
+
+@app.get("/admin", response_class=HTMLResponse)
+@app.get("/admin/", response_class=HTMLResponse)
+async def admin_list(request: Request):
+    db = get_db()
+    foods = db.execute(
+        "SELECT slug, name_en, name_ru, category, image, brief_en, sort_order "
+        "FROM foods ORDER BY sort_order"
+    ).fetchall()
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        context={
+            "foods": foods,
+            "categories": ALL_CATEGORIES,
+            "prefix": ROOT_PATH,
+            "mode": "list",
+        },
+    )
+
+
+@app.get("/admin/add", response_class=HTMLResponse)
+async def admin_add_form(request: Request):
+    images = sorted(f.name for f in IMAGES_DIR.iterdir() if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"))
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        context={
+            "categories": ALL_CATEGORIES,
+            "images": images,
+            "prefix": ROOT_PATH,
+            "mode": "add",
+            "food": None,
+        },
+    )
+
+
+@app.post("/admin/add")
+async def admin_add_submit(
+    request: Request,
+    slug: str = Form(...),
+    name_en: str = Form(...),
+    name_ru: str = Form(""),
+    category: str = Form(...),
+    image: str = Form(""),
+    brief_en: str = Form(""),
+    brief_ru: str = Form(""),
+    guide_section_en: str = Form(""),
+    guide_section_ru: str = Form(""),
+    uploaded_image: UploadFile = File(None),
+):
+    db = get_db()
+    existing = db.execute("SELECT slug FROM foods WHERE slug = ?", (slug,)).fetchone()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Item with slug '{slug}' already exists")
+
+    if uploaded_image and uploaded_image.filename:
+        img_data = await uploaded_image.read()
+        img_path = IMAGES_DIR / uploaded_image.filename
+        img_path.write_bytes(img_data)
+        image = uploaded_image.filename
+
+    max_order = db.execute("SELECT COALESCE(MAX(sort_order), 0) FROM foods").fetchone()[0]
+
+    db.execute(
+        "INSERT INTO foods (slug, name_en, name_ru, category, image, brief_en, brief_ru, "
+        "guide_section_en, guide_section_ru, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (slug, name_en, name_ru, category, image, brief_en, brief_ru,
+         guide_section_en, guide_section_ru, max_order + 1),
+    )
+    db.commit()
+    return RedirectResponse(url=f"{ROOT_PATH}/admin", status_code=303)
+
+
+@app.get("/admin/edit/{slug}", response_class=HTMLResponse)
+async def admin_edit_form(request: Request, slug: str):
+    db = get_db()
+    food = db.execute("SELECT * FROM foods WHERE slug = ?", (slug,)).fetchone()
+    if not food:
+        raise HTTPException(status_code=404, detail="Food item not found")
+    images = sorted(f.name for f in IMAGES_DIR.iterdir() if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"))
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        context={
+            "food": dict(food),
+            "categories": ALL_CATEGORIES,
+            "images": images,
+            "prefix": ROOT_PATH,
+            "mode": "edit",
+        },
+    )
+
+
+@app.post("/admin/edit/{slug}")
+async def admin_edit_submit(
+    request: Request,
+    slug: str,
+    name_en: str = Form(...),
+    name_ru: str = Form(""),
+    category: str = Form(...),
+    image: str = Form(""),
+    brief_en: str = Form(""),
+    brief_ru: str = Form(""),
+    guide_section_en: str = Form(""),
+    guide_section_ru: str = Form(""),
+    uploaded_image: UploadFile = File(None),
+):
+    db = get_db()
+    food = db.execute("SELECT slug FROM foods WHERE slug = ?", (slug,)).fetchone()
+    if not food:
+        raise HTTPException(status_code=404, detail="Food item not found")
+
+    if uploaded_image and uploaded_image.filename:
+        img_data = await uploaded_image.read()
+        img_path = IMAGES_DIR / uploaded_image.filename
+        img_path.write_bytes(img_data)
+        image = uploaded_image.filename
+
+    db.execute(
+        "UPDATE foods SET name_en=?, name_ru=?, category=?, image=?, brief_en=?, brief_ru=?, "
+        "guide_section_en=?, guide_section_ru=? WHERE slug=?",
+        (name_en, name_ru, category, image, brief_en, brief_ru,
+         guide_section_en, guide_section_ru, slug),
+    )
+    db.commit()
+    return RedirectResponse(url=f"{ROOT_PATH}/admin", status_code=303)
+
+
+@app.post("/admin/delete/{slug}")
+async def admin_delete(slug: str):
+    db = get_db()
+    db.execute("DELETE FROM foods WHERE slug = ?", (slug,))
+    db.commit()
+    return RedirectResponse(url=f"{ROOT_PATH}/admin", status_code=303)
 
 
 if __name__ == "__main__":

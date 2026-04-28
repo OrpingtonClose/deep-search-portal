@@ -204,6 +204,8 @@ async def render_detail(request: Request, slug: str, lang: str):
 
 IMAGES_DIR = PANTRY_DIR / "images"
 
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
 ALL_CATEGORIES = [
     ("spanish", "Spanish Conservas & Premium Tinned Seafood"),
     ("nordic", "Nordic & Scandinavian Specialties"),
@@ -273,8 +275,8 @@ async def admin_add_submit(
     if uploaded_image and uploaded_image.filename:
         img_data = await uploaded_image.read()
         safe_filename = Path(uploaded_image.filename).name
-        if not safe_filename:
-            raise HTTPException(status_code=400, detail="Invalid filename")
+        if not safe_filename or Path(safe_filename).suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
+            raise HTTPException(status_code=400, detail="Only .jpg, .jpeg, .png, .webp files are allowed")
         img_path = IMAGES_DIR / safe_filename
         img_path.write_bytes(img_data)
         image = safe_filename
@@ -333,8 +335,8 @@ async def admin_edit_submit(
     if uploaded_image and uploaded_image.filename:
         img_data = await uploaded_image.read()
         safe_filename = Path(uploaded_image.filename).name
-        if not safe_filename:
-            raise HTTPException(status_code=400, detail="Invalid filename")
+        if not safe_filename or Path(safe_filename).suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
+            raise HTTPException(status_code=400, detail="Only .jpg, .jpeg, .png, .webp files are allowed")
         img_path = IMAGES_DIR / safe_filename
         img_path.write_bytes(img_data)
         image = safe_filename

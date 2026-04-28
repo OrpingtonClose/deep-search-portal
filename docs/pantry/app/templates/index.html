@@ -26,7 +26,7 @@
       <div class="food-card">
         {% if lang == 'en' %}
         <a href="{{ request.url_for('detail_en', slug=food['slug']) }}">
-          <img class="card-img" src="/images/{{ food['image'] }}" alt="{{ food['name_en'] }}" loading="lazy">
+          <img class="card-img" src="{{ prefix }}/images/{{ food['image'] }}" alt="{{ food['name_en'] }}" loading="lazy">
           <div class="card-body">
             <div class="card-title">{{ food['name_en'] }}</div>
             <div class="card-desc">{{ food['brief_en'] }}</div>
@@ -34,7 +34,7 @@
         </a>
         {% else %}
         <a href="{{ request.url_for('detail_ru', slug=food['slug']) }}">
-          <img class="card-img" src="/images/{{ food['image'] }}" alt="{{ food['name_ru'] }}" loading="lazy">
+          <img class="card-img" src="{{ prefix }}/images/{{ food['image'] }}" alt="{{ food['name_ru'] }}" loading="lazy">
           <div class="card-body">
             <div class="card-title">{{ food['name_ru'] }}</div>
             <div class="card-desc">{{ food['brief_ru'] }}</div>

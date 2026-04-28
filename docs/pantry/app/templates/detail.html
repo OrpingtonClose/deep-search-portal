@@ -2,8 +2,8 @@
 
 {% block title %}{{ name }} — {{ ui.site_title }}{% endblock %}
 
-{% block ru_link %}/ru/items/{{ slug }}.html{% endblock %}
-{% block en_link %}/items/{{ slug }}.html{% endblock %}
+{% block ru_link %}{{ prefix }}/ru/items/{{ slug }}.html{% endblock %}
+{% block en_link %}{{ prefix }}/items/{{ slug }}.html{% endblock %}
 
 {% block breadcrumb %}
 <div class="breadcrumb"><div class="container">
@@ -27,7 +27,7 @@
 <main>
   <div class="container">
     <div class="detail-hero">
-      <img src="/images/{{ image }}" alt="{{ name }}">
+      <img src="{{ prefix }}/images/{{ image }}" alt="{{ name }}">
       <div class="hero-text">
         <span class="category-badge">{{ category_name }}</span>
         <h2>{{ name }}</h2>

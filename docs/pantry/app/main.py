@@ -24,7 +24,9 @@ async def lifespan(application: FastAPI):
     yield
 
 
-app = FastAPI(title="The Private Chef's Pantry", lifespan=lifespan)
+ROOT_PATH = os.environ.get("PANTRY_ROOT_PATH", "/pantry")
+
+app = FastAPI(title="The Private Chef's Pantry", lifespan=lifespan, root_path=ROOT_PATH)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # Serve images from the existing images directory
@@ -150,6 +152,7 @@ async def render_index(request: Request, lang: str):
             "ui": ui,
             "categories": categories,
             "cat_foods": cat_foods,
+            "prefix": ROOT_PATH,
         },
     )
 
@@ -194,6 +197,7 @@ async def render_detail(request: Request, slug: str, lang: str):
             "category_slug": row["category"],
             "category_name": cat_name,
             "guide_html": guide_html,
+            "prefix": ROOT_PATH,
         },
     )
 

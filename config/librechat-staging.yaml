@@ -30,10 +30,11 @@ modelSpecs:
       endpoint: Heretic
       model: glm-4.7-flash-heretic
   - name: prod-deepagents-research
-    label: Deep Agents Research
-    description: LangGraph deep research agent with planning, sub-agent orchestration,
-      and file-based context management. Powered by Venice AI GLM-4.7 Heretic (uncensored).
-    group: Simple PROD
+    label: Strands DeepAgents (LangGraph)
+    description: LangGraph deepagents SDK — lead agent with TODO planning, sub-agent
+      orchestration, and file-based context. Powered by Venice AI GLM-4.7 Heretic
+      (uncensored).
+    group: Strands
     preset:
       endpoint: Deep Agents
       model: deepagents-research

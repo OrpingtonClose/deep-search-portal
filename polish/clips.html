@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Polish phrases — all YouTube clips</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #faf7f2;
+    --bg-card: #ffffff;
+    --ink: #1f1b16;
+    --ink-soft: #8a8075;
+    --accent: #b0552b;
+    --accent-soft: #f3e1d2;
+    --shadow: 0 20px 40px -25px rgba(50, 35, 20, 0.25), 0 8px 16px -10px rgba(50, 35, 20, 0.1);
+    --radius: 16px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1714;
+      --bg-card: #24201c;
+      --ink: #f4ede3;
+      --ink-soft: #8a8074;
+      --accent: #e08a5a;
+      --accent-soft: #3a2a21;
+      --shadow: 0 20px 40px -25px rgba(0,0,0,0.6), 0 8px 16px -10px rgba(0,0,0,0.4);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: auto; min-height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    border-bottom: 1px solid rgba(0,0,0,0.06);
+    padding: 18px 24px;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  @media (prefers-color-scheme: dark) {
+    header { border-bottom-color: rgba(255,255,255,0.06); }
+  }
+  header h1 {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 500;
+    font-size: 22px;
+    margin: 0;
+  }
+  header .meta {
+    color: var(--ink-soft);
+    font-size: 14px;
+  }
+  header a {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 14px;
+    margin-left: auto;
+  }
+  header a:hover { text-decoration: underline; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 18px;
+    padding: 24px;
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+  .card {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+  }
+  .card .v {
+    position: relative;
+    aspect-ratio: 16/9;
+    background: #000;
+  }
+  .card video {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: contain;
+    background: #000;
+  }
+  .card .body {
+    padding: 14px 16px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .card .num {
+    font-family: 'Inter';
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-soft);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+  }
+  .card .pl {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 500;
+    font-size: 22px;
+    line-height: 1.2;
+    color: var(--ink);
+  }
+  .card .ru {
+    color: var(--ink-soft);
+    font-size: 14px;
+    line-height: 1.35;
+  }
+  .card .links {
+    display: flex;
+    gap: 12px;
+    margin-top: 6px;
+    font-size: 12px;
+  }
+  .card .links a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  .card .links a:hover { text-decoration: underline; }
+
+  .empty {
+    padding: 48px;
+    text-align: center;
+    color: var(--ink-soft);
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Polish phrases — YouTube clips</h1>
+  <span class="meta" id="meta">loading…</span>
+  <a href="index.html" id="backlink">back to gallery →</a>
+</header>
+<div class="grid" id="grid"></div>
+<div class="empty" id="empty" style="display:none">No verified clips yet. Pipeline is still running — refresh in a minute.</div>
+
+<script>
+(async function () {
+  const grid = document.getElementById('grid');
+  const empty = document.getElementById('empty');
+  const meta = document.getElementById('meta');
+  const rendered = new Set();  // phrase indices already in the DOM
+  let refreshTimer = null;
+
+  function buildCard(p) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.dataset.i = p.i;
+    const vWrap = document.createElement('div');
+    vWrap.className = 'v';
+    const video = document.createElement('video');
+    video.src = p.yt_url;
+    video.controls = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
+    vWrap.appendChild(video);
+    const body = document.createElement('div');
+    body.className = 'body';
+    const num = document.createElement('div');
+    num.className = 'num';
+    num.textContent = `#${p.i}`;
+    const pl = document.createElement('div');
+    pl.className = 'pl';
+    pl.textContent = p.polish;
+    const ru = document.createElement('div');
+    ru.className = 'ru';
+    ru.textContent = p.russian || '';
+    const links = document.createElement('div');
+    links.className = 'links';
+    const a1 = document.createElement('a');
+    a1.href = `example.html?i=${p.i}`;
+    a1.textContent = 'open in gallery';
+    links.appendChild(a1);
+    if (p.yt_source_url) {
+      const a2 = document.createElement('a');
+      a2.href = p.yt_source_url;
+      a2.target = '_blank';
+      a2.rel = 'noopener noreferrer';
+      a2.textContent = 'youtube source';
+      links.appendChild(a2);
+    }
+    const a3 = document.createElement('a');
+    a3.href = `index.html?i=${p.i}`;
+    a3.textContent = 'educational clip';
+    links.appendChild(a3);
+    body.appendChild(num);
+    body.appendChild(pl);
+    if (p.russian) body.appendChild(ru);
+    body.appendChild(links);
+    card.appendChild(vWrap);
+    card.appendChild(body);
+    return card;
+  }
+
+  async function load() {
+    const r = await fetch('phrases.json?_=' + Date.now(), { cache: 'no-cache' });
+    const phrases = await r.json();
+    const verified = phrases.filter(p => p.yt_url);
+    meta.textContent = `${verified.length}/${phrases.length} verified`;
+    if (verified.length === 0) {
+      empty.style.display = 'block';
+      return { verified: 0, total: phrases.length };
+    }
+    empty.style.display = 'none';
+    // Append only newly-verified phrases; never destroy already-mounted videos.
+    for (const p of verified) {
+      if (rendered.has(p.i)) continue;
+      grid.appendChild(buildCard(p));
+      rendered.add(p.i);
+    }
+    return { verified: verified.length, total: phrases.length };
+  }
+
+  const initial = await load();
+  // Auto-refresh while pipeline still has unverified phrases.
+  if (initial.verified < initial.total) {
+    refreshTimer = setInterval(async () => {
+      const r = await load();
+      if (r.verified >= r.total && refreshTimer !== null) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+      }
+    }, 60_000);
+  }
+})();
+</script>
+</body>
+</html>

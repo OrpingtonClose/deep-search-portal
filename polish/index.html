@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Polish phrases</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #faf7f2;
+    --bg-card: #ffffff;
+    --bg-side: #f3ede4;
+    --ink: #1f1b16;
+    --ink-soft: #8a8075;
+    --accent: #b0552b;
+    --accent-soft: #f3e1d2;
+    --ring: rgba(176, 85, 43, 0.25);
+    --shadow: 0 30px 60px -30px rgba(50, 35, 20, 0.25), 0 10px 20px -10px rgba(50, 35, 20, 0.12);
+    --radius: 22px;
+    --side-w: 320px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1714;
+      --bg-card: #24201c;
+      --bg-side: #1f1c19;
+      --ink: #f4ede3;
+      --ink-soft: #8a8074;
+      --accent: #e08a5a;
+      --accent-soft: #3a2a21;
+      --ring: rgba(224, 138, 90, 0.3);
+      --shadow: 0 30px 60px -30px rgba(0,0,0,0.6), 0 10px 20px -10px rgba(0,0,0,0.4);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    display: flex;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+  aside {
+    width: var(--side-w);
+    flex-shrink: 0;
+    background: var(--bg-side);
+    border-right: 1px solid rgba(0,0,0,0.05);
+    height: 100vh;
+    overflow-y: auto;
+    padding: 16px 8px 24px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0,0,0,0.15) transparent;
+  }
+  @media (prefers-color-scheme: dark) {
+    aside { border-right-color: rgba(255,255,255,0.06); }
+  }
+  aside::-webkit-scrollbar { width: 8px; }
+  aside::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 8px; }
+  .item {
+    display: flex;
+    gap: 10px;
+    padding: 10px 14px;
+    border-radius: 12px;
+    cursor: pointer;
+    color: var(--ink);
+    line-height: 1.35;
+    font-size: 14px;
+    transition: background 140ms ease;
+  }
+  .item:hover { background: rgba(0,0,0,0.04); }
+  @media (prefers-color-scheme: dark) {
+    .item:hover { background: rgba(255,255,255,0.05); }
+  }
+  .item .num {
+    color: var(--ink-soft);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    padding-top: 2px;
+    min-width: 28px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+  .item .tx {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 500;
+    font-size: 15px;
+  }
+  .item.active {
+    background: var(--accent-soft);
+  }
+  .item.active .num { color: var(--accent); font-weight: 600; }
+  .item.active .tx { color: var(--ink); }
+
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    gap: 32px;
+    min-width: 0;
+    height: 100vh;
+    overflow: hidden;
+  }
+  .stage {
+    position: relative;
+    width: min(960px, 100%);
+    aspect-ratio: 16 / 9;
+    background: #000;
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    cursor: pointer;
+  }
+  .stage video {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: contain;
+    background: #000;
+  }
+  .play-overlay {
+    position: absolute; inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.35);
+    transition: opacity 180ms ease;
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+  }
+  .play-overlay.hidden { opacity: 0; pointer-events: none; }
+  .play-btn {
+    width: 96px; height: 96px; border-radius: 50%;
+    background: rgba(255,255,255,0.95);
+    display: flex; align-items: center; justify-content: center;
+    color: #1f1b16;
+    box-shadow: 0 20px 40px -20px rgba(0,0,0,0.6);
+  }
+  .play-btn svg { width: 42px; height: 42px; }
+  .phrase {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    max-width: 960px;
+    padding: 0 8px;
+    text-align: center;
+  }
+  .phrase .pl {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 500;
+    font-size: clamp(28px, 3.8vw, 48px);
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+  }
+  /* Phrase-as-link: keep typography identical to plain text. No color change, no underline. */
+  .phrase a.pl-link,
+  .phrase a.pl-link:visited,
+  .phrase a.pl-link:active,
+  .phrase a.pl-link:hover {
+    color: inherit;
+    text-decoration: none;
+  }
+  .phrase a.pl-link { cursor: pointer; }
+  .menu-btn {
+    display: none;
+    position: fixed;
+    top: 14px; left: 14px;
+    z-index: 20;
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    background: var(--bg-card);
+    border: 1px solid rgba(0,0,0,0.08);
+    box-shadow: 0 10px 30px -15px rgba(50,35,20,0.3);
+    align-items: center; justify-content: center;
+    cursor: pointer;
+    color: var(--ink);
+  }
+  .menu-btn svg { width: 22px; height: 22px; }
+  @media (max-width: 860px) {
+    body { overflow: auto; }
+    main { height: auto; min-height: 100vh; padding-top: 72px; }
+    aside {
+      position: fixed; top: 0; left: 0; bottom: 0;
+      transform: translateX(-100%);
+      transition: transform 220ms ease;
+      z-index: 15;
+      box-shadow: 0 30px 60px -30px rgba(0,0,0,0.3);
+      width: min(320px, 88vw);
+    }
+    aside.open { transform: translateX(0); }
+    .menu-btn { display: inline-flex; }
+  }
+  .scrim {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.25);
+    opacity: 0; pointer-events: none;
+    transition: opacity 180ms ease;
+    z-index: 10;
+  }
+  .scrim.show { opacity: 1; pointer-events: auto; }
+
+  /* Auto-advance toggle: small discrete sliding switch. */
+  .auto-toggle {
+    position: fixed;
+    top: 14px; right: 14px;
+    z-index: 20;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg-card);
+    border: 1px solid rgba(0,0,0,0.06);
+    border-radius: 999px;
+    box-shadow: 0 6px 20px -12px rgba(50,35,20,0.25);
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    color: var(--ink-soft);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    transition: color 160ms ease, border-color 160ms ease;
+  }
+  @media (prefers-color-scheme: dark) {
+    .auto-toggle { border-color: rgba(255,255,255,0.06); }
+  }
+  .auto-toggle .switch {
+    position: relative;
+    width: 28px;
+    height: 16px;
+    border-radius: 999px;
+    background: rgba(0,0,0,0.12);
+    transition: background 200ms ease;
+  }
+  @media (prefers-color-scheme: dark) {
+    .auto-toggle .switch { background: rgba(255,255,255,0.14); }
+  }
+  .auto-toggle .switch::after {
+    content: "";
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+    transition: left 200ms ease;
+  }
+  .auto-toggle.on { color: var(--accent); }
+  .auto-toggle.on .switch { background: var(--accent); }
+  .auto-toggle.on .switch::after { left: 14px; }
+  .auto-toggle .pips {
+    display: inline-flex;
+    gap: 3px;
+    align-items: center;
+    margin-left: 2px;
+    opacity: 0;
+    transition: opacity 200ms ease;
+  }
+  .auto-toggle.on .pips { opacity: 1; }
+  .auto-toggle .pip {
+    width: 4px; height: 4px; border-radius: 50%;
+    background: rgba(0,0,0,0.18);
+    transition: background 160ms ease;
+  }
+  @media (prefers-color-scheme: dark) {
+    .auto-toggle .pip { background: rgba(255,255,255,0.18); }
+  }
+  .auto-toggle.on .pip.lit { background: var(--accent); }
+</style>
+</head>
+<body>
+<button type="button" class="auto-toggle" id="autoToggle" role="switch" aria-checked="false" aria-label="Auto-advance after 5 loops" title="Auto-advance after 5 loops">
+  <span>Auto</span>
+  <span class="switch" aria-hidden="true"></span>
+  <span class="pips" aria-hidden="true">
+    <span class="pip"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span>
+  </span>
+</button>
+<button class="menu-btn" id="menuBtn" aria-label="Show phrase list">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+</button>
+<div class="scrim" id="scrim"></div>
+<aside id="side"></aside>
+
+<main>
+  <div class="stage" id="stage">
+    <video id="video" playsinline preload="auto"></video>
+    <div class="play-overlay" id="overlay">
+      <div class="play-btn" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      </div>
+    </div>
+  </div>
+  <div class="phrase" id="phraseHost">
+    <div class="pl" id="phrasePl">&nbsp;</div>
+  </div>
+</main>
+
+<script>
+(async function () {
+  const res = await fetch('phrases.json', { cache: 'no-cache' });
+  const phrases = await res.json();
+
+  const video = document.getElementById('video');
+  const overlay = document.getElementById('overlay');
+  const phraseHost = document.getElementById('phraseHost');
+  let phrasePl = document.getElementById('phrasePl');
+  const stage = document.getElementById('stage');
+  const side = document.getElementById('side');
+  const menuBtn = document.getElementById('menuBtn');
+  const scrim = document.getElementById('scrim');
+
+  // Build sidebar
+  const items = phrases.map((p, idx) => {
+    const el = document.createElement('div');
+    el.className = 'item';
+    el.dataset.idx = idx;
+    const numEl = document.createElement('div');
+    numEl.className = 'num';
+    numEl.textContent = String(idx + 1);
+    const body = document.createElement('div');
+    const tx = document.createElement('div');
+    tx.className = 'tx';
+    tx.textContent = p.polish;
+    body.appendChild(tx);
+    el.appendChild(numEl);
+    el.appendChild(body);
+    el.addEventListener('click', () => { i = idx; render(); closeSide(); });
+    side.appendChild(el);
+    return el;
+  });
+
+  const initial = Math.max(0, Math.min(phrases.length - 1,
+    parseInt(new URLSearchParams(location.search).get('i') || '1', 10) - 1));
+  let i = initial;
+  let started = false;
+
+  // Manage looping ourselves so we can count plays for auto-advance.
+  const LOOPS_BEFORE_ADVANCE = 5;
+  video.loop = false;
+  video.playsInline = true;
+
+  const autoToggle = document.getElementById('autoToggle');
+  const pips = autoToggle ? autoToggle.querySelectorAll('.pip') : [];
+  let autoAdvance = (() => {
+    try { return localStorage.getItem('polish.autoAdvance') === '1'; }
+    catch (_) { return false; }
+  })();
+  let loopCount = 0;
+  function reflectAuto() {
+    if (!autoToggle) return;
+    autoToggle.classList.toggle('on', autoAdvance);
+    autoToggle.setAttribute('aria-checked', autoAdvance ? 'true' : 'false');
+    pips.forEach((pip, idx) => pip.classList.toggle('lit', idx < loopCount));
+  }
+  if (autoToggle) {
+    autoToggle.addEventListener('click', () => {
+      autoAdvance = !autoAdvance;
+      try { localStorage.setItem('polish.autoAdvance', autoAdvance ? '1' : '0'); } catch (_) {}
+      loopCount = 0;
+      reflectAuto();
+    });
+  }
+  reflectAuto();
+
+  function render(updateHash) {
+    const p = phrases[i];
+    loopCount = 0;
+    reflectAuto();
+    // Replace phrase node depending on yt_url presence (link-wrap if available)
+    phraseHost.innerHTML = '';
+    const txt = document.createElement('div');
+    txt.className = 'pl';
+    txt.id = 'phrasePl';
+    txt.textContent = p.polish;
+    if (p.yt_url) {
+      const a = document.createElement('a');
+      a.className = 'pl-link';
+      a.href = `example.html?i=${i + 1}`;
+      a.title = 'Hear it in a YouTube clip';
+      a.appendChild(txt);
+      phraseHost.appendChild(a);
+    } else {
+      phraseHost.appendChild(txt);
+    }
+    phrasePl = txt;
+    items.forEach((el, idx) => el.classList.toggle('active', idx === i));
+    const active = items[i];
+    if (active) active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    if (video.src !== p.b2_url) video.src = p.b2_url;
+    if (started) video.play().catch(() => {});
+    if (updateHash !== false) {
+      const q = new URLSearchParams(location.search);
+      q.set('i', String(i + 1));
+      history.replaceState(null, '', '?' + q.toString());
+    }
+    document.title = p.polish.slice(0, 80);
+    preload(i + 1);
+    preload(i - 1);
+  }
+
+  const preloaded = new Set();
+  function preload(j) {
+    if (j < 0 || j >= phrases.length || preloaded.has(j)) return;
+    preloaded.add(j);
+    const link = document.createElement('link');
+    link.rel = 'prefetch';
+    link.as = 'video';
+    link.href = phrases[j].b2_url;
+    document.head.appendChild(link);
+  }
+
+  function start() {
+    if (started) return;
+    started = true;
+    overlay.classList.add('hidden');
+    video.play().catch(() => { started = false; overlay.classList.remove('hidden'); });
+  }
+
+  stage.addEventListener('click', () => {
+    if (!started) { start(); return; }
+    if (video.paused) { video.play(); overlay.classList.add('hidden'); }
+    else { video.pause(); overlay.classList.remove('hidden'); }
+  });
+
+  video.addEventListener('play', () => overlay.classList.add('hidden'));
+  video.addEventListener('pause', () => { if (started) overlay.classList.remove('hidden'); });
+
+  // Loop counter + auto-advance (replaces native video.loop).
+  video.addEventListener('ended', () => {
+    loopCount += 1;
+    if (autoAdvance && loopCount >= LOOPS_BEFORE_ADVANCE && i < phrases.length - 1) {
+      go(1);
+      return;
+    }
+    reflectAuto();
+    video.currentTime = 0;
+    video.play().catch(() => {});
+  });
+
+  function go(delta) {
+    const nj = i + delta;
+    if (nj < 0 || nj >= phrases.length) return;
+    i = nj;
+    render();
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowRight' || e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); go(1); }
+    else if (e.key === 'ArrowLeft' || e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); go(-1); }
+    else if (e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      if (!started) start();
+      else if (video.paused) video.play();
+      else video.pause();
+    }
+  });
+
+  // Mobile sidebar toggle
+  function openSide() { document.getElementById('side').classList.add('open'); scrim.classList.add('show'); }
+  function closeSide() { document.getElementById('side').classList.remove('open'); scrim.classList.remove('show'); }
+  menuBtn.addEventListener('click', openSide);
+  scrim.addEventListener('click', closeSide);
+
+  render(false);
+})();
+</script>
+</body>
+</html>
